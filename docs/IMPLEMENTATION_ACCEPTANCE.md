@@ -930,18 +930,37 @@ and each one alone accounts for almost none of it:
 
 1. A score cap applied whenever any attribute is unknown sits below the threshold an
    automatic match must clear. A capped line can never clear the bar.
-2. The unknown-attribute gate consults no score at all, and it was true of every single
-   top candidate across the real corpus. The fuzzy automatic path is therefore unreachable
-   on 100% of that corpus, and no threshold change reaches it.
+2. The unknown-attribute gate consults no score at all. It was true of 312 of the 333
+   top candidates on the resolved-supplier corpus, and of 205 of 208 on a second corpus
+   measured independently by the other reviewer. So the fuzzy automatic path is closed on
+   the overwhelming majority of real lines and no threshold change reaches them — but it
+   is *not* closed on all of them, and the earlier wording in this record which said
+   "every single top candidate" was an overstatement that has been corrected here.
 3. The margin rule requires a gap to the runner-up. Of 333 lines from resolved-supplier
    invoices, 139 have a top-two tie on score, and 133 of those ties are between two rows
    that carry the *same* item id. The export consumes the item id. The matcher is refusing
    to match automatically because it found the right item twice.
 
-Gates 1 and 2 both key on an attribute whose column holds a single value on every row of
-the supplied table. A predicate keyed on a constant is an off switch, not a rule: it fires
-on every line that does not state that attribute, and most suppliers in this corpus do not
-print it.
+Gates 1 and 2 do not key on one named attribute. Both test whether the set of unknown
+attributes is non-empty, whatever is in it. One attribute dominates that set, and its
+column in the supplied table holds a single value on every row: a predicate keyed on a
+constant is an off switch, not a rule, because it fires on every line that does not state
+that attribute, and most suppliers in this corpus do not print it.
+
+The distinction matters for anyone acting on this section, because the dominant attribute
+is not the whole of it. Composition of the unknown set on the top candidate, measured over
+the 333 resolved-supplier lines: 300 carry that one attribute alone, and 12 carry it
+together with a size unknown. Repairing the constant column therefore clears gates 1 and 2
+for 300 lines and leaves **12 still gated for a different and genuinely separate reason**.
+An independent measurement on a second corpus found the same shape at a larger share — 18
+of 205 gated lines carrying a non-dominant unknown, 2 of them with no instance of the
+dominant one at all.
+
+This is exactly the misread this section exists to prevent. Someone who repairs the
+constant column, expects gates 1 and 2 to be gone, and finds a residual still capped will
+reach for the warning below and conclude the fix failed — when it succeeded on the large
+majority and hit a second, smaller cause. The residual is a separate item of work, not
+evidence against the first fix.
 
 **Measured, and it is the important number here: removing the cap alone, with nothing else
 varied, changes zero line statuses.** Deduplicating candidates by item id before the margin
@@ -987,10 +1006,11 @@ explanation is a hypothesis and is recorded as one.
 
 ### The volume target is met for text-layer invoices, and it buys nothing
 
-Both runs put 1,000 text-layer documents through the system in **just under nineteen
-minutes** of wall time, with no failed document, no backpressure rejection, no container
-restart, and every health check passing. On the stated volume target, that is inside the
-window at either worker count.
+Both runs put 1,000 text-layer documents through the system in **under twenty minutes** of
+wall time — 1,141.1 s and 1,134.5 s, which is 19 min 01 s and 18 min 55 s — with no failed
+document, no backpressure rejection, no container restart, and every health check passing.
+The stated target was 20 to 30 minutes, so both runs come in below its lower bound at
+either worker count. They beat the window rather than landing inside it.
 
 It is worth being exact about what that does and does not establish, because the number
 invites a promise this record cannot make.
