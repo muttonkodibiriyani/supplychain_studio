@@ -30,7 +30,7 @@ CRITICAL_UNKNOWN_SCORE_CAP = 92.0
 SUGGEST_THRESHOLD = 70.0
 # Unit kinds for the auto-boundary unit check (see unit_check).  Values are the
 # canonical forms produced by _normalize_uom.
-SINGLE_UNIT_UOMS = frozenset({"EACH", "BOTTLE"})
+SINGLE_UNIT_UOMS = frozenset({"EACH"})
 MULTI_UNIT_UOMS = frozenset({"PACK", "BOX", "CASE", "CARTON", "DOZEN"})
 UNIT_UNCONFIRMED = "unit unconfirmed"
 # Attribute kinds as produced by _compatibility.  Rules keyed on "which
