@@ -29,6 +29,14 @@ try {
     & docker compose --project-name $ProjectName config --quiet
     if ($LASTEXITCODE -ne 0) { throw 'Docker Compose configuration failed.' }
 
+    $running = & docker compose --project-name $ProjectName ps --status running --quiet 2>$null
+    if (-not $running) {
+        $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+        if ($listener) {
+            throw "Port $Port is already in use by another program. Stop it, or rerun with: .\Start-InvoiceStudio.ps1 -Port 8010"
+        }
+    }
+
     $composeArgs = @('compose', '--project-name', $ProjectName, 'up', '--detach', '--wait', '--wait-timeout', '180')
     if (-not $NoBuild) { $composeArgs += '--build' }
     & docker @composeArgs
