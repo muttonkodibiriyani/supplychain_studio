@@ -1,7 +1,7 @@
 import type {Invoice,Stats,CatalogItem,Alias,Audit,ExportRun,BrandSettings} from './types';
 import {loadDemo,saveDemo,catalog,resetDemo} from './demo';
 export let isPreview=false;
-export const sourceRepository='https://github.com/tharakeshua/invoice-studio';
+export const sourceRepository='https://github.com/muttonkodibiriyani/supplychain_studio';
 export const downloadsRestricted=window.origin==='null';
 export let health:{ocr_available?:boolean;supported_formats?:string[];status?:string}={};
 const apiRoot=new URL('./api/',window.location.href.split('?')[0].split('#')[0]).href;

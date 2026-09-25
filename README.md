@@ -2,7 +2,7 @@
 
 Run a local invoice workspace for a brand: import its RMS item master, upload supplier invoices, review extracted lines and item matches, then export one consolidated Excel workbook. Reuse the application for another brand with a separate data volume and its own master and settings.
 
-Source: [tharakeshua/invoice-studio](https://github.com/tharakeshua/invoice-studio). Sign in to an account with repository access, then choose **Code → Download ZIP**.
+Source: [muttonkodibiriyani/supplychain_studio](https://github.com/muttonkodibiriyani/supplychain_studio). Sign in to an account with repository access, then choose **Code → Download ZIP**.
 
 ## Start on a new Windows computer
 

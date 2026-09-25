@@ -103,7 +103,7 @@ Do not separately install Docker Engine or the Docker CLI inside an Ubuntu or ot
 
 ## 4. Download the application from GitHub
 
-Open the private repository [tharakeshua/invoice-studio](https://github.com/tharakeshua/invoice-studio), or the release link supplied by the application owner. Confirm that the owner, repository, release tag, and checksum are the ones approved by your organization. Do not use a fork, mirror, email attachment, or link from a search result.
+Open the private repository [muttonkodibiriyani/supplychain_studio](https://github.com/muttonkodibiriyani/supplychain_studio), or the release link supplied by the application owner. Confirm that the owner, repository, release tag, and checksum are the ones approved by your organization. Do not use a fork, mirror, email attachment, or link from a search result.
 
 1. Sign in to the organization-approved GitHub account. A private repository appears only when that account has been granted read access. On the approved repository, select **Code > Download ZIP**. GitHub documents this process in [Downloading source code archives](https://docs.github.com/repositories/working-with-files/using-files/downloading-source-code-archives).
 2. In File Explorer, right-click the ZIP and select **Extract All**.
