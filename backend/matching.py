@@ -10,6 +10,7 @@ pack, shade, and unit evidence.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import unicodedata
 from difflib import SequenceMatcher
@@ -24,6 +25,15 @@ AUTO_FUZZY_THRESHOLD = 96.0
 AUTO_FUZZY_MARGIN = 8.0
 SUGGEST_THRESHOLD = 70.0
 DEFAULT_CANDIDATE_LIMIT = 5
+# Above this many eligible rows a token prefilter narrows the fuzzy scan so an
+# unresolved-supplier fallback over a large full catalog stays bounded.
+PREFILTER_MIN_ROWS = 2000
+PREFILTER_POOL_SIZE = 250
+SUPPLIER_UNRESOLVED_WARNING = (
+    "Supplier unresolved: no catalog supplier could be matched to this invoice, so "
+    "candidates were drawn from the full catalog across all suppliers. Matches are "
+    "low-confidence suggestions only and require review."
+)
 
 _ABBREVIATIONS = {
     "btl": "bottle",
@@ -142,10 +152,31 @@ def match_lines(
     catalog: Sequence[Mapping[str, Any]],
     aliases: Sequence[Mapping[str, Any]] | Mapping[str, str] | None = None,
     supplier_id: str | None = None,
+    *,
+    unresolved_supplier_fallback: bool = True,
 ) -> list[dict[str, Any]]:
-    """Enrich lines with a conservative match decision and ranked candidates."""
+    """Enrich lines with a conservative match decision and ranked candidates.
 
-    prepared_catalog = _prepare_catalog(catalog, supplier_id)
+    With a resolved ``supplier_id`` only that supplier's rows and global rows
+    are eligible.  Without one, the catalog is NOT silently narrowed to global
+    rows: when ``unresolved_supplier_fallback`` is enabled every supplier's rows
+    stay eligible, every line carries an explicit "supplier unresolved" warning
+    and no line can reach ``auto`` (at best ``suggested``).
+    """
+
+    fallback_active = bool(
+        unresolved_supplier_fallback
+        and _supplier_key(supplier_id) is None
+        and supplier_scoping_needed(catalog)
+    )
+    prepared_catalog = _prepare_catalog(
+        catalog, supplier_id, include_all_suppliers=fallback_active
+    )
+    candidate_index = (
+        _CandidateIndex(prepared_catalog)
+        if len(prepared_catalog) > PREFILTER_MIN_ROWS
+        else None
+    )
     catalog_by_key = {str(item["_catalog_key"]): item for item in prepared_catalog}
     catalog_by_rms: dict[str, list[dict[str, Any]]] = {}
     for item in prepared_catalog:
@@ -165,6 +196,9 @@ def match_lines(
         if "confidence" in line and "extraction_confidence" not in line:
             line["extraction_confidence"] = line["confidence"]
         line["match_warnings"] = list(line.get("match_warnings") or [])
+        if fallback_active:
+            line["match_warnings"].append(SUPPLIER_UNRESOLVED_WARNING)
+            line["match_reason"] = "supplier_unresolved_full_catalog_fallback"
         supplied_catalog_key = line.get("catalog_item_id")
         supplied_id = line.get("rms_item_id")
         selected = None
@@ -227,7 +261,7 @@ def match_lines(
             output.append(line)
             continue
 
-        ranked = _rank_candidates(line, prepared_catalog)
+        ranked = _rank_candidates(line, prepared_catalog, index=candidate_index)
         upc_candidate: dict[str, Any] | None = None
         if upc_state == "matched" and upc_item is not None:
             upc_candidate = next(
@@ -265,6 +299,12 @@ def match_lines(
                 "Exact supplier-scoped UPC and saved alias resolve to different catalog rows; manual review is required."
             )
         ranked.sort(key=lambda item: (-item["score"], str(item["rms_item_id"])))
+        if fallback_active:
+            for candidate in ranked[:DEFAULT_CANDIDATE_LIMIT]:
+                candidate["reason"] = (
+                    f"Supplier unresolved; full-catalog fallback row from supplier "
+                    f"'{candidate.get('supplier_id') or 'global'}'; " + candidate["reason"]
+                )
         public_candidates = [_public_candidate(candidate) for candidate in ranked[:DEFAULT_CANDIDATE_LIMIT]]
 
         selected: dict[str, Any] | None = None
@@ -304,6 +344,13 @@ def match_lines(
                 elif top["score"] >= SUGGEST_THRESHOLD and top["_compatible"]:
                     status = "suggested"
 
+        if fallback_active and status == "auto":
+            # A full-catalog fallback cannot select a row automatically:
+            # description-only matches across suppliers collide.
+            selected = None
+            status = "suggested"
+            confidence = ranked[0]["score"] if ranked else 0.0
+
         line.update(
             {
                 "catalog_item_id": selected.get("catalog_item_id") if selected else None,
@@ -341,11 +388,67 @@ def enrich_invoice(
         aliases,
         effective_supplier,
     )
+    warnings = list(invoice.get("warnings") or [])
+    if _supplier_key(effective_supplier) is None and supplier_scoping_needed(catalog):
+        enriched["supplier_resolution"] = "unresolved"
+        enriched["match_reason"] = "supplier_unresolved_full_catalog_fallback"
+        if SUPPLIER_UNRESOLVED_WARNING not in warnings:
+            warnings.append(SUPPLIER_UNRESOLVED_WARNING)
+    else:
+        enriched["supplier_resolution"] = "resolved" if effective_supplier else "not_required"
+    enriched["warnings"] = warnings
     return enriched
 
 
+def supplier_scoping_needed(catalog: Sequence[Mapping[str, Any]]) -> bool:
+    """True when the catalog holds supplier-specific rows (scoping matters)."""
+
+    return any(_supplier_key(item.get("supplier_id")) for item in catalog)
+
+
+class _CandidateIndex:
+    """Token prefilter so a large (full-master) scan stays bounded per line.
+
+    Rows sharing rare normalized tokens with the line are scored by inverse
+    document frequency; the top pool plus every exact normalized match is then
+    ranked by the regular similarity scoring.  Deterministic and dependency-free.
+    """
+
+    def __init__(self, catalog: Sequence[Mapping[str, Any]], pool_size: int = PREFILTER_POOL_SIZE) -> None:
+        self.catalog = catalog
+        self.pool_size = pool_size
+        self.by_normalized: dict[str, list[int]] = {}
+        self.postings: dict[str, list[int]] = {}
+        for position, item in enumerate(catalog):
+            normalized = item["_normalized"]
+            self.by_normalized.setdefault(normalized, []).append(position)
+            for token in set(normalized.split()):
+                self.postings.setdefault(token, []).append(position)
+        total = max(1, len(catalog))
+        self.common_limit = max(50, total // 5)
+        self.weights = {
+            token: math.log(total / len(rows)) for token, rows in self.postings.items()
+        }
+
+    def pool(self, normalized: str) -> list[Mapping[str, Any]]:
+        scores: dict[int, float] = {}
+        for token in set(normalized.split()):
+            rows = self.postings.get(token)
+            if not rows or len(rows) > self.common_limit:
+                continue
+            weight = self.weights[token]
+            for position in rows:
+                scores[position] = scores.get(position, 0.0) + weight
+        chosen = set(sorted(scores, key=lambda position: (-scores[position], position))[: self.pool_size])
+        chosen.update(self.by_normalized.get(normalized, ()))
+        return [self.catalog[position] for position in sorted(chosen)]
+
+
 def _prepare_catalog(
-    catalog: Sequence[Mapping[str, Any]], supplier_id: str | None
+    catalog: Sequence[Mapping[str, Any]],
+    supplier_id: str | None,
+    *,
+    include_all_suppliers: bool = False,
 ) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -364,8 +467,10 @@ def _prepare_catalog(
         seen.add(item_key)
         item_supplier = _supplier_key(source.get("supplier_id"))
         # Supplier-specific catalog rows cannot leak across suppliers.  Global
-        # rows (supplier_id absent) remain eligible for every supplier.
-        if item_supplier and item_supplier != wanted_supplier:
+        # rows (supplier_id absent) remain eligible for every supplier.  With an
+        # unresolved supplier the caller opts into the explicit full-catalog
+        # fallback instead of silently narrowing to global rows.
+        if item_supplier and item_supplier != wanted_supplier and not include_all_suppliers:
             continue
         prepared.append(
             {
@@ -469,13 +574,16 @@ def _find_alias(
 
 
 def _rank_candidates(
-    line: Mapping[str, Any], catalog: Sequence[Mapping[str, Any]]
+    line: Mapping[str, Any],
+    catalog: Sequence[Mapping[str, Any]],
+    index: _CandidateIndex | None = None,
 ) -> list[dict[str, Any]]:
     description = str(line.get("description") or "").strip()
     normalized = normalize_description(description)
     line_attributes = _attributes(description, line.get("uom"))
     candidates: list[dict[str, Any]] = []
-    for item in catalog:
+    pool = index.pool(normalized) if index is not None else catalog
+    for item in pool:
         compatibility = _compatibility(line_attributes, item["_attributes"])
         exact = normalized == item["_normalized"]
         score = 100.0 if exact else _similarity(normalized, item["_normalized"])
@@ -501,6 +609,7 @@ def _rank_candidates(
                 "unit_cost": item.get("unit_cost"),
                 "master_po_number": item.get("master_po_number"),
                 "description": item["description"],
+                "supplier_id": item.get("supplier_id"),
                 "score": round(max(0.0, min(100.0, score)), 1),
                 "reason": "; ".join(reason_parts),
                 "_compatible": not compatibility["conflicts"],
