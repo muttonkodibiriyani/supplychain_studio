@@ -858,6 +858,138 @@ the system does for an operator: no document in the corpus reaches an export wit
 and the number that do reach it after an operator has confirmed every suggested line is unchanged.
 The verdict in this record stands.
 
+## Post-freeze findings, second round: why the numbers in this record were unreliable, and the constraint that actually holds Metric 1 at zero
+
+Three findings below are about the code. The first is about this record itself, and it
+should be read first, because it is the reason the other two took as long as they did.
+
+### This program has no continuous integration, and that is a root cause rather than a missing nicety
+
+There is no `.github/workflows` directory on `main`. A pull request merged during this
+round with an entirely empty status-check rollup: there was no gate that could have been
+red. Every test figure this record has ever quoted is therefore whatever a human chose
+to run locally, on whichever tree they happened to have.
+
+That is the structural explanation for a specific failure of this record, not a general
+complaint. Two test figures taken by two reviewers disagreed for hours with nothing
+noticing, because nothing was positioned to notice. A failing test can sit on `main`
+unremarked for the same reason, and one does: the end-to-end text-extraction and
+matching flow test fails on `main`, before and after the supplier-resolution fix, because
+the frozen extraction line parser reads a pack size of `250ml` as a quantity of 250 with
+unit `ML`. It has a follow-up of its own. The point for this record is that its redness
+was discovered by a reviewer reading output, not by the project.
+
+Consequence for how this record should be read: every measurement in it needs its commit
+and its corpus stated in the same sentence as the number. Where earlier sections state a
+figure without them, treat the figure as unverified rather than as wrong.
+
+### A measurement was attributed to the wrong commit, and the correction is the general rule
+
+A root cause for the zero auto-match rate was diagnosed, stated, and withdrawn within the
+same evening. The mechanism described was real on the tree it was measured on. It was
+already fixed on the branch waiting to merge. The figures were all correct; the frame was
+stale.
+
+No measurement in this record now stands without its commit and its corpus. This is not
+a courtesy to future readers. A number that is arithmetically right and frame-less can
+describe software nobody is running, and it reads exactly like a current finding.
+
+A second instance of the same class, recorded because it recurred three times in one
+session between two independent reviewers: a count that is true of an entire supplied
+table was carried into a question about one narrow slice of it. In each case the count was
+right and the population was wrong. Any table-wide count used to answer a scoped question
+is now re-taken inside the scope before it is quoted.
+
+### The privacy control cannot see the thing it is supposed to protect
+
+The handoff package selects documentation files, runs a secret scan over them, zips them,
+and base64-encodes the zip into a JSON asset that the preview build requires. The secret
+scan's pattern list covers private keys, hosting tokens, and cloud access key ids. It does
+not cover capabilities or identifiers — a document share link, an account id, an absolute
+path under a home directory — and it does not cover the commercial figures this record is
+already careful to exclude.
+
+The failure is not the missing patterns. It is that every privacy check performed in this
+program greps the source tree, and the artifact is base64. A tree grep returns clean
+whether or not the artifact is clean, so the check cannot distinguish a safe artifact from
+an unsafe one. That is the same shape as the other defects found this round: a control
+that returns a benign, normal-looking value instead of doing its job.
+
+Verified rather than reasoned about: every package ever published was decoded and searched.
+The published one — 52 files, zip `sha256 9b4cc2e7…` — contains no share link, no account
+id and no supplied-table figure. A later, never-published local build does contain one
+such figure. So this is a near-miss, and it stays one only until the next build. The
+guard belongs in the packaging script's pattern list, where it becomes a build failure
+rather than a convention, and the check itself has to run against the decoded package.
+
+### The constraint that holds Metric 1 at zero is three gates that compound
+
+With supplier resolution fixed, most real invoices now resolve a supplier and the binding
+constraint moved. Three gates in the matcher now hold the automatic match rate at zero,
+and each one alone accounts for almost none of it:
+
+1. A score cap applied whenever any attribute is unknown sits below the threshold an
+   automatic match must clear. A capped line can never clear the bar.
+2. The unknown-attribute gate consults no score at all, and it was true of every single
+   top candidate across the real corpus. The fuzzy automatic path is therefore unreachable
+   on 100% of that corpus, and no threshold change reaches it.
+3. The margin rule requires a gap to the runner-up. Of 333 lines from resolved-supplier
+   invoices, 139 have a top-two tie on score, and 133 of those ties are between two rows
+   that carry the *same* item id. The export consumes the item id. The matcher is refusing
+   to match automatically because it found the right item twice.
+
+Gates 1 and 2 both key on an attribute whose column holds a single value on every row of
+the supplied table. A predicate keyed on a constant is an off switch, not a rule: it fires
+on every line that does not state that attribute, and most suppliers in this corpus do not
+print it.
+
+**Measured, and it is the important number here: removing the cap alone, with nothing else
+varied, changes zero line statuses.** Deduplicating candidates by item id before the margin
+is computed makes up to 102 of those 333 lines margin-eligible. Any partial fix in this
+area will move scores without moving Metric 1, and will therefore look like the fix did
+not work.
+
+Two bounds on that uplift, stated because the figure invites over-reading. Every invoice
+that resolves a supplier in this corpus resolves the *same* supplier, so 102 of 333 is one
+supplier's behaviour and not a property of the software; it is re-checked the first time a
+second supplier resolves. And the deduplication cannot be unconditional — with the supplier
+unresolved the candidate set spans suppliers, the duplicate groups disagree on cost, and
+collapsing them would put an arbitrary cost in front of an operator on the money path. It
+is conditioned on a resolved supplier, or on cost agreement within the group.
+
+Recorded as retracted so it is not re-raised: it was proposed that the cap manufactures the
+ties the margin rule reads. The mechanism is genuine — the cap is not order-preserving and
+no uncapped score is retained — but the predicted effect was measured twice, independently,
+and is nil. What survives is smaller: because candidates are ranked on the capped score with
+the item id as tie-break, lifting the cap changes which candidate is *selected* on a small
+but non-zero fraction of lines, so an operator can be shown a row that is not the system's
+own best guess, with nothing in the display to say so.
+
+### Throughput is not limited by the number of extraction workers
+
+Two runs of 1,000 uploads, identical in every respect except worker count — 4 against 8,
+same image, same 129 distinct source documents repeated, all text-layer — finished 0.6%
+apart in wall time (1,141.1 s against 1,134.5 s). Container CPU was 0.95 and 0.96 cores in
+the two runs; the load guard passed in both. Per-document text parsing got *slower* as
+workers doubled, from a median of 1.37 s to 2.42 s and a mean of 4.31 s to 7.91 s.
+
+The pre-registered verdict rule returns **not worker-bound**. Doubling the pool bought
+nothing because the pool was never the constraint.
+
+The leading explanation is that the text-parsing stage is pure Python and holds the
+interpreter lock, so any number of threads shares roughly one core. A named confound
+remains — the host carried more runnable threads than it had cores available to this work
+during both runs — and it is not yet settled. The discriminating experiment is processes
+against threads at equal total worker count, pre-registered with its bands and with the
+rule that a saturated host can only *confirm* the lock reading and never refute it, since
+saturation removes the cores the process arm would need. Until that returns, the
+explanation is a hypothesis and is recorded as one.
+
+The practical consequence stands regardless of which explanation wins: no worker count
+reaches 1,000 text-layer invoices inside the target window on the current code, so the
+target is not a tuning question. Scanned invoices are a separate class and are not affected
+by this finding — that path releases the lock in native code and does scale with workers.
+
 ## Proposed next steps, in dependency order
 
 > **Historical — retained as the plan of record, not as outstanding work.** Most of this list was
