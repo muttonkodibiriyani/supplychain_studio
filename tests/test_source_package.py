@@ -45,3 +45,142 @@ def test_secret_value_never_appears_in_validation_error(tmp_path, monkeypatch):
         package_source.validate_source([source])
     assert secret not in str(error.value)
     assert 'example.py' in str(error.value)
+
+
+# --- documentation allowlist -------------------------------------------------
+
+SHIPPED_DOCS = ['MAC_SETUP.md', 'WINDOWS_SETUP.md', 'OPERATOR_TRAINING.md',
+                'DELIVERY.md', 'OPEN_SOURCE.md', 'EXTRACTION.md']
+MEASUREMENT_DOCS = ['IMPLEMENTATION_ACCEPTANCE.md', 'REAL_CORPUS_EVALUATION.md',
+                    'VOLUME_RESULTS.md', 'RELEASE_VALIDATION.md', 'VERIFICATION.md']
+
+
+def _minimal_root(tmp_path):
+    """A tree with every file main() requires, plus every docs/ name the repo has."""
+    root = tmp_path / 'source'
+    for name in package_source.FILES:
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text('# synthetic\n')
+    for name in ['public/favicon.svg', 'public/THIRD_PARTY_NOTICES.txt', 'backend/app.py',
+                 'backend/extraction.py', 'src/App.tsx', 'public/templates/invoice.csv',
+                 'public/templates/rms-item-master.csv']:
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text('synthetic\n')
+    for name in SHIPPED_DOCS + MEASUREMENT_DOCS + ['UNLISTED_NEW_DOC.md']:
+        (root / 'docs').mkdir(exist_ok=True)
+        (root / 'docs' / name).write_text(f'# {name}\n')
+    return root
+
+
+def _point_packager_at(monkeypatch, root):
+    monkeypatch.setattr(package_source, 'ROOT', root)
+    monkeypatch.setattr(package_source, 'OUTPUT', root / 'public/invoice-studio-source.zip')
+    monkeypatch.setattr(package_source, 'PACKAGE_JSON', root / 'public/source-package.json')
+
+
+def test_docs_are_an_explicit_allowlist_not_a_directory_walk(tmp_path, monkeypatch):
+    root = _minimal_root(tmp_path)
+    _point_packager_at(monkeypatch, root)
+    selected = {p.relative_to(root).as_posix() for p in package_source.selected_files()}
+    assert {f'docs/{n}' for n in SHIPPED_DOCS} <= selected
+    assert not {f'docs/{n}' for n in MEASUREMENT_DOCS} & selected
+    assert 'docs/UNLISTED_NEW_DOC.md' not in selected
+    assert 'docs' not in package_source.DIRECTORIES
+
+
+# --- identifier / capability class -------------------------------------------
+
+# Samples are assembled at runtime so this file itself carries none of the forms:
+# tests/ is shipped in the package and the guard reads it too.
+G = 'goo' + 'gle.com'
+IDENTIFIER_SAMPLES = [
+    'https://docs.' + G + '/spreadsheets/d/abc/edit',
+    'https://drive.' + G + '/file/d/abc/view',
+    'https://example.com/report?usp=' + 'sharing',
+    'https://example.com/x?id=1&ou' + 'id=123456789',
+    'https://example.com/x?user' + 'Id=42',
+    'wrote results to /ho' + 'me/alice/project/out.json',
+    'wrote results to /Us' + 'ers/alice/project/out.json',
+    'saved to C:' + '\\Users' + '\\alice' + '\\Documents' + '\\out.json',
+]
+
+
+@pytest.mark.parametrize('sample', IDENTIFIER_SAMPLES)
+def test_identifier_and_capability_forms_are_rejected_without_printing_them(tmp_path, monkeypatch, sample):
+    monkeypatch.setattr(package_source, 'ROOT', tmp_path)
+    source = tmp_path / 'notes.md'
+    source.write_text('see ' + sample + '\n')
+    with pytest.raises(SystemExit) as error:
+        package_source.validate_source([source])
+    assert 'notes.md' in str(error.value)
+    assert sample not in str(error.value)
+
+
+PLACEHOLDER_SAMPLES = [
+    'move it under your account, for example C:' + '\\Users' + '\\your-name' + '\\InvoiceStudio',
+    'for example /Us' + 'ers/your-name/InvoiceStudio or /ho' + 'me/<user>/InvoiceStudio',
+    'the container path /app/data/invoices.db',
+    'https://github.com/example/invoice-studio',
+]
+
+
+@pytest.mark.parametrize('sample', PLACEHOLDER_SAMPLES)
+def test_documented_placeholders_and_container_paths_pass(tmp_path, monkeypatch, sample):
+    monkeypatch.setattr(package_source, 'ROOT', tmp_path)
+    source = tmp_path / 'notes.md'
+    source.write_text(sample + '\n')
+    package_source.validate_source([source])
+
+
+# --- the check that reads the DECODED package, not the tree -------------------
+
+def _decoded_entries(package_json):
+    import base64
+    import hashlib
+    import io
+    import json
+    from zipfile import ZipFile
+    payload = json.loads(package_json.read_text())
+    data = base64.b64decode(payload['base64'])
+    assert hashlib.sha256(data).hexdigest() == payload['sha256']
+    with ZipFile(io.BytesIO(data)) as archive:
+        return {info.filename: archive.read(info.filename) for info in archive.infolist()}
+
+
+def test_decoded_package_excludes_measurement_docs_and_every_private_pattern(tmp_path, monkeypatch, capsys):
+    root = _minimal_root(tmp_path)
+    # A measurement document that would fail every pattern sits in the tree on purpose:
+    # the allowlist must keep it out of the archive, and the build must still succeed.
+    (root / 'docs/VOLUME_RESULTS.md').write_text(
+        'source: https://docs.' + G + '/spreadsheets/d/abc/edit?usp=' + 'sharing&ou' + 'id=1\n')
+    _point_packager_at(monkeypatch, root)
+    package_source.main()
+    entries = _decoded_entries(root / 'public/source-package.json')
+    names = set(entries)
+    assert {f'invoice-studio/docs/{n}' for n in SHIPPED_DOCS} <= names
+    assert not {f'invoice-studio/docs/{n}' for n in MEASUREMENT_DOCS} & names
+    assert 'invoice-studio/docs/UNLISTED_NEW_DOC.md' not in names
+    selected = {'invoice-studio/' + p.relative_to(root).as_posix() for p in package_source.selected_files()}
+    assert names <= selected
+    for name, content in entries.items():
+        text = content.decode('utf-8', errors='replace')
+        for pattern in package_source.PRIVATE_CONTENT_PATTERNS:
+            assert not pattern.search(text), f'{pattern.pattern!r} matched inside {name}'
+
+
+def test_decoded_package_built_from_this_repository_is_clean(tmp_path, monkeypatch):
+    """Build the real package into a temp location, decode it, and grep the result.
+
+    A tree grep cannot see inside base64; this is the form of the privacy check that
+    cannot be fooled by the encoding step.
+    """
+    monkeypatch.setattr(package_source, 'OUTPUT', tmp_path / 'invoice-studio-source.zip')
+    monkeypatch.setattr(package_source, 'PACKAGE_JSON', tmp_path / 'source-package.json')
+    package_source.main()
+    entries = _decoded_entries(tmp_path / 'source-package.json')
+    docs = sorted(n for n in entries if n.startswith('invoice-studio/docs/'))
+    assert docs == sorted(f'invoice-studio/docs/{n}' for n in SHIPPED_DOCS)
+    for name, content in entries.items():
+        text = content.decode('utf-8', errors='replace')
+        for pattern in package_source.PRIVATE_CONTENT_PATTERNS:
+            assert not pattern.search(text), f'{pattern.pattern!r} matched inside {name}'
