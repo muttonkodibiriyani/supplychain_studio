@@ -1100,7 +1100,14 @@ class InvoiceService:
                 max_file_bytes=self.settings.max_file_bytes,
                 max_pages=self.settings.max_pages,
             )
-            extracted = extraction.extract_document(source_path, filename, limits=limits)
+            extracted = dict(
+                extraction.extract_document(source_path, filename, limits=limits)
+            )
+            # A plain printed rate with no gross/tax-inclusive indication is
+            # the net unit cost the target workbook needs.
+            extracted["lines"] = extraction.resolve_net_unit_prices(
+                extracted.get("lines") or []
+            )
             supplier_id = original_supplier_id or extracted.get("supplier_id")
             supplier_name = original_supplier_name or extracted.get("supplier_name")
             with self.db.connection() as conn:
