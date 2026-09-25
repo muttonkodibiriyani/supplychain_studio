@@ -10,7 +10,7 @@ The downloadable application supports brand-specific master import, invoice capt
 - The Python suite ran inside that image against the clean snapshot: **84 passed, 1 skipped in 33.21 seconds**. The skipped test requires private master data; native OCR tests ran. One upstream Starlette deprecation warning remains.
 - Browser workflows passed **3 of 3 in 7.4 seconds**, including the live brand setup, master import, invoice upload, exception download, manual approval and XLSX download, plus sample and mobile workflows.
 - The downloaded live XLSX passed the exact three-sheet contract checker.
-- A separate private acceptance imported **114,940 master rows with zero skips or warnings**, plus **5 reviewed aliases**. Public tests cover a sparse 185-column workbook and 100,005-row catalog without private inputs.
+- A separate private acceptance imported the supplied master with zero skips or warnings and validated reviewed aliases. Public tests cover a sparse 185-column workbook and 100,005-row catalog without private inputs.
 - Two original reference PDFs produced 20 lines with quantities and invoice net costs matching reviewed references. Twelve item mappings resolved automatically; eight replayed previously reviewed decisions. The assisted consolidated output contains 2 Header, 2 Tax_Breakdown and 20 Details rows.
 - UPC export defaults to blank. A false/true/false policy check changed exactly the 20 UPC cells, preserved the other workbook values, and restored the original bytes after disabling it again. Enabled UPC values are Excel text.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Black-box volume and native-OCR verifier for Invoice Studio.
+"""Black-box volume, native-OCR, and PO/location-master verifier.
 
 The verifier talks only to the HTTP API.  It creates deterministic, distinct
 text-layer PDFs for the volume run and runtime-random raster invoices for the
@@ -8,6 +8,8 @@ so finding them in invoice detail is evidence that raster extraction ran.
 
 Use a fresh service data directory.  Pass --restart-command to make the script
 restart the service/container and prove that IDs and OCR evidence persist.
+Pass --po-location-master-only with --po-location-master to inspect an RMS PO
+extract without starting the HTTP service.
 """
 
 from __future__ import annotations
@@ -26,7 +28,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections import Counter
+import zipfile
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,7 +53,7 @@ TERMINAL_STATUSES = PASS_STATUSES | {"failed"}
 HTTP_ACCEPTED = {200, 201, 202}
 HTTP_BACKPRESSURE = {429, 503}
 HTTP_INVALID = {400, 409, 413, 415, 422}
-VERSION = 2
+VERSION = 3
 
 
 class VerificationError(RuntimeError):
@@ -1063,6 +1066,191 @@ def run_restart_check(
     }
 
 
+def _master_identifier(value: Any) -> str | None:
+    """Preserve identifier text while avoiding Excel's integer-as-float spelling."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    rendered = str(value).strip()
+    return rendered or None
+
+
+def _master_header(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]+", "_", str(value or "").strip().upper()).strip("_")
+
+
+def _path_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def check_po_location_master(path_value: str) -> dict[str, Any]:
+    """Validate an XLSX RMS/PO/location extract without modifying it.
+
+    RMS_ORDER_NO is the canonical key. EXT_ORDER_NO is profiled separately
+    because supplier-facing order numbers may be reused across RMS orders and
+    locations; ambiguous values must go to review rather than being guessed.
+    """
+    started = time.monotonic()
+    path = Path(path_value).expanduser().resolve()
+    ensure(path.is_file(), f"PO/location master does not exist: {path}")
+    ensure(path.suffix.casefold() == ".xlsx", "PO/location master must be an XLSX file")
+    ensure(path.stat().st_size <= 500 * 1024 * 1024, "PO/location master exceeds 500 MiB")
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+            ensure(len(members) <= 10_000, "PO/location master has too many archive members")
+            expanded = sum(member.file_size for member in members)
+            ensure(expanded <= 2 * 1024 * 1024 * 1024, "PO/location master expands beyond 2 GiB")
+            ensure(
+                all(
+                    member.file_size == 0
+                    or member.file_size / max(1, member.compress_size) <= 500
+                    for member in members
+                ),
+                "PO/location master contains an unsafe compression ratio",
+            )
+    except zipfile.BadZipFile as exc:
+        raise VerificationError("PO/location master is not a valid XLSX archive") from exc
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:  # pragma: no cover - depends on verifier host
+        raise VerificationError("PO/location master checking requires openpyxl") from exc
+
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    try:
+        candidates: list[tuple[int, Any, int, tuple[Any, ...], dict[str, int]]] = []
+        for sheet in workbook.worksheets:
+            for header_row, values in enumerate(
+                sheet.iter_rows(min_row=1, max_row=min(sheet.max_row, 20), values_only=True),
+                start=1,
+            ):
+                headers = {_master_header(value): index for index, value in enumerate(values)}
+                if {"RMS_ORDER_NO", "LOCATION"} <= headers.keys():
+                    candidates.append((sheet.max_row, sheet, header_row, values, headers))
+                    break
+        ensure(candidates, "no sheet contains RMS_ORDER_NO and LOCATION headers")
+        _, sheet, header_row, header_values, headers = max(candidates, key=lambda item: item[0])
+
+        rms_locations: defaultdict[str, set[str]] = defaultdict(set)
+        external_locations: defaultdict[str, set[str]] = defaultdict(set)
+        data_rows = 0
+        missing_rms = 0
+        missing_location = 0
+        missing_external = 0
+        rms_index = headers["RMS_ORDER_NO"]
+        location_index = headers["LOCATION"]
+        external_index = headers.get("EXT_ORDER_NO")
+        relevant_indexes = [rms_index, location_index]
+        if external_index is not None:
+            relevant_indexes.append(external_index)
+        max_column = max(relevant_indexes) + 1
+
+        for values in sheet.iter_rows(
+            min_row=header_row + 1,
+            max_col=max_column,
+            values_only=True,
+        ):
+            rms = _master_identifier(values[rms_index])
+            location = _master_identifier(values[location_index])
+            external = (
+                _master_identifier(values[external_index])
+                if external_index is not None
+                else None
+            )
+            if not any((rms, location, external)):
+                continue
+            data_rows += 1
+            if rms is None:
+                missing_rms += 1
+            if location is None:
+                missing_location += 1
+            if external_index is not None and external is None:
+                missing_external += 1
+            if rms is not None and location is not None:
+                rms_locations[rms].add(location)
+            if external is not None and location is not None:
+                external_locations[external].add(location)
+
+        rms_conflicts = {key: values for key, values in rms_locations.items() if len(values) > 1}
+        external_conflicts = {
+            key: values for key, values in external_locations.items() if len(values) > 1
+        }
+        shared_tokens = set(rms_locations) & set(external_locations)
+        namespace_conflicts = {
+            key
+            for key in shared_tokens
+            if len(rms_locations[key] | external_locations[key]) > 1
+        }
+
+        ensure(rms_locations, "PO/location master contains no usable RMS PO mappings")
+        ensure(not missing_location, f"PO/location master has {missing_location} rows without LOCATION")
+        ensure(
+            not rms_conflicts,
+            f"PO/location master maps {len(rms_conflicts)} RMS PO numbers to multiple locations",
+        )
+
+        warnings: list[str] = []
+        if missing_rms:
+            warnings.append(f"{missing_rms} data rows have no RMS_ORDER_NO and were excluded")
+        if missing_external:
+            warnings.append(f"{missing_external} data rows have no EXT_ORDER_NO")
+        if external_conflicts:
+            warnings.append(
+                f"{len(external_conflicts)} EXT_ORDER_NO values span multiple locations; ambiguous values require review"
+            )
+        if namespace_conflicts:
+            warnings.append(
+                f"{len(namespace_conflicts)} token is location-ambiguous across RMS_ORDER_NO and EXT_ORDER_NO namespaces"
+            )
+
+        return {
+            "tested": True,
+            "source_name": path.name,
+            "source_bytes": path.stat().st_size,
+            "source_sha256": _path_sha256(path),
+            "sheet": sheet.title,
+            "header_row": header_row,
+            "headers": [str(value or "") for value in header_values],
+            "data_rows": data_rows,
+            "unique_locations": sorted(
+                {location for values in rms_locations.values() for location in values}
+            ),
+            "unique_rms_order_numbers": len(rms_locations),
+            "rms_location_conflicts": len(rms_conflicts),
+            "rows_missing_rms_order_number": missing_rms,
+            "rows_missing_location": missing_location,
+            "unique_external_order_numbers": len(external_locations),
+            "external_order_location_conflicts": len(external_conflicts),
+            "external_orders_with_unique_location": sum(
+                len(values) == 1 for values in external_locations.values()
+            ),
+            "rows_missing_external_order_number": missing_external,
+            "tokens_present_in_both_order_namespaces": len(shared_tokens),
+            "cross_namespace_location_conflicts": len(namespace_conflicts),
+            "canonical_mapping": "RMS_ORDER_NO -> LOCATION",
+            "resolution_rule": (
+                "Use RMS_ORDER_NO as the canonical key. Use EXT_ORDER_NO only when it resolves "
+                "to exactly one location and is not location-ambiguous across namespaces; "
+                "otherwise require human review."
+            ),
+            "warnings": warnings,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+    finally:
+        workbook.close()
+
+
 def machine_info() -> dict[str, Any]:
     memory_kib = None
     try:
@@ -1365,6 +1553,15 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         action="store_true",
         help="Build and validate fixtures without making HTTP requests",
     )
+    parser.add_argument(
+        "--po-location-master",
+        help="Read-only XLSX master containing RMS_ORDER_NO and LOCATION",
+    )
+    parser.add_argument(
+        "--po-location-master-only",
+        action="store_true",
+        help="Validate --po-location-master without making HTTP requests",
+    )
     parser.add_argument("--result-json", help="Optional path for the machine-readable receipt")
     parser.add_argument(
         "--tested-container",
@@ -1384,6 +1581,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         parser.error("--crash-stop-command and --crash-start-command must be supplied together")
     if args.recovery_count < 3:
         parser.error("--recovery-count must be at least 3 to leave work queued behind two workers")
+    if args.po_location_master_only and not args.po_location_master:
+        parser.error("--po-location-master-only requires --po-location-master")
     return args
 
 
@@ -1413,13 +1612,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             "recovery_count": args.recovery_count,
             "tested_container": args.tested_container,
             "fixture_self_test": args.fixture_self_test,
+            "po_location_master_supplied": bool(args.po_location_master),
+            "po_location_master_only": args.po_location_master_only,
         },
         "checks": {},
         "failures": [],
     }
     exit_code = 0
     try:
-        if args.fixture_self_test:
+        if args.po_location_master:
+            receipt["checks"]["po_location_master"] = check_po_location_master(
+                args.po_location_master
+            )
+        if args.po_location_master_only:
+            pass
+        elif args.fixture_self_test:
             fixture_self_test(args, receipt)
         else:
             run_http(args, receipt)

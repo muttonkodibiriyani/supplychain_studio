@@ -187,6 +187,41 @@ def test_approval_rejects_inconsistent_line_arithmetic_even_when_headers_balance
     assert any(error["code"] == "line_calculation_mismatch" for error in mismatch.value.errors)
 
 
+def test_three_decimal_currency_reconciles_at_currency_precision(tmp_path: Path) -> None:
+    """KWD/BHD/OMR retain fils precision through approval gates."""
+    service = make_service(tmp_path)
+    service.seed_demo()
+    invoice = service.get_invoice("demo-invoice-001")
+    line = invoice["lines"][0]
+    line.update(
+        {
+            "quantity": "3",
+            "unit_price": "1.111",
+            "line_total": "3.333",
+            "target_unit_cost": "1.111",
+            "rms_item_id": "RMS-1001",
+            "match_status": "confirmed",
+        }
+    )
+    edited = service.update_invoice(
+        invoice["id"],
+        invoice["version"],
+        {
+            "currency": "KWD",
+            "subtotal": "3.333",
+            "tax_total": "0.000",
+            "total": "3.333",
+            "lines": [line],
+        },
+    )
+    approved = service.approve(
+        edited["id"], edited["version"], acknowledge_target_cost_variance=True
+    )
+    assert approved["status"] == "ready"
+    assert approved["currency"] == "KWD"
+    assert approved["target_total_ex_tax"] == pytest.approx(3.333)
+
+
 def test_restart_recovers_processing_job_and_records_audit(tmp_path: Path) -> None:
     settings = Settings(
         database_path=tmp_path / "invoices.sqlite3",

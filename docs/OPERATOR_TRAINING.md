@@ -111,7 +111,7 @@ The normal UI import path is:
    - an approved normalized CSV/XLSX whose displayed base contract includes `rms_item_id` and `description`, with `supplier_id`, `uom`, and `unit_cost` where available.
 3. Keep identifiers as text so leading zeroes survive. The native RMS path projects only the approved identity fields—parent item, UPC, description, supplier, UOM, and supplier unit cost—while retaining distinct supplier/item rows.
 4. Read the import result and every warning. Rows missing required identity fields or containing invalid cost values are not acceptable evidence.
-5. Compare the imported count with the controlled expected count. For the supplied full RMS reference, the expected projected count is **114,940 rows**. Another brand must have its own recorded expectation. Stop on an unexplained difference.
+5. Compare the imported count with the controlled expected count recorded for that brand and master version. Another brand must have its own recorded expectation. Stop on an unexplained difference.
 6. Search a controlled sample that covers item IDs, parent items, UPCs, descriptions, supplier scopes, units, and supplier costs, including leading-zero identifiers and duplicate item IDs across suppliers where applicable.
 7. Record the source master name, date/version, hash, import time, imported count, warning count, brand, operator, reviewer, and spot-check result outside the target workbook.
 

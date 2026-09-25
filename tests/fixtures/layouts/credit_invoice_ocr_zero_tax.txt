@@ -1,0 +1,13 @@
+Synthetic Carbon Company
+CREDIT INVOICE
+Inv.No: SYN-CARBON-01
+Date: 04-02-2026
+Currency: KWD
+P.O.No: SYN-PO-900
+
+Sr#  Code         Description                             Packing   Qty     Rate KWD      Gross KWD      Dis %   Disc Amt     Net KWD
+1    SYN-A        Synthetic serum                         Each      98      2.000         192.000        0       0.000        192.000
+2    SYN-B        Synthetic liner                         Each      Ti0     1.750         192.500        0       0.000        192.500
+3    SYN-C        Synthetic tint                          Each      140     1,800         252.000        0       0.000        252.600
+
+Total KWD 636.500

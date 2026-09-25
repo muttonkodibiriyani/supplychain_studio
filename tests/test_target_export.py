@@ -17,8 +17,8 @@ from backend.exporter import (
 from backend.service import Conflict, InvoiceService, Settings, ValidationFailure
 
 
-PRIVATE_MASTER = Path("data/reference/Item Master 09.21.xlsx")
-PRIVATE_ALIASES = Path("data/reference/confirmed_invoice_aliases.json")
+PRIVATE_MASTER = Path(os.getenv("PRIVATE_RMS_MASTER_PATH", ""))
+PRIVATE_ALIASES = Path(os.getenv("PRIVATE_ALIASES_PATH", ""))
 
 
 def make_service(tmp_path: Path) -> InvoiceService:
@@ -535,10 +535,11 @@ def test_catalog_row_guard_accepts_more_than_old_100k_limit(tmp_path: Path) -> N
     reason="explicit private acceptance run only",
 )
 def test_supplied_full_rms_master_and_confirmed_alias_import(tmp_path: Path) -> None:
+    expected_rows = int(os.environ["PRIVATE_RMS_EXPECTED_ROWS"])
     service = make_service(tmp_path)
     result = service.import_catalog(PRIVATE_MASTER.name, PRIVATE_MASTER.read_bytes())
-    assert result == {"imported": 114_940, "skipped": 0, "warnings": []}
-    assert service.stats()["catalog_items"] == 114_940
+    assert result == {"imported": expected_rows, "skipped": 0, "warnings": []}
+    assert service.stats()["catalog_items"] == expected_rows
     aliases = service.import_aliases(PRIVATE_ALIASES.name, PRIVATE_ALIASES.read_bytes())
     assert aliases == {"imported": 5, "skipped": 0, "warnings": []}
     assert service.list_aliases()["total"] == 5

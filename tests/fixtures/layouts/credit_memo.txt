@@ -1,0 +1,8 @@
+CREDIT MEMO
+Credit Memo No: SYN-CM-PLAIN-01
+Date: 25 September 2026
+
+Description                         Qty   UOM   Unit Price   Line Total
+Synthetic allowance                 1     EA    5.00         5.00
+
+Grand Total AED 5.00

@@ -24,6 +24,10 @@ this evidence, suitable for a supervised pilot on a controlled host with an oper
 document. It is not suitable for unattended bulk conversion, and nothing here should be quoted as an
 accuracy figure.
 
+**Read the post-freeze findings section before relying on this verdict.** Five gates discovered
+after the freeze sit between a scanned invoice and an accepted workbook; three are defects, and one
+materially undermines the reasoning behind A6.
+
 **The four limits that remain, stated plainly:**
 
 1. **Pricing is not commercially signed off.** Every `Details.Unit Cost` carries the invoice net unit
@@ -99,8 +103,8 @@ Transaction Number links all three tabs. No README, Audit or metadata tab; no ex
 blank artifact rows. Credit notes, RTVs, PODs and unresolved matches are excluded from the target
 and belong in a separate exception report.
 
-Unit cost and Order No follow `data/reference/target_conversion_rules.json`. Aliases are the five
-in `data/reference/confirmed_invoice_aliases.json` and only those.
+Unit cost and Order No follow the private conversion-rules file. Aliases are the five in the
+private confirmed-aliases file and only those.
 
 ## Criteria and verdicts
 
@@ -116,10 +120,10 @@ in `data/reference/confirmed_invoice_aliases.json` and only those.
 | A8 | Real invoice layouts yield product lines | **PARTIAL — exact on the reviewed reference sources; corpus now measured and materially improved** | This moves off FAIL. Baseline: of 124 embedded-text PDFs, 114 returned zero product lines, including 106 of 114 invoice candidates. Two real originals have now been parsed and checked field by field against independently reviewed workbooks, and matched exactly: the Factur-X source at 7 of 7 lines, and the discount-paired source at 13 products recovered from 26 source rows (13 paired adjustment rows correctly collapsed). Document number, date, PO, subtotal, tax total, every quantity and every net unit price matched, with line totals reconciling to the stated subtotal and an empty mismatch list. I verified this is a genuine parser-on-original run rather than a re-read of the reviewed targets: the receipt's two `source_path` values are byte-identical (SHA-256) to the original source PDFs whose provenance the corpus coordinator supplied to me separately, and its `extractor_sha256` equals the `backend/extraction.py` currently on disk, so the receipt describes live code and not a stale build. **Denominators are separate and must stay separate.** These two reviewed reference PDFs are not members of the 179-file drive collection, so this is 2 of 2 on the reference set and says nothing quantitative about the corpus. **Corpus now measured, 25 September, against a frozen extractor.** The tokenizer defect was corrected and the full run completed: 178 of 179 documents processed, 1 rejected with an explicit resource-limit error rather than a silent failure. 81 documents produced 1,007 candidate rows, and 690 of those rows carry every core field. Against a baseline where 114 of 124 embedded-text PDFs returned nothing at all, that is a large and real improvement, and it is measured rather than asserted — I verified the receipt's SHA-256 and confirmed its `extractor_sha256` matches the frozen extractor on disk. It is still not PASS, and the reason is quality rather than volume: only 13 documents covering 70 product lines pass the strict financial reconciliation gate. The dominant rejection reason is worth naming: `subtotal_unavailable` accounts for 151 of them. **Read that precisely.** It means the extractor did not capture or derive a subtotal for those documents. It does not mean the source documents fail to print one — no complete manual audit of the sources exists, so the split between source limitation and extractor limitation is unknown and I should not have implied otherwise in an earlier draft. Candidate rows are unreviewed parser output and neither these counts nor any ratio drawn from them is an accuracy score. A8 stays PARTIAL. |
 | A9 | Exceptions are separated from the target | **PASS — verified, and exhaustive by construction** | Both halves now hold. Exclusion was already enforced: any unresolved line or non-invoice document blocks the whole invoice. The missing half — an artefact the operator can work from — now exists as a read-only `GET /api/reports/exceptions.csv`, downloadable from the UI, with five columns and an explicit machine-readable reason per row. The design detail that makes this trustworthy is that the report is the **complement** of the export-eligible set (`eligible = status in {ready, exported} and not reasons`; everything else is reported) rather than an enumerated list of known exception types, so it cannot silently omit a category as new ones appear. Credit notes, RTVs and PODs reach it via the `not_invoice` code and unresolved matches via `unmapped`, both confirmed present in the validation path. CSV text is formula-injection safe — the guard strips nulls and checks for `=`, `+`, `-`, `@` *after* stripping leading whitespace and a BOM, so the obvious prefix bypass does not work. Output is UTF-8 with BOM so Excel opens it correctly. Critically, the target export is untouched: the same workbook re-checks CONFORMANT with exactly three sheets. Worth stating plainly for planning: while the corpus sits at zero strict reconciliations (A7), this report is where essentially every document lands, so it is the operator's primary workspace today rather than an edge case. |
 | A10 | Publication carries no private data | **PASS, conditional — re-verified 25 September against the tightened allowlist** | Re-simulated after the allowlist began admitting four named data fixtures: 65 files, 716,087 bytes, and the packager's own negative assertions (`task-context`, `/data/`, `/.runtime/`) match nothing. The four fixtures were checked for being *synthetic in fact*, not merely in name: no fixture supplier ID, item ID, invoice number or PO appears in the real item master or the confirmed-alias file. Three apparent hits on product wording were coincidental substring matches against generic cosmetics vocabulary, not fixture products. No assigned literal secret exists anywhere in the allowlist; every credential-pattern hit is the word "token" used for text processing or OCR. The earlier `git add -A` hazard is separately closed by a root-level `/*.json` ignore with explicit exceptions, which covers the event dumps and every receipt variant I had enumerated. That simulation was run against the allowlist as it then stood, while the tree was still changing. At freeze the code is fixed at the named image and root reports the final publication scan passing; I am recording that as root's result, not as a second independent run of my own. |
-| A11 | Windows from-zero install and operator training exist | **PASS** | Both documents are present and were checked independently: code fences balanced, no TODO or placeholder text, no stale RMS-preferred language, the fixed pricing rule stated explicitly in both, and the Compose configuration validates against the supplied example environment. Not walked through on a clean Windows host — none was available — so the installation claim itself stays unverified, and see A15 for a documented step that cannot currently succeed.  **Read-only consistency review completed 25 September; content is accurate, one omission keeps this PARTIAL.** I checked both documents against what I had independently verified and found the substantive claims correct: the UPC default is described as off, blank to match the reviewed examples, and enabled only after the receiving system confirms acceptance; the repository named is the one actually created; the expected master count of 114,940 rows matches the store I inspected; the stated import time of about four minutes matches the measured run and is explicitly not offered as a Windows guarantee; and the exception section describes the download, its whole-workspace scope and its snapshot nature exactly as the implementation behaves. The escalation table is consistent with the enforced gates, including the AED 10 acknowledgement and the rule that RMS cost never substitutes. Both documents avoid accuracy and machine-learning claims, and one states plainly that learned matching is reviewed mapping reuse rather than statistical learning. **The gap is that neither document says the Windows procedure itself has never been run.** No clean Windows host was available, so every check behind these instructions was performed on Linux. The install guide opens by stating it installs and runs the application, and its boundaries section lists many honest limits without listing this one, so a reader would reasonably assume the steps were executed as written. The single oblique hint is a timing caveat in the other document. I routed it to root as the owner's to fix. **It is fixed and I verified it.** Both documents now carry a prominent validation limit near the top stating that the Windows instructions were authored and reviewed but not executed end to end on a clean Windows computer, that the checks ran on Linux, and that the first installation should be treated as a pilot. That was the only thing standing between this criterion and a pass, so A11 passes. |
+| A11 | Windows from-zero install and operator training exist | **PASS** | Both documents are present and were checked independently: code fences balanced, no TODO or placeholder text, no stale RMS-preferred language, the fixed pricing rule stated explicitly in both, and the Compose configuration validates against the supplied example environment. Not walked through on a clean Windows host — none was available — so the installation claim itself stays unverified, and see A15 for a documented step that cannot currently succeed.  **Read-only consistency review completed 25 September; content is accurate, one omission keeps this PARTIAL.** I checked both documents against what I had independently verified and found the substantive claims correct: the UPC default is described as off, blank to match the reviewed examples, and enabled only after the receiving system confirms acceptance; the repository named is the one actually created; the expected master row count stated there matches the store I inspected; the stated import time of about four minutes matches the measured run and is explicitly not offered as a Windows guarantee; and the exception section describes the download, its whole-workspace scope and its snapshot nature exactly as the implementation behaves. The escalation table is consistent with the enforced gates, including the AED 10 acknowledgement and the rule that RMS cost never substitutes. Both documents avoid accuracy and machine-learning claims, and one states plainly that learned matching is reviewed mapping reuse rather than statistical learning. **The gap is that neither document says the Windows procedure itself has never been run.** No clean Windows host was available, so every check behind these instructions was performed on Linux. The install guide opens by stating it installs and runs the application, and its boundaries section lists many honest limits without listing this one, so a reader would reasonably assume the steps were executed as written. The single oblique hint is a timing caveat in the other document. I routed it to root as the owner's to fix. **It is fixed and I verified it.** Both documents now carry a prominent validation limit near the top stating that the Windows instructions were authored and reviewed but not executed end to end on a clean Windows computer, that the checks ran on Linux, and that the first installation should be treated as a pilot. That was the only thing standing between this criterion and a pass, so A11 passes. |
 | A13 | No private reference data is required at runtime or shipped in the release | **PASS — reconfirmed after handoff** | Restated after root's correction of 25 September. `data/reference/` is excluded from the published snapshot and no code path loads it; that exclusion is the desired state, not a gap. The superseded `target_conversion_rules.json` is retained as a *historical* artefact only, pending the outstanding user pricing clarification. Reconfirmed after handoff by building a clone-equivalent snapshot: 65 files, no `data/reference` content of any kind, and the full target-export suite passes inside it, so the shipped tree genuinely starts empty and needs no brand data to be correct. |
 | A14 | Identifiers are stored as text so leading zeros survive | **PASS for exporter output — now better than the reference files** | Every identifier column in the exporter's output is stored as text: `Document`, `Supplier Site`, `Order No`, `Location`, `Details.Item` and `Tax Code` all carry `str`, with no numeric cells. This is a genuine improvement over the known-good workbooks, which store some identifiers numerically and would already have lost any leading zero. The criterion stays open only in the sense that no corpus-scale output has been checked yet. |
-| A15 | The documented RMS master import actually works | **PASS — independently verified** | The guard failures I reported are fixed and the import is now confirmed by direct read-only inspection of the persisted store, not by receipt alone. Re-measured against current code, all five guards pass: 60,832,020 B compressed vs 128 MiB; 476,288,825 B expanded vs a raised 1 GiB; 179 columns vs a raised 256; 114,940 rows vs a raised 250,000; worst member ratio 7.9 vs 200. The persisted store carries `catalog_items` = 114,940 distinct rows with every key column populated, plus 5 aliases, in the application schema (`invoices`/`catalog_items`/`aliases`/`exports`) rather than the reference extract, timestamped during the reported run and naming the supplied master as its source. Remaining gap is durability, not capability: no regression exercises a wide many-row import, so the raised guards can silently regress. A synthetic generator for that test is available and needs no private data. |
+| A15 | The documented RMS master import actually works | **PASS — independently verified** | The guard failures I reported are fixed and the import is now confirmed by direct read-only inspection of the persisted store, not by receipt alone. Re-measured against current code, all five guards pass: compressed size vs 128 MiB; expanded size vs a raised 1 GiB; 179 columns vs a raised 256; the supplied row count vs a raised ceiling of 250,000; worst member ratio 7.9 vs 200. The persisted store carries `catalog_items` holding every supplied row as a distinct record with every key column populated, plus 5 aliases, in the application schema (`invoices`/`catalog_items`/`aliases`/`exports`) rather than the reference extract, timestamped during the reported run and naming the supplied master as its source. Remaining gap is durability, not capability: no regression exercises a wide many-row import, so the raised guards can silently regress. A synthetic generator for that test is available and needs no private data. |
 | A12 | The absence of authentication is a stated, enforced boundary | **PASS as a boundary — blocking only for shared deployment** | The delivered scope is a local single-operator pilot on loopback, which never claimed multi-user access control. The boundary is documented where an operator will actually meet it: `WINDOWS_SETUP.md` line 7 states the application has no login or user roles and must run on one access-controlled computer with one authorized operator, and must not be published to the office network or internet; line 146 makes confirming the `127.0.0.1` binding a stop-check; line 429 repeats it for the port-conflict path. Compose binds loopback. Baseline anonymous access findings stand and remain blocking for any shared, networked or multi-user deployment. |
 
 ## A6 in detail: provisional, on a conservative reading of an ambiguous instruction
@@ -318,14 +322,14 @@ the design already asks for. Owner: backend.
 
 The operator documentation presents the raw 179-column RMS master import as a supported release
 contract, raises the catalog file ceiling to 128 MiB to accommodate it, and tells the operator to
-expect 114,940 imported rows. The code rejects the supplied master three separate ways. All three
+expect the full supplied row count. The code rejects the supplied master three separate ways. All three
 were measured against the actual file, not inferred from the documentation.
 
 | Guard in `backend/service.py` | Limit | Supplied master | Result |
 |---|---|---|---|
-| Expanded archive size | 100 MB | **476,288,825 bytes — 4.5× the limit** | Rejected |
+| Expanded archive size | 100 MB | **4.5× the limit** | Rejected |
 | Header column count | 100 | 179 columns | Rejected |
-| Data row count | 100,000 | 114,940 rows | Rejected |
+| Data row count | 100,000 | above the limit | Rejected |
 
 The column guard fires first, at the header, before a single data row is read.
 
@@ -455,6 +459,190 @@ asking.
 > enabled only once the receiving system confirms it accepts populated UPCs. I verified both
 > positions and confirmed that toggling on and back off returns a byte-identical workbook.
 
+## Post-freeze findings: five gates between a scanned invoice and an accepted workbook
+
+**Added after the freeze, 25 September 2026.** These were found while investigating a single real
+three-decimal-currency invoice from a supplier whose master rows are not AED-denominated. They do not
+revise any verdict above — no criterion was re-run — but three of them are defects rather than
+limitations, and one materially undermines the reasoning behind **A6**. Recording them here is the
+honest alternative to leaving a frozen record that reads cleaner than the system behaves.
+
+The investigation asked one question: with a perfect extractor, would this document reach an accepted
+workbook? The answer is no, and extraction is only the first of five independent gates.
+
+**Gate 1 — document classification rejects a common invoice heading.** The classifier's invoice title
+and phrase rules admit a closed set of qualifiers. A heading widely used in Gulf trade to denote an
+invoice issued on credit terms is not among them, and the title pattern is anchored, so it matches
+nothing. The only rule that scores is the invoice-number field rule, which lands one point below the
+threshold that separates a classified document from `unknown`. Approval requires the type to be
+exactly `invoice`, so every document carrying that heading is unapprovable. It is invisible in the
+corpus figures because these documents fail as `unknown` rather than as extraction errors. Adding the
+qualifier to both rules was verified against a regression matrix: genuine credit notes and memos
+continue to classify as credit notes and do not match the widened invoice pattern, and no heading
+matches both. Routed to the extraction owner. *(Affects A8's denominator, not its method.)*
+
+**Gate 2 — the subtotal derivation has a zero-tax blind spot.** The dominant corpus rejection reason
+is an unavailable subtotal. The sole derivation path requires both a grand total and a tax total to be
+present, and derives the subtotal by subtraction. An invoice that prints no tax at all yields a tax
+total of `None` rather than zero, so the derivation is skipped and the document is rejected even when
+it carries a clean printed total and a complete line table. Non-VAT and zero-rated jurisdictions fail
+this systematically. Treating explicit absence of tax as a zero, under its own provenance value,
+restores the derivation while leaving the reconciliation check fully intact — the line extensions are
+still independently compared against the printed total. Deriving the subtotal from the line extensions
+instead would make that check circular and must not be accepted. Routed to the extraction owner.
+
+**Gate 2, resolved 25 September — the circularity I warned about above is now measured, and it is
+present on every document the gate currently passes.** The extraction owner added subtotal and tax
+provenance to the evaluator and replayed the corpus. I verified the replay artifact myself rather
+than accepting the summary: its recorded extractor hash is unchanged from the frozen extractor, so
+this run added measurement and changed no extraction behaviour; its completion invariant holds
+exactly (selected equals the document count equals completed plus failed, with no failures); and I
+recomputed every provenance class count from the per-document rows rather than reading the
+pre-aggregated totals. All recomputed counts reproduced the recorded ones exactly.
+
+The result. Of the documents that the corpus records as having reconciled their subtotal, all but one
+derive that subtotal as printed total minus a tax total that was itself summed from the line items.
+That is the circular case: the line extensions are being checked against a figure computed from the
+line extensions, so the check cannot fail and proves nothing. The single non-circular one derives its
+subtotal against a *printed* tax label, and it is not among the strict passes.
+
+**The sharper finding, which I derived and the summaries I received did not state.** I joined the
+strict-core pass set to the provenance classes by document identity. Every strict pass is circular,
+and no strict pass is anything else — the pass set and the circular reconciled set are the same set.
+There is therefore no document anywhere in the corpus that both clears the strict core gate and rests
+on an independently evidenced subtotal. The count of such documents is zero.
+
+**What this does and does not mean.** It does not mean those extractions are wrong. The reviewed
+carbon-copy comparison shows a document of this class matching its source exactly on every quantity,
+net cost and line total, with extensions reconciling independently. It means the *reconciliation
+check* is not evidence. Gate 2 has been self-satisfying on the entire strict pass set, and the strict
+count I have cited in every report as preserved by identity must from here be reported as preserved
+but circular. My C1 finding stands as a factual identity-preservation result and is not withdrawn;
+the significance I attached to it is reduced, and that reduction is mine to state, not root's.
+
+Two further points from the same artifact. The safe provenance class — explicit absence of tax
+recorded as zero under its own provenance value, which is the remedy I proposed above — occurs on no
+document in this corpus at all; it is currently exercised only by a private reviewed document. And a
+small number of documents carry line extensions with non-zero third decimals, which is a rounding
+exposure against a two-decimal target and is worth its own check before export.
+
+Criterion C5 was pre-registered as unverifiable for want of this evidence. It is now verifiable, and
+it **fails**. I pre-registered three readings before the artifact existed: a falling reconciled count
+would mean the gate had been over-crediting itself. The clean count fell from fourteen to one, and
+the clean-and-strict count fell to zero, so that is the reading that applies. Routed to the
+extraction owner; not a blocker on extraction correctness, and a blocker on any claim that the
+zero-tax subtotal gate has been satisfied.
+
+**Gate 3 — OCR runs at roughly half the usable resolution.** Scanned pages are rasterised at a fixed
+scale equivalent to about 144 DPI, against a documented working floor near 300 DPI for clean print;
+degraded dot-matrix and carbon-copy originals need more, not less. A guard intended to upscale small
+inputs is keyed to an absolute pixel width that a full page marginally exceeds, so for exactly the
+documents that need it the upscaler never fires. Grayscale conversion is the only preprocessing: no
+binarisation, no deskew. Page segmentation assumes a single uniform text block on documents that are a
+multi-column header above a line-item table. Raising the render scale multiplies pixel counts
+quadratically and will collide with the existing per-page and total-pixel ceilings, so the ceilings
+must be raised deliberately for the OCR path — otherwise a quality defect becomes an availability
+defect. Routed to the extraction owner.
+
+**Gate 4 — the supplier cannot be resolved from the document.** Supplier identity is required for
+approval and is supplied by the operator at upload; it is not extracted. The supplied master does not
+store supplier trading names, it stores coded identifiers, so searching it for the name printed on an
+invoice returns nothing. Nothing in the application bridges the two, and the gap repeats across every
+supplier in the master. The same physical goods also appear under more than one supplier record in
+different markets, so a mis-selection is both easy and consequential. The application already holds
+every barcode in the master and receives documents whose lines carry barcodes, so proposing the
+supplier from barcode evidence — and surfacing the ambiguity when candidates overlap — would convert
+an unanswerable lookup into a confirmation. That is new scope and a user decision, not a patch.
+
+**Gate 5 — the cost comparison assumes a single-currency master, and the master is multi-currency.**
+This is the most consequential finding and it reopens reasoning that had been filed as settled policy.
+The comparison is enabled on the basis of the *invoice's* currency alone, which is sound only if
+recorded costs are always denominated in one currency. In the supplied master they are not: supplier
+records carry a currency marker, several currencies are present, and roughly seventy per cent of rows
+are not AED-denominated. Identical items priced under suppliers of different currencies differ by an
+order of magnitude consistent with exchange rates rather than by any plausible margin, and aggregate
+cost magnitudes per currency agree with that reading. Two consequences follow, in opposite directions.
+The comparison is *refused* where it is valid — same-currency invoice and master rows are directly
+comparable, and against the correct supplier the observed relationship is a small constant ratio
+consistent with a stable commercial margin, exactly what the check exists to confirm — and each such
+line is instead forced to manual acknowledgement, permanently, across the majority of suppliers. That
+is not conservatism; it discards a working check and bills the operator for it, and the reviewer is
+asked to acknowledge the absence of evidence rather than to examine any. Conversely the comparison is
+*performed* where it is invalid: the currency of the master rows being compared against is never
+tested, so an AED invoice matched onto non-AED rows is compared against incommensurable figures, where
+a large real discrepancy can fall inside an absolute per-unit tolerance and be approved silently.
+Ambient exposure is small — only a negligible fraction of rows are unscoped by supplier — but operator
+mis-selection is the realistic path, and Gate 4 makes that likely. Gates 4 and 5 compound.
+
+The minimal correct fix requires no exchange rate and weakens nothing: record the currency of catalogue
+costs at import and require invoice and master currency to be equal before comparing. Inferring the
+currency from a naming convention is too fragile to ship. Pending the owning business confirming that
+supplier currency is authoritative, the existing gate must stay as it is and no claim of automatic
+same-currency comparison should be made.
+
+**A separate policy question, raised and not answered.** The tolerance is absolute and applied per
+unit. On low-value, high-volume goods a systematic proportional discrepancy stays well inside it while
+accumulating materially across a line's quantity. Whether the threshold should be relative, or applied
+to the line extension, is a commercial decision rather than a defect.
+
+**What these five do not change.** The three-tab contract, the exporter's conformance to it, identifier
+typing, and the all-or-nothing inclusion rule are unaffected; the reviewed invoice's own arithmetic was
+verified independently and is internally consistent, its units agree with the master, and its extensions
+reconcile to its printed total under both the shipped and the proposed rounding conventions. The gates
+sit between extraction and approval, not in the workbook construction that A1 to A4 accept.
+
+### Later evidence on Gates 4 and 5, from the catalogue itself
+
+Appended after the section above, and after read-only inspection of the supplied catalogue rather than
+of the code alone. No criterion was re-run and no verdict moves. Figures are deliberately omitted: the
+findings below are stated as mechanisms because the measurements behind them are commercial.
+
+**The currency question is no longer open.** The section above recorded that costs appear to be
+denominated per supplier, and held that inferring currency from a naming convention was too fragile to
+ship and that the owning business should confirm the reading before anything changed. The reading is
+now confirmed from the data, by evidence independent of the naming convention. A separate territory
+field carried on each row agrees with the convention, and for the smaller currencies agrees with it
+almost exactly, without having been used to derive it. More decisively, a large population of items is
+stocked under suppliers of two different currencies at once; across the genuinely priced members of
+that population the two costs stand in a ratio matching the exchange rate between those currencies,
+and only a negligible share stand near unity. A single-denomination catalogue would produce the
+opposite distribution. The conclusion is therefore established rather than inferred: catalogue costs
+are denominated in the supplier's own currency, and the comparison gate's single-currency assumption
+is wrong for this deployment.
+
+What does not change is the recommended fix. That the convention is *reliable* does not make it a
+sound thing to depend on: it remains a naming convention, and a supplier created tomorrow without the
+suffix would silently acquire a default denomination. Record the currency of catalogue costs at import
+and require invoice and master currency to be equal before comparing. The convention is now good
+evidence about what the data means; it is still not a good key to compute on.
+
+**A second defect, not previously recorded: placeholder costs are treated as prices.** A material
+minority of catalogue rows carry a token near-zero unit cost that is plainly a placeholder for "not
+priced" rather than a price. Nothing in the comparison distinguishes these from real costs. Two
+failure modes follow, and they mirror the pair already described for currency. A placeholder compared
+against a real invoice cost yields a variance equal to the whole invoice cost and trips the tolerance,
+so the operator is shown a cost alarm generated entirely by absent data; at volume this is the fastest
+route to the review step being dismissed by habit. Conversely, on a low-value line the placeholder
+falls *inside* an absolute per-unit tolerance and is reported as agreement, which records a cost
+confirmation where no cost was ever held. The second is the more serious, because it is silent.
+
+These two compound in a specific and unfortunate way. Placeholder costs are not evenly spread across
+currencies; they are concentrated in the one currency for which the comparison is enabled at all. The
+single path on which the check runs is therefore the path whose underlying data is least trustworthy,
+and the paths with the better cost data are the ones on which the check is refused.
+
+**Context for how this arose.** The catalogue's selling currency is uniform across every row, and it is
+not the currency the comparison is gated on. The gate was in all likelihood inherited from a different
+deployment rather than chosen for this one. That is not a criticism of the implementation so much as a
+reason to stop treating the single-currency assumption as a conservative default: in this deployment it
+disables the check for the home market and enables it where the data is weakest.
+
+**A question raised during the engagement, now closed.** It was asked whether the tax code required for
+approval might already be carried in the item master, which would remove it from the operator's setup
+burden. It is not. The catalogue schema was read in full, across both of its item tables, and contains
+no tax field under that or any other name. The per-supplier rule remains the only source, and the
+setup burden described for Gate 4 stands as stated.
+
 ## Proposed next steps, in dependency order
 
 > **Historical — retained as the plan of record, not as outstanding work.** Most of this list was
@@ -500,6 +688,7 @@ asking.
    Identity and roles become prerequisites the moment anyone proposes a shared host, a networked
    port or a second concurrent operator. *(Owner: backend/root, on that trigger.)*
 
-This record is frozen against the build named at the top and will not be revised further in this
-engagement. Nothing in it should be read as approval to describe the delivery as complete, or as an
+This record is frozen against the build named at the top. Its verdicts are not revised; the
+post-freeze findings section above was appended after the freeze and records defects discovered
+later, without re-running any criterion. Nothing in it should be read as approval to describe the delivery as complete, or as an
 accuracy claim about invoices beyond those actually examined.

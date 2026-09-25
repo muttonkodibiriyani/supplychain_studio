@@ -42,7 +42,37 @@ CATALOG_EXTENSIONS = {".csv", ".xlsx"}
 MATCH_STATUSES = {"unmatched", "suggested", "auto", "confirmed"}
 DOCUMENT_TYPES = {"invoice", "credit_note", "purchase_order", "delivery_note", "unknown"}
 COST_POLICY_MODES = {"invoice_only"}
-MONEY_CENT = Decimal("0.01")
+# ISO 4217 minor-unit exponents used by the money gates.  The previous
+# implementation rounded every currency to cents, which silently discarded
+# fils for KWD/BHD/OMR (and dinars with three minor units).  Keep the map
+# explicit and fail closed to the conventional two-decimal currency when a
+# code is unknown.
+CURRENCY_MINOR_UNITS = {
+    "BHD": 3,
+    "IQD": 3,
+    "JOD": 3,
+    "KWD": 3,
+    "LYD": 3,
+    "OMR": 3,
+    "TND": 3,
+    "CLF": 4,
+    "BIF": 0,
+    "CLP": 0,
+    "DJF": 0,
+    "GNF": 0,
+    "JPY": 0,
+    "KMF": 0,
+    "KRW": 0,
+    "MGA": 0,
+    "PYG": 0,
+    "RWF": 0,
+    "UGX": 0,
+    "VND": 0,
+    "VUV": 0,
+    "XAF": 0,
+    "XOF": 0,
+    "XPF": 0,
+}
 TRUSTED_MIME_TYPES = {
     ".pdf": "application/pdf",
     ".png": "image/png",
@@ -140,12 +170,17 @@ def _decimal_text(value: Any) -> str | None:
     return None if number is None else format(number, "f")
 
 
-def _money_equal(left: Decimal, right: Decimal) -> bool:
-    return _money_round(left) == _money_round(right)
+def _money_quantum(currency: str | None = None) -> Decimal:
+    exponent = CURRENCY_MINOR_UNITS.get(str(currency or "").upper(), 2)
+    return Decimal(1).scaleb(-exponent)
 
 
-def _money_round(value: Decimal) -> Decimal:
-    return value.quantize(MONEY_CENT, rounding=ROUND_HALF_UP)
+def _money_equal(left: Decimal, right: Decimal, currency: str | None = None) -> bool:
+    return _money_round(left, currency) == _money_round(right, currency)
+
+
+def _money_round(value: Decimal, currency: str | None = None) -> Decimal:
+    return value.quantize(_money_quantum(currency), rounding=ROUND_HALF_UP)
 
 
 def _number(value: Any) -> float | int | None:
@@ -563,6 +598,7 @@ class InvoiceService:
         target_total = Decimal("0")
         complete_target = bool(line_rows)
         cost_review_required = False
+        currency = row["currency"]
         for line in line_rows:
             try:
                 quantity = _decimal(line["quantity"])
@@ -572,7 +608,7 @@ class InvoiceService:
             if quantity is None or unit_cost is None:
                 complete_target = False
             else:
-                target_total += _money_round(quantity * unit_cost)
+                target_total += _money_round(quantity * unit_cost, currency)
             cost_review_required = cost_review_required or bool(
                 line["target_cost_review_required"]
             )
@@ -591,7 +627,7 @@ class InvoiceService:
             cost_review_required
             or (
                 target_variance is not None
-                and not _money_equal(target_variance, Decimal("0"))
+                and not _money_equal(target_variance, Decimal("0"), currency)
             )
         )
         if full:
@@ -1711,7 +1747,9 @@ class InvoiceService:
                 and line_numbers.get("unit_price") is not None
                 and line_numbers.get("line_total") is not None
                 and not _money_equal(
-                    quantity * line_numbers["unit_price"], line_numbers["line_total"]
+                    quantity * line_numbers["unit_price"],
+                    line_numbers["line_total"],
+                    invoice.get("currency"),
                 )
             ):
                 calculated = quantity * line_numbers["unit_price"]
@@ -1721,9 +1759,11 @@ class InvoiceService:
                     f"quantity times unit price ({calculated}) does not match line total ({line_numbers['line_total']})",
                 )
             if quantity is not None and line_numbers.get("unit_price") is not None:
-                line_sum += _money_round(quantity * line_numbers["unit_price"])
+                line_sum += _money_round(
+                    quantity * line_numbers["unit_price"], invoice.get("currency")
+                )
             elif line_numbers.get("line_total") is not None:
-                line_sum += _money_round(line_numbers["line_total"])
+                line_sum += _money_round(line_numbers["line_total"], invoice.get("currency"))
             rms_item_id = line.get("rms_item_id")
             catalog_item_id = line.get("catalog_item_id")
             if (
@@ -1771,7 +1811,7 @@ class InvoiceService:
                 )
 
         if have_all_line_totals and numbers.get("subtotal") is not None:
-            if not _money_equal(line_sum, numbers["subtotal"]):
+            if not _money_equal(line_sum, numbers["subtotal"], invoice.get("currency")):
                 error(
                     "subtotal",
                     "sum_mismatch",
@@ -1788,7 +1828,7 @@ class InvoiceService:
             )
         if all(numbers.get(field) is not None for field in ("subtotal", "tax_total", "total")):
             expected_total = numbers["subtotal"] + numbers["tax_total"]
-            if not _money_equal(expected_total, numbers["total"]):
+            if not _money_equal(expected_total, numbers["total"], invoice.get("currency")):
                 error(
                     "total",
                     "sum_mismatch",

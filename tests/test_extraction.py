@@ -13,6 +13,7 @@ from backend.extraction import (
     ExtractionLimitError,
     ExtractionLimits,
     UnsupportedDocumentError,
+    _ocr_pdf_pages,
     _run_tesseract,
     extract_document,
 )
@@ -169,17 +170,69 @@ class ExtractionTests(unittest.TestCase):
 
     def test_non_invoice_types_stay_explicit_and_reviewable(self) -> None:
         credit = extract_document(FIXTURES / "layouts" / "credit_note.txt")
+        plain_credit = extract_document(
+            FIXTURES / "layouts" / "plain_credit_note.txt"
+        )
+        credit_memo = extract_document(FIXTURES / "layouts" / "credit_memo.txt")
         delivery = extract_document(FIXTURES / "layouts" / "delivery_note.txt")
         unknown = extract_document(FIXTURES / "layouts" / "unknown_numeric_report.txt")
 
         self.assertEqual(credit["document_type"], "credit_note")
         self.assertGreaterEqual(credit["document_type_confidence"], 0.9)
+        self.assertEqual(plain_credit["document_type"], "credit_note")
+        self.assertGreaterEqual(plain_credit["document_type_confidence"], 0.9)
+        self.assertEqual(credit_memo["document_type"], "credit_note")
+        self.assertGreaterEqual(credit_memo["document_type_confidence"], 0.9)
         self.assertEqual(delivery["document_type"], "delivery_note")
         self.assertEqual(delivery["lines"], [])
         self.assertEqual(unknown["document_type"], "unknown")
         self.assertEqual(unknown["document_type_confidence"], 0.0)
         self.assertEqual(len(unknown["lines"]), 2)
         self.assertTrue(any("route" in warning.lower() for warning in unknown["warnings"]))
+
+    def test_credit_invoice_ocr_layout_reconciles_without_conflating_credit_note(self) -> None:
+        result = extract_document(
+            FIXTURES / "layouts" / "credit_invoice_ocr_zero_tax.txt"
+        )
+
+        self.assertEqual(result["document_type"], "invoice")
+        self.assertGreaterEqual(result["document_type_confidence"], 0.9)
+        self.assertEqual(result["supplier_name"], "Synthetic Carbon Company")
+        self.assertEqual(result["invoice_number"], "SYN-CARBON-01")
+        self.assertEqual(result["po_number"], "SYN-PO-900")
+        self.assertEqual(result["currency"], "KWD")
+        self.assertIsNone(result["invoice_date"])
+        self.assertEqual(result["total"], 636.5)
+        self.assertEqual(result["tax_total"], 0.0)
+        self.assertEqual(result["subtotal"], 636.5)
+        self.assertEqual(
+            result["field_provenance"]["tax_total"],
+            "absent_tax_treated_as_zero",
+        )
+        self.assertEqual(
+            result["field_provenance"]["subtotal"],
+            "derived_grand_total_minus_tax_total",
+        )
+        self.assertEqual(result["table_diagnostics"]["possible_unparsed_rows"], 0)
+        self.assertEqual(len(result["lines"]), 3)
+        self.assertEqual(
+            [line["quantity"] for line in result["lines"]],
+            [96.0, 110.0, 140.0],
+        )
+        self.assertEqual(
+            [line["net_unit_price"] for line in result["lines"]],
+            [2.0, 1.75, 1.8],
+        )
+        self.assertEqual(
+            [line["line_total"] for line in result["lines"]],
+            [192.0, 192.5, 252.0],
+        )
+        self.assertEqual(
+            result["lines"][2]["line_total_source"],
+            "gross_extension_validated_by_zero_discount_and_printed_rate",
+        )
+        self.assertIn("quantity", result["lines"][0]["derived_fields"])
+        self.assertIn("quantity", result["lines"][1]["derived_fields"])
 
     def test_numeric_text_without_table_headers_does_not_create_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -472,6 +525,32 @@ class ExtractionTests(unittest.TestCase):
             self.assertEqual(source.getpixel((0, 0)), 127)
         finally:
             source.close()
+
+    @unittest.skipUnless(PDFIUM_AVAILABLE, "pypdfium2 is required")
+    def test_large_scanned_packet_preserves_single_pass_page_coverage(self) -> None:
+        from pypdf import PdfWriter
+
+        calls: list[int] = []
+
+        def fake_ocr(*_: object, psm: int = 6, **__: object) -> tuple[str, float]:
+            calls.append(psm)
+            return "INVOICE", 90.0
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "large-scanned-packet.pdf"
+            writer = PdfWriter()
+            for _ in range(13):
+                writer.add_blank_page(width=100, height=100)
+            with path.open("wb") as handle:
+                writer.write(handle)
+            with (
+                patch("backend.extraction.shutil.which", return_value="/usr/bin/tesseract"),
+                patch("backend.extraction._run_tesseract", side_effect=fake_ocr),
+            ):
+                results = _ocr_pdf_pages(path, range(13), ExtractionLimits())
+
+        self.assertEqual(len(results), 13)
+        self.assertEqual(calls, [6] * 13)
 
     @unittest.skipUnless(OCR_AVAILABLE, "native Tesseract is not installed")
     def test_real_png_ocr_extracts_source_text(self) -> None:

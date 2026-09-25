@@ -122,24 +122,39 @@ _COLUMN_PATTERNS: tuple[tuple[str, re.Pattern[str], int, str | None], ...] = (
         115,
         "gross",
     ),
+    (
+        "gross_line_total",
+        re.compile(r"\bgross(?:\s+(?:amount|value|total))?(?:\s+(?:AED|USD|EUR|GBP|SAR|QAR|KWD|BHD|OMR))?\b", re.I),
+        100,
+        "gross",
+    ),
     ("unit_price", re.compile(r"\bunit\s+(?:price|cost|rate)\b", re.I), 115, "unit"),
     ("unit_price", re.compile(r"\bgross\s+(?:price|cost|rate)\b", re.I), 105, "gross"),
     ("line_total", re.compile(r"\b(?:line|extended)\s+(?:amount|total|value)\b", re.I), 115, "line"),
     ("line_total", re.compile(r"\btotal\s+(?:amount|value)\b", re.I), 105, "total"),
+    (
+        "line_total",
+        re.compile(r"\bnet(?:\s+(?:amount|value|total))?(?:\s+(?:AED|USD|EUR|GBP|SAR|QAR|KWD|BHD|OMR))?\b", re.I),
+        100,
+        "net",
+    ),
     ("tax_amount", re.compile(r"\b(?:vat|tax)[ \t]{1,3}(?:amount|value)\b", re.I), 120, "tax"),
     ("tax_rate", re.compile(r"\b(?:vat|tax)\s*(?:rate|%)", re.I), 120, "tax"),
-    ("discount_amount", re.compile(r"\b(?:discount|disc\.?)\s+(?:amount|value)\b", re.I), 115, "discount"),
+    ("discount_amount", re.compile(r"\b(?:discount|disc\.?)\s+(?:amount|amt\.?|value)\b", re.I), 115, "discount"),
     ("discount_rate", re.compile(r"\b(?:discount|disc\.?)\s*(?:rate|%)", re.I), 120, "discount"),
+    ("discount_amount", re.compile(r"\b(?:amt|ami)\b", re.I), 60, "discount"),
+    ("discount_rate", re.compile(r"\b(?:disc|dis|die)\b", re.I), 55, "discount"),
     ("description", re.compile(r"\b(?:item|product|goods|material|article)\s+description\b", re.I), 130, None),
-    ("row_number", re.compile(r"\b(?:sr\.?\s*no\.?|line\s*(?:no\.?|#))\b", re.I), 120, None),
+    ("row_number", re.compile(r"\b(?:sr\.?\s*(?:no\.?|#)|line\s*(?:no\.?|#))\b", re.I), 120, None),
     ("item_code", re.compile(r"\b(?:item|product|material|article)\s+(?:code|no\.?)\b", re.I), 125, None),
     ("upc", re.compile(r"\b(?:bar\s*code|barcode|ean|upc)\b", re.I), 125, None),
-    ("quantity", re.compile(r"\b(?:invoice\s+)?(?:quantity|qty)\b", re.I), 120, None),
+    ("quantity", re.compile(r"\b(?:invoice\s+)?(?:quantity|q?ty|oty)\b", re.I), 120, None),
     ("uom", re.compile(r"\b(?:uom|unit\s+of\s+measure)\b", re.I), 120, None),
+    ("uom", re.compile(r"\b(?:pack(?:ing)?|packin|bckin|lackin|bekin)\b", re.I), 80, None),
     ("description", re.compile(r"\b(?:description|desc\.?|particulars?|details?)\b", re.I), 115, None),
     ("description", re.compile(r"\b(?:product|item)\b", re.I), 70, None),
     ("item_code", re.compile(r"\bsku\b", re.I), 110, None),
-    ("item_code", re.compile(r"\bcode\b", re.I), 65, None),
+    ("item_code", re.compile(r"code\b", re.I), 65, None),
     ("uom", re.compile(r"\bunit\b(?!\s*(?:price|cost|rate))", re.I), 75, None),
     ("unit_price", re.compile(r"\b(?:price|rate|cost)\b", re.I), 70, "unspecified"),
     ("line_total", re.compile(r"\b(?:amount|value|total)\b", re.I), 65, "unspecified"),
@@ -285,7 +300,7 @@ def _extract_pdf(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
         warnings.append(
             f"Fixed-position PDF layout extraction failed on page(s) {pages}; reading-order text was used for table review."
         )
-    ocr_results: dict[int, tuple[str, float | None]] = {}
+    ocr_results: dict[int, tuple[str, str, float | None]] = {}
     if needs_ocr and structured_invoice is None:
         ocr_results = _ocr_pdf_pages(path, needs_ocr, limits)
         warnings.append(
@@ -298,14 +313,14 @@ def _extract_pdf(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
 
     for index, native_text in enumerate(native_texts):
         if index in ocr_results:
-            ocr_text, confidence = ocr_results[index]
+            ocr_text, ocr_layout_text, confidence = ocr_results[index]
             chosen = ocr_text if len(re.sub(r"\s+", "", ocr_text)) >= len(re.sub(r"\s+", "", native_text)) else native_text
             method = "ocr" if chosen == ocr_text else "pdf_text"
             if method == "ocr" and confidence is not None and confidence < 65:
                 warnings.append(f"OCR confidence on page {index + 1} is low ({confidence:.0f}/100).")
         else:
-            chosen, confidence, method = native_text, None, "pdf_text"
-        layout_text = chosen if method == "ocr" else (native_layouts[index] or chosen)
+            chosen, ocr_layout_text, confidence, method = native_text, native_text, None, "pdf_text"
+        layout_text = ocr_layout_text if method == "ocr" else (native_layouts[index] or chosen)
         page_evidence.append(
             {
                 "page": index + 1,
@@ -654,7 +669,7 @@ def _explicit_po_token(reference: Any) -> str | None:
 
 def _ocr_pdf_pages(
     path: Path, page_indices: Sequence[int], limits: ExtractionLimits
-) -> dict[int, tuple[str, float | None]]:
+) -> dict[int, tuple[str, str, float | None]]:
     if shutil.which("tesseract") is None:
         raise DocumentExtractionError(
             "This PDF contains pages without usable embedded text, and the native 'tesseract' OCR binary is not installed."
@@ -668,10 +683,17 @@ def _ocr_pdf_pages(
 
     started = time.monotonic()
     total_pixels = 0
-    results: dict[int, tuple[str, float | None]] = {}
+    results: dict[int, tuple[str, str, float | None]] = {}
+    # Multi-pass OCR is bounded to short documents.  On large scanned packets,
+    # spending the document-wide timeout on optional second and third passes
+    # can prevent later pages from receiving the original PSM 6 pass at all.
+    # Keeping the baseline-only path for larger packets preserves complete,
+    # reviewable page coverage within the same resource limits.
+    use_enhancement_passes = len(page_indices) <= 12
     try:
         document = pdfium.PdfDocument(str(path))
         for index in page_indices:
+            page_started = time.monotonic()
             remaining = limits.ocr_timeout_seconds_total - (time.monotonic() - started)
             if remaining <= 0:
                 raise ExtractionLimitError(
@@ -689,8 +711,63 @@ def _ocr_pdf_pages(
                 )
             bitmap = page.render(scale=render_scale)
             image = bitmap.to_pil()
-            timeout = min(limits.ocr_timeout_seconds_per_page, remaining)
-            results[index] = _run_tesseract(image, timeout, limits.max_pixels_per_page)
+            page_budget = min(limits.ocr_timeout_seconds_per_page, remaining)
+            # Preserve the former OCR path and its full timeout first.  The
+            # enhancement passes may use only time that remains; a slow
+            # enhancement can never turn a formerly readable page into a
+            # whole-document timeout.
+            baseline_text, baseline_confidence = _run_tesseract(
+                image,
+                page_budget,
+                limits.max_pixels_per_page,
+                psm=6,
+                autocontrast=False,
+                dpi=round(72 * render_scale),
+            )
+            enhanced_text, enhanced_confidence = baseline_text, baseline_confidence
+            page_remaining = page_budget - (time.monotonic() - page_started)
+            enhancement_completed = False
+            if use_enhancement_passes and page_remaining > 2:
+                try:
+                    enhanced_text, enhanced_confidence = _run_tesseract(
+                        image,
+                        max(1.0, page_remaining * 0.62),
+                        limits.max_pixels_per_page,
+                        psm=4,
+                        autocontrast=True,
+                        dpi=round(72 * render_scale),
+                    )
+                    enhancement_completed = True
+                except ExtractionLimitError:
+                    enhanced_text, enhanced_confidence = baseline_text, baseline_confidence
+            if _ocr_candidate_score(enhanced_text, enhanced_confidence) >= _ocr_candidate_score(
+                baseline_text, baseline_confidence
+            ):
+                layout_text, confidence = enhanced_text, enhanced_confidence
+            else:
+                layout_text, confidence = baseline_text, baseline_confidence
+            page_remaining = page_budget - (time.monotonic() - page_started)
+            sparse_text = ""
+            if enhancement_completed and page_remaining > 1:
+                try:
+                    sparse_text, _ = _run_tesseract(
+                        image,
+                        page_remaining,
+                        limits.max_pixels_per_page,
+                        psm=11,
+                        autocontrast=True,
+                        dpi=round(72 * render_scale),
+                    )
+                except ExtractionLimitError:
+                    sparse_text = ""
+            # Sparse segmentation is useful for isolated header labels and
+            # values, while PSM 4 preserves the row geometry needed for table
+            # parsing.  Keep the evidence streams separate and put the sparse
+            # header evidence first for conservative labelled-field matching.
+            raw_text = "\n\n".join(
+                part for part in (sparse_text, layout_text) if part.strip()
+            )
+            results[index] = (raw_text, layout_text, confidence)
             try:
                 image.close()
                 bitmap.close()
@@ -707,6 +784,42 @@ def _ocr_pdf_pages(
         except Exception:
             pass
     return results
+
+
+def _ocr_candidate_score(text: str, confidence: float | None) -> float:
+    """Choose between source OCR passes without document-specific values."""
+
+    normalized = _normalized_words(text)
+    evidence_terms = (
+        "invoice",
+        "invoice no",
+        "description",
+        "qty",
+        "quantity",
+        "unit price",
+        "gross",
+        "net",
+        "subtotal",
+        "total",
+        "currency",
+    )
+    evidence = sum(term in normalized for term in evidence_terms)
+    numeric_rows = sum(
+        len(re.findall(r"\d[\d,.]*", line)) >= 3 for line in text.splitlines()
+    )
+    header_strength = 0
+    for _, _, anchors in _find_table_headers(text.splitlines()):
+        fields = {anchor.field for anchor in anchors}
+        header_strength = max(
+            header_strength,
+            len(fields) * 2 + (5 if "unit_price" in fields else 0),
+        )
+    return (
+        float(confidence or 0)
+        + evidence * 3
+        + min(numeric_rows, 20) * 0.25
+        + header_strength
+    )
 
 
 def _extract_image(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
@@ -744,6 +857,8 @@ def _extract_image(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
                     frame,
                     min(limits.ocr_timeout_seconds_per_page, remaining),
                     limits.max_pixels_per_page,
+                    psm=4,
+                    autocontrast=True,
                 )
                 page_evidence.append(
                     {
@@ -783,11 +898,21 @@ def _extract_image(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
 
 
 def _run_tesseract(
-    image: Any, timeout: float, max_pixels: int
+    image: Any,
+    timeout: float,
+    max_pixels: int,
+    *,
+    psm: int = 6,
+    autocontrast: bool = False,
+    dpi: int | None = None,
 ) -> tuple[str, float | None]:
     from PIL import ImageOps
 
     prepared = ImageOps.grayscale(image)
+    if autocontrast:
+        contrasted = ImageOps.autocontrast(prepared, cutoff=1)
+        prepared.close()
+        prepared = contrasted
     # A minimum resolution materially improves OCR of screenshots and small scans.
     if prepared.width < 1200:
         desired_scale = min(3.0, 1200 / max(1, prepared.width))
@@ -813,17 +938,18 @@ def _run_tesseract(
             temp_name = handle.name
         prepared.save(temp_name, format="PNG", optimize=False)
         try:
+            command = [
+                "tesseract",
+                temp_name,
+                "stdout",
+                "-l",
+                "eng",
+            ]
+            if dpi is not None:
+                command.extend(["--dpi", str(dpi)])
+            command.extend(["--psm", str(psm), "tsv"])
             completed = subprocess.run(
-                [
-                    "tesseract",
-                    temp_name,
-                    "stdout",
-                    "-l",
-                    "eng",
-                    "--psm",
-                    "6",
-                    "tsv",
-                ],
+                command,
                 check=False,
                 capture_output=True,
                 text=True,
@@ -1298,9 +1424,11 @@ def _parse_invoice_text(
         "invoice_number": [
             r"(?im)^\s*invoice\s*(?:number|no\.?|#)\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/-]*)\s*$",
             r"(?im)^\s*invoice\s*[:#-]\s*([A-Z0-9][A-Z0-9._/-]*)\s*$",
+            r"(?i)\binv(?:oice)?\.?\s*(?:number|no\.?|#)\s*[:#;-]?\s*([A-Z0-9][A-Z0-9._/-]*)\b",
         ],
         "po_number": [
-            r"(?im)^\s*(?:purchase\s+order|p\.?\s*o\.?)\s*(?:number|no\.?|#)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/-]*)\s*$"
+            r"(?im)^\s*(?:purchase\s+order|p\.?\s*o\.?)\s*(?:number|no\.?|#)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/-]*)\s*$",
+            r"(?i)\b(?:purchase\s+order|p\.?\s*o\.?)(?!\s*box\b)\s*(?:number|no\.?|#)?\s*[:#;-]?\s*([A-Z0-9][A-Z0-9._/-]*)\b",
         ],
     }
     for field, patterns in label_patterns.items():
@@ -1318,6 +1446,12 @@ def _parse_invoice_text(
             result["supplier_name"] = seller_name
             confidence["supplier_name"] = 0.86
             provenance["supplier_name"] = "legal_name_immediately_before_bill_to"
+    if result["supplier_name"] is None:
+        seller_name = _extract_seller_above_invoice_title(text)
+        if seller_name:
+            result["supplier_name"] = seller_name
+            confidence["supplier_name"] = 0.82
+            provenance["supplier_name"] = "company_name_immediately_above_invoice_title"
 
     date_match = re.search(
         r"(?im)^\s*(?:invoice\s+date|date\s+of\s+invoice|date)\s*[:#-]\s*([^\r\n|]+)", text
@@ -1391,6 +1525,25 @@ def _parse_invoice_text(
             )
 
     if (
+        result["tax_total"] is None
+        and result["subtotal"] is None
+        and result["total"] is not None
+        and _explicit_absent_tax_evidence(
+            text,
+            lines=lines,
+            schemas=schemas,
+            complete_table_diagnostics=complete_table_diagnostics,
+            printed_total=result["total"],
+        )
+    ):
+        result["tax_total"] = 0.0
+        confidence["tax_total"] = 0.78
+        provenance["tax_total"] = "absent_tax_treated_as_zero"
+        warnings.append(
+            "No VAT/tax field was printed in a complete Gross/Net table whose explicit net extensions reconcile to the printed total; tax total was treated as zero for review."
+        )
+
+    if (
         result["subtotal"] is None
         and result["total"] is not None
         and result["tax_total"] is not None
@@ -1417,6 +1570,47 @@ def _parse_invoice_text(
     return result
 
 
+def _explicit_absent_tax_evidence(
+    text: str,
+    *,
+    lines: Sequence[Mapping[str, Any]],
+    schemas: Sequence[Any],
+    complete_table_diagnostics: bool,
+    printed_total: Any,
+) -> bool:
+    """Require independent source evidence before treating omitted tax as zero."""
+
+    if not complete_table_diagnostics or not lines or re.search(r"\b(?:vat|tax)\b", text, re.I):
+        return False
+    normalized_schemas = [str(schema) for schema in schemas]
+    if not any(
+        "line_total:net" in schema
+        and "gross_line_total:gross" in schema
+        and ("discount_amount:discount" in schema or "discount_rate:discount" in schema)
+        for schema in normalized_schemas
+    ):
+        return False
+    if not all(
+        line.get("line_total") is not None
+        and line.get("gross_line_total") is not None
+        and line.get("tax_amount") is None
+        and line.get("tax_rate") is None
+        for line in lines
+    ):
+        return False
+    try:
+        extension_total = sum(
+            (Decimal(str(line["line_total"])) for line in lines),
+            start=Decimal("0"),
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        source_total = Decimal(str(printed_total)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    return extension_total == source_total
+
+
 def _classify_document_type(
     text: str,
 ) -> tuple[str, float, list[str], str | None]:
@@ -1434,7 +1628,7 @@ def _classify_document_type(
         ("credit_note", re.compile(r"^(?:tax\s+)?credit\s+(?:note|memo)(?:\s+(?:original|copy))?$"), "title:credit_note", 8),
         ("delivery_note", re.compile(r"^(?:proof\s+of\s+delivery|delivery\s+(?:note|challan))(?:\s+(?:original|copy))?$"), "title:delivery_note", 7),
         ("purchase_order", re.compile(r"^(?:purchase\s+order|p\s*o)(?:\s+(?:original|copy))?$"), "title:purchase_order", 7),
-        ("invoice", re.compile(r"^(?:(?:tax|commercial|sales)\s+)?invoice(?:\s+(?:original|copy))?$"), "title:invoice", 7),
+        ("invoice", re.compile(r"^(?:(?:tax|commercial|sales|credit)\s+)?invoice(?:\s+(?:original|copy))?$"), "title:invoice", 7),
     )
     for line in normalized_lines:
         for kind, pattern, rule, weight in title_rules:
@@ -1446,7 +1640,7 @@ def _classify_document_type(
     phrase_rules = (
         ("credit_note", re.compile(r"\b(?:tax\s+)?credit\s+(?:note|memo)\b"), "phrase:credit_note", 8),
         ("delivery_note", re.compile(r"\b(?:proof\s+of\s+delivery|delivery\s+(?:note|challan))\b"), "phrase:delivery_note", 6),
-        ("invoice", re.compile(r"\b(?:tax|commercial|sales)\s+invoice\b"), "phrase:qualified_invoice", 7),
+        ("invoice", re.compile(r"\b(?:tax|commercial|sales|credit)\s+invoice\b"), "phrase:qualified_invoice", 7),
     )
     for line in normalized_lines:
         for kind, pattern, rule, weight in phrase_rules:
@@ -1513,12 +1707,50 @@ def _extract_seller_before_bill_to(text: str) -> str | None:
     return None
 
 
+def _extract_seller_above_invoice_title(text: str) -> str | None:
+    """Capture a company line only when it directly captions an invoice title.
+
+    This is deliberately narrower than a first-line guess: the candidate must
+    immediately precede a qualified invoice heading and contain an explicit
+    legal or company marker.  Buyer/client labels are rejected.
+    """
+
+    lines = [re.sub(r"\s+", " ", line).strip(" |:-") for line in text.splitlines()[:60]]
+    invoice_title = re.compile(r"^(?:(?:tax|commercial|sales|credit)\s+)?invoice$", re.I)
+    company_marker = re.compile(
+        r"\b(?:company|co\.?|l\.?l\.?c\.?|ltd\.?|limited|inc\.?|corp(?:oration)?\.?|plc|fze|fzc|wll|gmbh|s\.?a\.?)\b",
+        re.I,
+    )
+    for index, line in enumerate(lines):
+        if not invoice_title.fullmatch(_normalized_words(line)):
+            continue
+        for candidate in reversed(lines[max(0, index - 3) : index]):
+            ascii_candidate = re.sub(r"[^\x00-\x7F]+", " ", candidate)
+            ascii_candidate = re.sub(r"\s+", " ", ascii_candidate).strip(" |:-")
+            if not ascii_candidate:
+                continue
+            if re.search(r"\b(?:client|customer|buyer|bill|deliver|ship)\b", ascii_candidate, re.I):
+                continue
+            if company_marker.search(ascii_candidate) and 3 <= len(ascii_candidate) <= 160:
+                return ascii_candidate
+        return None
+    return None
+
+
 def _extract_currency(text: str) -> tuple[str | None, str | None]:
     label = re.search(r"(?im)^\s*currency\s*[:#-]\s*([A-Z]{3})\b", text)
     if label:
         code = label.group(1).upper()
         if code in _CURRENCIES:
             return code, None
+        supported_codes = sorted(
+            {match.upper() for match in re.findall(r"\b(?:AED|USD|EUR|GBP|SAR|QAR|KWD|BHD|OMR)\b", text, re.I)}
+        )
+        if len(supported_codes) == 1:
+            return (
+                supported_codes[0],
+                f"The currency label was OCR-read as unsupported code '{code}'; the one explicit supported currency code elsewhere in the source was retained for review.",
+            )
         return None, f"Currency code '{code}' is not in the supported currency set and was withheld."
     codes = sorted({match.upper() for match in re.findall(r"\b(?:AED|USD|EUR|GBP|SAR|QAR|KWD|BHD|OMR)\b", text, re.I)})
     if len(codes) == 1:
@@ -1640,15 +1872,15 @@ def _extract_totals(text: str) -> dict[str, float | None]:
     result: dict[str, float | None] = {"subtotal": None, "tax_total": None, "total": None}
     patterns = {
         "subtotal": re.compile(
-            r"^\s*(?:sub[ -]?total|untaxed\s+amount|total(?:\s+amount)?\s+(?:before|excluding|excl\.?)\s+(?:vat|tax)|net\s+(?:amount|total)\s+(?:before|excluding|excl\.?)\s+(?:vat|tax)|taxable\s+amount)\b",
+            r"^\s*[^A-Za-z0-9]{0,3}(?:sub[ -]?total|untaxed\s+amount|total(?:\s+amount)?\s+(?:before|excluding|excl\.?)\s+(?:vat|tax)|net\s+(?:amount|total)\s+(?:before|excluding|excl\.?)\s+(?:vat|tax)|taxable\s+amount)\b",
             re.I,
         ),
         "tax_total": re.compile(
-            r"^\s*(?:(?:total\s+)?(?:vat|tax)(?:\s+(?:total|amount|value))?|(?:vat|tax)\s+total)\b",
+            r"^\s*[^A-Za-z0-9]{0,3}(?:(?:total\s+)?(?:vat|tax)(?:\s+(?:total|amount|value))?|(?:vat|tax)\s+total)\b",
             re.I,
         ),
         "total": re.compile(
-            r"^\s*(?:grand\s+total|invoice\s+total|amount\s+due|total\s+(?:amount\s+)?due(?:\s*\([^)]*\))?|net\s+payable|total\s+payable|total(?:\s+amount)?\s+(?:including|inclusive\s+of|incl\.?)\s+(?:vat|tax)|total\s+amount|total)\b",
+            r"^\s*[^A-Za-z0-9]{0,3}(?:grand\s+total|invoice\s+total|amount\s+due|total\s+(?:amount\s+)?due(?:\s*\([^)]*\))?|net\s+payable|total\s+payable|total(?:\s+amount)?\s+(?:including|inclusive\s+of|incl\.?)\s+(?:vat|tax)|total\s+amount|total|otal)\b",
             re.I,
         ),
     }
@@ -1964,6 +2196,7 @@ def _parse_layout_section(
     last_data_row: int | None = None
     possible_unparsed_rows = 0
     continuation_lines = 0
+    annotation_block = False
     for row_index in range(start, end):
         raw_line = lines[row_index]
         stripped = raw_line.strip()
@@ -1973,6 +2206,16 @@ def _parse_layout_section(
             if extracted:
                 break
             pending_description.clear()
+            continue
+        normalized_row = _normalized_words(stripped)
+        if (
+            extracted
+            and not re.search(r"\d", stripped)
+            and re.search(r"\b(?:logistics|quality|warehouse)\s+division\b", normalized_row)
+        ):
+            annotation_block = True
+            continue
+        if annotation_block:
             continue
 
         if (
@@ -1993,15 +2236,42 @@ def _parse_layout_section(
         description = _clean_description(cells.get("description"))
         quantity, embedded_uom = _parse_quantity_cell(cells.get("quantity"))
         uom = _clean_uom(cells.get("uom")) or embedded_uom
-        printed_unit_price = _parse_cell_number(cells.get("unit_price"))
-        line_total = _parse_cell_number(cells.get("line_total"))
-        gross_line_total = _parse_cell_number(cells.get("gross_line_total"))
-        tax_rate = _parse_cell_number(cells.get("tax_rate"))
-        discount_rate = _parse_cell_number(cells.get("discount_rate"))
-        discount_amount = _parse_cell_number(cells.get("discount_amount"))
-        tax_amount = _parse_cell_number(cells.get("tax_amount"))
+        printed_unit_price = _parse_layout_number(cells.get("unit_price"))
+        line_total = _parse_layout_number(cells.get("line_total"))
+        gross_line_total = _parse_layout_number(cells.get("gross_line_total"))
+        tax_rate = _parse_layout_number(cells.get("tax_rate"))
+        discount_rate = _parse_layout_number(cells.get("discount_rate"))
+        discount_amount = _parse_layout_number(cells.get("discount_amount"))
+        tax_amount = _parse_layout_number(cells.get("tax_amount"))
         upc = _clean_upc(cells.get("upc"))
         item_code = _clean_item_code(cells.get("item_code"))
+
+        corrected_quantity = _validated_ocr_quantity(
+            cells.get("quantity"),
+            cells.get("unit_price"),
+            quantity,
+            printed_unit_price,
+            line_total,
+            gross_line_total,
+        )
+        quantity_was_normalized = corrected_quantity is not None and corrected_quantity != quantity
+        if corrected_quantity is not None:
+            quantity = corrected_quantity
+
+        reconciled_line_total = _line_extension_from_consistent_source_columns(
+            cells.get("unit_price"),
+            quantity,
+            printed_unit_price,
+            line_total,
+            gross_line_total,
+            discount_rate,
+            discount_amount,
+        )
+        line_total_was_reconciled = (
+            reconciled_line_total is not None and reconciled_line_total != line_total
+        )
+        if reconciled_line_total is not None:
+            line_total = reconciled_line_total
 
         has_required_numbers = quantity is not None and (
             printed_unit_price is not None or line_total is not None
@@ -2031,6 +2301,10 @@ def _parse_layout_section(
                 else None
             )
             derived_fields: list[str] = []
+            if quantity_was_normalized:
+                derived_fields.append("quantity")
+            if line_total_was_reconciled:
+                derived_fields.append("line_total")
             if total_basis == "net" and line_total is not None and quantity not in (None, 0):
                 derived_net_unit_price = _divide_money_by_quantity(line_total, quantity)
                 if derived_net_unit_price is not None:
@@ -2038,10 +2312,17 @@ def _parse_layout_section(
                     net_unit_price = derived_net_unit_price
                     unit_price_basis = "net"
                     unit_price_source = "derived_net_line_amount_divided_by_quantity"
-                    derived_fields = ["unit_price", "net_unit_price"]
+                    derived_fields.extend(["unit_price", "net_unit_price"])
             line: dict[str, Any] = {
                 "description": full_description,
                 "quantity": quantity,
+                "quantity_source": (
+                    "ocr_numeric_cell_validated_by_explicit_rate_and_extension"
+                    if quantity_was_normalized
+                    else "printed_quantity"
+                    if quantity is not None
+                    else None
+                ),
                 "uom": uom,
                 "unit_price": unit_price,
                 "net_unit_price": net_unit_price,
@@ -2052,6 +2333,13 @@ def _parse_layout_section(
                 "unit_price_source": unit_price_source,
                 "line_total": line_total,
                 "line_total_basis": total_basis,
+                "line_total_source": (
+                    "gross_extension_validated_by_zero_discount_and_printed_rate"
+                    if line_total_was_reconciled
+                    else "printed_line_total"
+                    if line_total is not None
+                    else None
+                ),
                 "gross_line_total": gross_line_total,
                 "tax_rate": tax_rate,
                 "tax_amount": tax_amount,
@@ -2070,6 +2358,28 @@ def _parse_layout_section(
             last_data_row = row_index
             continue
 
+        # Some printed tables put an unlabeled GTIN directly below the item
+        # description.  Treat it as a continuation only when it is adjacent
+        # to an emitted row and its source digits have a valid GS1 check
+        # digit.  Other numeric-only text remains reviewable as unparsed.
+        continuation_upc = _clean_upc(cells.get("description"))
+        if (
+            continuation_upc
+            and extracted
+            and last_data_row is not None
+            and row_index - last_data_row <= 3
+        ):
+            if _valid_gtin(continuation_upc) and extracted[-1].get("upc") is None:
+                extracted[-1]["upc"] = continuation_upc
+            elif not _valid_gtin(continuation_upc):
+                extracted[-1].setdefault("ocr_identifier_candidates", []).append(
+                    continuation_upc
+                )
+            extracted[-1]["source_rows"][1] = row_index + 1
+            last_data_row = row_index
+            continuation_lines += 1
+            continue
+
         has_other_cell_evidence = any(
             value is not None
             for value in (
@@ -2085,6 +2395,41 @@ def _parse_layout_section(
                 item_code,
             )
         )
+        numeric_continuation_values = [
+            value
+            for value in (
+                quantity,
+                printed_unit_price,
+                line_total,
+                gross_line_total,
+                tax_rate,
+                discount_rate,
+                discount_amount,
+                tax_amount,
+            )
+            if value is not None
+        ]
+        if (
+            description
+            and extracted
+            and last_data_row is not None
+            and row_index - last_data_row <= 3
+            and quantity is None
+            and printed_unit_price is None
+            and gross_line_total is None
+            and len(numeric_continuation_values) <= 1
+        ):
+            extracted[-1]["description"] = _join_description_parts(
+                [extracted[-1]["description"], description]
+            )
+            if numeric_continuation_values:
+                extracted[-1].setdefault("ocr_ignored_continuation_noise", []).extend(
+                    numeric_continuation_values
+                )
+            extracted[-1]["source_rows"][1] = row_index + 1
+            last_data_row = row_index
+            continuation_lines += 1
+            continue
         numeric_like = any(
             re.search(r"\d", cells.get(field, ""))
             for field in (
@@ -2351,7 +2696,9 @@ def _slice_layout_cells(
 ) -> dict[str, str]:
     boundaries = [0]
     for left, right in zip(anchors, anchors[1:]):
-        if left.field in {"description", "upc", "item_code"}:
+        if left.field in {"description", "upc", "item_code"} or (
+            left.field == "quantity" and right.field == "unit_price"
+        ):
             boundary = right.start
         elif right.field == "description":
             boundary = int(round((left.end + right.start) / 2))
@@ -2380,6 +2727,146 @@ def _parse_cell_number(value: Any) -> float | None:
     if not (re.fullmatch(compact_pattern, candidate) or re.fullmatch(spaced_pattern, candidate)):
         return None
     return _parse_number(candidate)
+
+
+def _parse_layout_number(value: Any) -> float | None:
+    """Parse a bounded numeric cell while tolerating OCR border glyphs.
+
+    Fixed-position slicing supplies the cell boundary.  When Tesseract joins a
+    rule character or a neighbouring zero to the cell, the rightmost explicit
+    numeric token is retained; no digits are repaired or synthesized.
+    """
+
+    normalized_value = (
+        unicodedata.normalize("NFKC", str(value)).replace("§", "5")
+        if value not in (None, "")
+        else value
+    )
+    parsed = _parse_cell_number(normalized_value)
+    if parsed is not None or value in (None, ""):
+        return parsed
+    tokens = re.findall(r"\(?-?\d[\d,.']*\)?", str(normalized_value))
+    for token in reversed(tokens):
+        parsed = _parse_number(token)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _rate_candidates(raw_value: Any, parsed_value: float | None) -> list[float]:
+    candidates: list[float] = []
+    if parsed_value is not None:
+        candidates.append(float(parsed_value))
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(raw_value or "")))
+    match = re.fullmatch(r"[^0-9-]*(-?\d+),(\d{3})[^0-9]*", compact)
+    if match:
+        decimal_candidate = float(f"{match.group(1)}.{match.group(2)}")
+        if decimal_candidate not in candidates:
+            candidates.append(decimal_candidate)
+    return candidates
+
+
+def _extension_matches(quantity: float, rate: float, extension: float) -> bool:
+    try:
+        calculated = (Decimal(str(quantity)) * Decimal(str(rate))).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        source = Decimal(str(extension)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    return calculated == source
+
+
+def _one_edit_apart(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    if abs(len(left) - len(right)) > 1:
+        return False
+    if len(left) == len(right):
+        return sum(a != b for a, b in zip(left, right)) <= 1
+    shorter, longer = (left, right) if len(left) < len(right) else (right, left)
+    for index in range(len(longer)):
+        if longer[:index] + longer[index + 1 :] == shorter:
+            return True
+    return False
+
+
+def _validated_ocr_quantity(
+    raw_quantity: Any,
+    raw_rate: Any,
+    parsed_quantity: float | None,
+    parsed_rate: float | None,
+    line_total: float | None,
+    gross_line_total: float | None,
+) -> float | None:
+    """Correct one OCR digit only when two printed money fields validate it."""
+
+    rates = [rate for rate in _rate_candidates(raw_rate, parsed_rate) if rate > 0]
+    extensions = {
+        float(value)
+        for value in (line_total, gross_line_total)
+        if value is not None and float(value) >= 0
+    }
+    if not rates or not extensions:
+        return None
+    if parsed_quantity is not None and any(
+        _extension_matches(parsed_quantity, rate, extension)
+        for rate in rates
+        for extension in extensions
+    ):
+        return None
+
+    raw_compact = re.sub(r"[^A-Za-z0-9]", "", str(raw_quantity or ""))
+    translated = raw_compact.translate(
+        str.maketrans({"O": "0", "o": "0", "I": "1", "i": "1", "l": "1", "T": "1"})
+    )
+    raw_digits = re.sub(r"\D", "", raw_compact)
+    candidates: set[int] = set()
+    for rate in rates:
+        for extension in extensions:
+            quotient = Decimal(str(extension)) / Decimal(str(rate))
+            integral = quotient.to_integral_value(rounding=ROUND_HALF_UP)
+            if abs(quotient - integral) <= Decimal("0.000001") and integral > 0:
+                candidate = int(integral)
+                candidate_text = str(candidate)
+                if translated.isdigit() and translated == candidate_text:
+                    candidates.add(candidate)
+                elif raw_digits and _one_edit_apart(raw_digits, candidate_text):
+                    candidates.add(candidate)
+    if len(candidates) == 1:
+        return float(next(iter(candidates)))
+    return None
+
+
+def _line_extension_from_consistent_source_columns(
+    raw_rate: Any,
+    quantity: float | None,
+    parsed_rate: float | None,
+    line_total: float | None,
+    gross_line_total: float | None,
+    discount_rate: float | None,
+    discount_amount: float | None,
+) -> float | None:
+    """Use Gross as Net only when explicit zero-discount arithmetic proves it."""
+
+    if (
+        quantity is None
+        or gross_line_total is None
+        or line_total is None
+        or (discount_rate not in (None, 0, 0.0))
+        or (discount_amount not in (None, 0, 0.0))
+    ):
+        return None
+    rates = _rate_candidates(raw_rate, parsed_rate)
+    gross_matches = any(
+        _extension_matches(quantity, rate, gross_line_total) for rate in rates
+    )
+    net_matches = any(_extension_matches(quantity, rate, line_total) for rate in rates)
+    if gross_matches and not net_matches:
+        return float(gross_line_total)
+    return None
 
 
 def _divide_money_by_quantity(amount: float, quantity: float) -> float | None:
@@ -2424,7 +2911,7 @@ def _parse_quantity_cell(value: Any) -> tuple[float | None, str | None]:
             re.I,
         )
     if not match:
-        return None, None
+        return _parse_layout_number(candidate), None
     return _parse_number(match.group("number")), _clean_uom(match.group("uom"))
 
 
@@ -2448,7 +2935,7 @@ def _is_table_summary(value: str) -> bool:
     normalized = _normalized_words(value)
     return bool(
         re.match(
-            r"^(?:sub\s*total|grand\s+total|invoice\s+total|total\s+(?:qty|quantity|pieces?|cartons?|amount|value|vat|tax)|tax\s+total|vat\s+total|amount\s+due|total\s+due|amount\s+paid)\b",
+            r"^(?:opening(?:\s+balance)?|closing(?:\s+balance)?|balance|sub\s*total|grand\s+total|invoice\s+total|(?:t?otal|otal)(?:\s+(?:qty|quantity|pieces?|cartons?|amount|value|vat|tax))?|tax\s+total|vat\s+total|amount\s+due|total\s+due|amount\s+paid)\b",
             normalized,
         )
     )
@@ -2664,6 +3151,17 @@ def _clean_upc(value: Any) -> str | None:
         return None
     cleaned = re.sub(r"[^0-9]", "", unicodedata.normalize("NFKC", str(value)))
     return cleaned if 6 <= len(cleaned) <= 18 else None
+
+
+def _valid_gtin(value: str) -> bool:
+    if not value.isdigit() or len(value) not in {8, 12, 13, 14}:
+        return False
+    body = value[:-1]
+    weighted = sum(
+        int(digit) * (3 if (len(body) - index) % 2 else 1)
+        for index, digit in enumerate(body)
+    )
+    return (10 - weighted % 10) % 10 == int(value[-1])
 
 
 def _clean_item_code(value: Any) -> str | None:

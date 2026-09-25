@@ -350,6 +350,7 @@ def _evaluate_one(record: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     diagnostics = dict(result.get("table_diagnostics") or {})
+    field_provenance = dict(result.get("field_provenance") or {})
     diagnostic_gate = (
         int(diagnostics.get("recognized_table_sections") or 0) > 0
         and int(diagnostics.get("sections_without_rows") or 0) == 0
@@ -400,6 +401,8 @@ def _evaluate_one(record: Mapping[str, Any]) -> dict[str, Any]:
             "without_explicit_discount_equal": arithmetic_without_explicit_discount_equal,
         },
         "subtotal_reconciled": subtotal_reconciliation,
+        "subtotal_provenance": field_provenance.get("subtotal"),
+        "tax_total_provenance": field_provenance.get("tax_total"),
         "strict_core_reconciled_review_gate": strict_core_reconciled,
         "strict_source_target_reconciled_review_gate": strict_source_target_reconciled,
         "warning_count": len(result.get("warnings") or []),

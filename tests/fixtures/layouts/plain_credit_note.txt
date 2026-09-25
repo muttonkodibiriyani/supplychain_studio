@@ -1,0 +1,8 @@
+CREDIT NOTE
+Credit Note No: SYN-CN-PLAIN-01
+Date: 25 September 2026
+
+Description                         Qty   UOM   Unit Price   Line Total
+Synthetic returned item             1     EA    10.00        10.00
+
+Grand Total AED 10.00
