@@ -1113,13 +1113,44 @@ recheck, so 1b measures the thing the delivery was actually asked for. Metric 1a
 because the wall-time promise at a thousand documents depends on operator action being zero, and
 because a metric that has read zero all night is not retired by renaming it.
 
-**Metric 1a has a hard ceiling of 6 of the 20 real uploads under any matcher change**, measured on a
-rematch of all twenty through the service against a database copy. Fourteen of the twenty carry at
-least one line with no candidate in scope at all: those lines never reach the suggestion floor, so no
-ranking or tie-breaking change can touch them. Their only routes are an operator mapping the line
-once so an alias is learned, which is Metric 2's path, or master coverage. The true ceiling under the
-freeze may be lower than 6, because it has still to be intersected with the invoices whose header
-fields the frozen parser did produce.
+**Metric 1a has a ceiling of 6 of the 20 real uploads under any ranking or tie-breaking change.**
+That figure is derived, not measured here: it comes from a distribution of unmatched lines per
+invoice produced by the unit that wrote the matcher change, relayed to me, and the arithmetic over it
+is mine. An earlier version of this paragraph called the ceiling *hard* and said it held under *any
+matcher change*. Both words were wrong and they are corrected here, because the correction matters
+more than the number.
+
+It is not *hard*. What is hard is the floor of refusals underneath it; the ceiling itself is an upper
+bound that two further conditions can only push down. The header fields the frozen parser did not
+produce are one, and the cost comparison three subsections below is the other — it refuses two
+invoices whose every line is already matched automatically, so a reader treating 6 as reachable would
+be wrong for a reason this same document supplies a few paragraphs later.
+
+It does not hold under *any matcher change*, and the justification originally offered — that no
+ranking or tie-breaking change can reach those lines — is narrower than the claim it was supporting.
+Widening the eligible scope is a matcher change and it manufactures candidates for exactly those
+lines; the unresolved-supplier fallback already in this codebase is that change.
+
+The premise itself also needed correcting, and this part I measured myself at `72c4c04` on the same
+database copy rather than taking it relayed. The claim had been that those lines have *no candidate
+at all* in the resolved supplier's scope. They do. Across 357 lines, 333 of them under a resolved
+supplier, there is **not one line for which the matcher returns an empty candidate list**. The 85
+lines in question come back as `unmatched`, which is a different thing: they have candidates and the
+best one falls below the suggestion floor of 70. Where it falls is the finding —
+
+| best candidate score on an unmatched line | lines |
+| --- | --- |
+| 60 to 70 | 50 |
+| 50 to 60 | 34 |
+| 30 to 40 | 1 |
+
+**84 of the 85 sit within twenty points of the floor.** These are not lines beyond the reach of
+matching work. They are lines just under a threshold, and the intervention most likely to lift them
+is better description normalisation — which means the size-token handling in the frozen extraction
+parser, the same component the cost comparison below independently points at. Two separate lines of
+evidence now converge on one frozen file. The routes previously named for these lines, an operator
+mapping each one so an alias is learned or fresh master coverage, are real but they are no longer the
+only ones.
 
 ### What the matcher work moves, and what it does not
 
@@ -1133,13 +1164,32 @@ by disabling one mechanism at a time:
 | duplicate-row collapse alone | 136 | 135 | 86 |
 | both | 162 | 109 | 86 |
 
-The unmatched column does not move in any arm, which is the same 86 no-candidate lines seen from the
-other direction. The transition is entirely `suggested` to `auto`: 141 lines, with nothing moving the
-other way. This confirms the prediction registered before the experiment — lifting the score cap
-alone changes almost nothing, and the mover is the collapse of several eligible catalog rows of one
-RMS item that were tying at the top and zeroing the margin. It also confirms the prediction's
-corollary, which matters more: **the matcher's share of the refusal moves and the export count does
-not.** Metric 1a is 0 of 20 on the baseline and 0 of 20 with both mechanisms in.
+The unmatched column does not move in any arm: the same lines that sit below the suggestion floor,
+seen from the other direction. The transition is entirely `suggested` to `auto`: 141 lines, with
+nothing moving the other way. This confirms the prediction registered before the experiment —
+lifting the score cap alone changes almost nothing, and the mover is the collapse of several eligible
+catalog rows of one RMS item that were tying at the top and zeroing the margin. It also confirms the
+prediction's corollary, which matters more: **the matcher's share of the refusal moves and the export
+count does not.** Metric 1a is 0 of 20 on the baseline and 0 of 20 with both mechanisms in.
+
+**The cap-lifted row and the earlier finding above are not in conflict, and the reason is worth
+stating because the record reads as self-contradicting without it.** The round above reports, in bold,
+that removing the cap alone changed zero line statuses. Here the same intervention moves twenty-one.
+Both are correct, and different denominators do not explain it — these are counts of the same event
+type. The explanation is the mechanism, which neither measurement named at the time. The cap and the
+critical-unknown flag are computed from *one* predicate, and the fuzzy automatic path already requires
+that flag to be clear, so lifting the cap cannot admit a single new line through the score bar; that
+is structural at the baseline commit, not an empirical result. What lifting the cap does instead is
+restore **rank**. Ranking is performed on the capped score, so an exactly-named candidate held at the
+cap can be outranked by a merely-similar candidate carrying no unknown. Lift the cap, the exact
+candidate returns to the top, and it then satisfies the *exact* automatic condition — which consults
+no threshold and has no critical-unknown term at all. So cap-off produces automatic matches by
+restoring rank into the exact path, never by clearing the score bar. On the smaller corpus measured
+earlier none of the rank flips crossed that condition, which is why the honest answer there was zero;
+on the fuller corpus twenty-one of them do. The check that settles it is one field: the `path`
+recorded on those twenty-one. All `exact` and this account is right; any `fuzzy` and the row is
+mislabelled, because the arm would have cleared a second gate as well. That check is outstanding and
+the row should be read as provisional until it returns.
 
 A change of this shape moves 141 lines from operator-reviewed to machine-decided, which is the
 population where a ranking error stops being a suggestion somebody rejects and becomes an export
@@ -1159,11 +1209,24 @@ tolerance and 103 inside it.
 The item identities are not in doubt for the lines concerned — they are exact-name matches that were
 independently checked — so the discrepancy is between the master's cost column and the invoice's
 price basis, and the tolerance value is not the question until the cause is known. Three candidate
-mechanisms were registered in advance, each with a signature that distinguishes it from the others:
-a pack or case basis, a quantity or column misread by the frozen extraction parser, and a scale or
-currency factor. **One of the three is our own defect**, and it is the one the evidence already
-favours: the extraction test that fails on `main` fails precisely because the frozen parser reads a
-size token in a description as a quantity. The discriminating measurement is being run before any
+mechanisms were registered in advance, and their signatures are stated here rather than merely
+claimed, because a pre-registration nobody wrote down is not a pre-registration — it is an assertion
+of having had one, and it leaves no way to check afterwards that the signature was not chosen to fit
+the answer. The signatures describe our software, not anyone's commercial values, so they belong in
+this record:
+
+- **A pack or case basis.** The discrepancy tracks a pack or case count: it lands on small whole
+  numbers, and for a given item it is the same number on every invoice that carries it.
+- **A quantity or column misread by the frozen extraction parser.** The discrepancy tracks the row's
+  *own* parsed quantity, varies line to line with no relation to anything in the master, and
+  disappears when the line total is compared instead of the unit price. This is the same component,
+  and very nearly the same fault, as the extraction test that fails on `main`.
+- **A scale or currency factor.** The discrepancy is one constant, the same on every affected line
+  regardless of item or invoice.
+
+**One of the three is our own defect**, and it is the one the evidence already favours: the extraction
+test that fails on `main` fails precisely because the frozen parser reads a size token in a
+description as a quantity. The discriminating measurement is being run before any
 question about the master's cost basis is put to anyone, for the general reason that a question you
 can answer yourself in minutes should not be escalated at all, and certainly not when one of its
 possible answers is that the defect is ours.
