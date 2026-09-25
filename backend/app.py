@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,11 @@ class ExportRequest(BaseModel):
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
     service = InvoiceService(settings or Settings.from_env())
 
     @asynccontextmanager
@@ -134,10 +140,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
+        workers = service.worker_status()
         return {
-            "status": "ok",
+            "status": "degraded" if workers["problems"] else "ok",
+            "problems": workers["problems"],
             "ocr_available": service.ocr_available(),
             "supported_formats": service.supported_formats,
+            "workers": workers,
         }
 
     @app.get("/api/stats")

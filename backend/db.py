@@ -29,15 +29,18 @@ def json_dumps(value: object) -> str:
 class Database:
     """Small SQLite wrapper with one connection per operation/thread."""
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, busy_timeout_seconds: float = 30.0):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.busy_timeout_seconds = max(0.05, float(busy_timeout_seconds))
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        conn = sqlite3.connect(
+            self.path, timeout=self.busy_timeout_seconds, isolation_level=None
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute(f"PRAGMA busy_timeout = {int(self.busy_timeout_seconds * 1000)}")
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
         return conn
