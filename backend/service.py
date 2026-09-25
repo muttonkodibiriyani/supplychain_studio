@@ -27,6 +27,27 @@ from .exporter import SCHEMA_NAME, build_target_workbook
 logger = logging.getLogger("invoice_studio.service")
 
 CATALOG_COMMIT_ROWS = 1000
+MAX_WORKERS_PER_CORE = 2
+
+
+def _bounded_workers(raw: str) -> int:
+    """Clamp INVOICE_WORKERS to what the machine can use.
+
+    Extraction is CPU-bound (OCR), so more threads than cores adds memory
+    without throughput. Allow up to two per core for I/O overlap and warn
+    when the request was cut, so a mis-set value is visible in the logs.
+    """
+
+    requested = max(0, int(raw))
+    cores = os.cpu_count() or 1
+    limit = max(1, cores * MAX_WORKERS_PER_CORE)
+    if requested > limit:
+        logger.warning(
+            "INVOICE_WORKERS=%s exceeds %s (%s cores x %s); using %s",
+            requested, limit, cores, MAX_WORKERS_PER_CORE, limit,
+        )
+        return limit
+    return requested
 
 
 DOCUMENT_EXTENSIONS = {
@@ -140,7 +161,7 @@ class Settings:
             database_path=Path(os.getenv("INVOICE_DB_PATH", data_dir / "invoices.sqlite3")),
             source_dir=Path(os.getenv("INVOICE_SOURCE_DIR", data_dir / "sources")),
             export_dir=Path(os.getenv("INVOICE_EXPORT_DIR", data_dir / "exports")),
-            workers=max(0, min(64, int(os.getenv("INVOICE_WORKERS", "4")))),
+            workers=_bounded_workers(os.getenv("INVOICE_WORKERS", "4")),
             max_file_bytes=int(os.getenv("INVOICE_MAX_FILE_BYTES", str(25 * 1024 * 1024))),
             max_catalog_file_bytes=int(
                 os.getenv("INVOICE_MAX_CATALOG_FILE_BYTES", str(128 * 1024 * 1024))
@@ -595,6 +616,13 @@ class InvoiceService:
         if stalled:
             problems.append(
                 f"{queued} queued with no worker activity for {idle_seconds:.0f}s"
+            )
+        if state["respawns"] or state["thread_exits"]:
+            # Self-healing must not hide the failure: a pool that keeps dying
+            # and being respawned stays visibly abnormal until the next restart.
+            problems.append(
+                f"{state['thread_exits']} worker thread exit(s) and {state['respawns']} "
+                f"respawn(s) since start; last error: {state['last_error'] or 'none'}"
             )
         return {
             "configured": self.settings.workers,

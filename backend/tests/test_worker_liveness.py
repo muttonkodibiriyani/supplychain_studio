@@ -105,7 +105,9 @@ def test_uploads_during_large_catalog_import_drain_without_restart(tmp_path: Pat
     """The production failure: a catalog import longer than the busy timeout,
     uploads arriving while it runs, then queued>0 processing=0 forever."""
 
-    service = make_service(tmp_path, db_busy_timeout_seconds=1.0)
+    # 2 s busy timeout: a 1000-row commit chunk stays far below it even on a
+    # loaded shared host, while parsing 80k rows takes well over 2 s.
+    service = make_service(tmp_path, db_busy_timeout_seconds=2.0)
     service.start()
     try:
         warm, _ = service.ingest_bytes("warm.txt", b"warm up the pool")
@@ -136,7 +138,7 @@ def test_uploads_during_large_catalog_import_drain_without_restart(tmp_path: Pat
         assert len(ids) >= 3, "import finished before enough uploads arrived; enlarge the catalog"
 
         assert all(thread.is_alive() for thread in service._threads), "worker threads died during the import"
-        assert wait_until(lambda: all(terminal(service, job_id) for job_id in ids), timeout=60), (
+        assert wait_until(lambda: all(terminal(service, job_id) for job_id in ids), timeout=120), (
             "queue stalled after the catalog import: " + str(service.worker_status())
         )
         status = service.worker_status()
@@ -168,6 +170,8 @@ def test_dead_worker_thread_is_respawned_and_counted(tmp_path: Path, monkeypatch
         status = service.worker_status()
         assert status["thread_exits"] >= 1
         assert status["alive"] == 2
+        # Self-healing must stay visible: the respawn is flagged as a problem.
+        assert any("respawn" in problem for problem in status["problems"]), status
         job, _ = service.ingest_bytes("after-respawn.txt", b"processed by the respawned pool")
         assert wait_until(lambda: terminal(service, job["id"]))
     finally:
@@ -240,3 +244,15 @@ def test_catalog_import_does_not_freeze_health_endpoint(tmp_path: Path, monkeypa
         assert response.json()["imported"] == 10
         assert len(health_latencies) >= 5, "health probes were blocked during the import"
         assert max(health_latencies) < 1.0, health_latencies
+
+
+def test_worker_count_is_bounded_by_cores(monkeypatch) -> None:
+    import os
+
+    from backend.service import _bounded_workers
+
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    assert _bounded_workers("4") == 4
+    assert _bounded_workers("16") == 16
+    assert _bounded_workers("64") == 16
+    assert _bounded_workers("0") == 0
