@@ -127,17 +127,24 @@ def test_uploads_during_large_catalog_import_drain_without_restart(tmp_path: Pat
         importer = threading.Thread(target=run_import)
         importer.start()
         ids: list[str] = []
+        upload_errors: list[str] = []
         while importer.is_alive():
             time.sleep(0.15)
-            job, _ = service.ingest_bytes(f"during-{len(ids)}.txt", f"queued during import {len(ids)}".encode())
+            try:
+                job, _ = service.ingest_bytes(f"during-{len(ids)}.txt", f"queued during import {len(ids)}".encode())
+            except Exception as error:  # an upload refused during the import is a defect too
+                upload_errors.append(f"{error.__class__.__name__}: {error}")
+                continue
             ids.append(job["id"])
         importer.join()
         assert "error" not in outcome, outcome
         assert outcome["result"]["imported"] == 80_000  # type: ignore[index]
         assert outcome["elapsed"] > service.settings.db_busy_timeout_seconds, outcome  # type: ignore[operator]
-        assert len(ids) >= 3, "import finished before enough uploads arrived; enlarge the catalog"
 
-        assert all(thread.is_alive() for thread in service._threads), "worker threads died during the import"
+        alive = [thread.is_alive() for thread in service._threads]
+        assert all(alive), f"worker threads died during the import: alive={alive}"
+        assert not upload_errors, f"uploads failed during the import: {upload_errors[:3]}"
+        assert len(ids) >= 3, "import finished before enough uploads arrived; enlarge the catalog"
         assert wait_until(lambda: all(terminal(service, job_id) for job_id in ids), timeout=120), (
             "queue stalled after the catalog import: " + str(service.worker_status())
         )
