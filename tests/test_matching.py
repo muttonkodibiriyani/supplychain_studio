@@ -626,6 +626,27 @@ class UninformativeUomUnknownTests(unittest.TestCase):
         varied = matching_module._prepare_catalog(self.rows("CS"), "900001")
         self.assertEqual(matching_module._uninformative_kinds(varied), frozenset())
 
+    def test_one_divergent_row_anywhere_in_the_scope_restores_the_cap_for_every_line(self) -> None:
+        # Documented cliff: the predicate is all-or-nothing over the eligible scope. A single row
+        # stating a different unit, unrelated to the line, restores the cap for every line at once.
+        filler = [
+            {"rms_item_id": f"RMS-F{i}", "description": f"Fictional Filler Product Number {i}", "supplier_id": "900001", "uom": "EA", "unit_cost": 1.0}
+            for i in range(20)
+        ]
+        uniform = self.rows("EA") + filler
+        one_off = uniform + [
+            {"rms_item_id": "RMS-ODD", "description": "Fictional Unrelated Garden Hose Reel", "supplier_id": "900001", "uom": "CS", "unit_cost": 9.0}
+        ]
+        self.assertEqual(matching_module._uninformative_kinds(matching_module._prepare_catalog(uniform, "900001")), frozenset({matching_module.KIND_UOM}))
+        self.assertEqual(matching_module._uninformative_kinds(matching_module._prepare_catalog(one_off, "900001")), frozenset())
+        before = match_lines([self.line], uniform, [], "900001")[0]
+        after = match_lines([self.line], one_off, [], "900001")[0]
+        self.assertEqual(before["match_status"], "auto")
+        self.assertEqual(after["match_status"], "suggested")
+        self.assertIsNone(after["rms_item_id"])
+        self.assertEqual(after["candidates"][0]["score"], matching_module.CRITICAL_UNKNOWN_SCORE_CAP)
+        self.assertEqual(after["candidates"][0]["rms_item_id"], "RMS-A")
+
 
 class UncappedOrderingTests(unittest.TestCase):
     """Mechanism 3: ranking by the uncapped score; the cap decides auto, not order."""
