@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, Query, Request, UploadFile
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -93,6 +95,11 @@ class ExportRequest(BaseModel):
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
     service = InvoiceService(settings or Settings.from_env())
 
     @asynccontextmanager
@@ -134,10 +141,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
+        workers = service.worker_status()
         return {
-            "status": "ok",
+            "status": "degraded" if workers["problems"] else "ok",
+            "problems": workers["problems"],
             "ocr_available": service.ocr_available(),
             "supported_formats": service.supported_formats,
+            "workers": workers,
         }
 
     @app.get("/api/stats")
@@ -257,7 +267,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def import_catalog(file: UploadFile = File(...)) -> dict[str, Any]:
         content = await file.read(service.settings.max_catalog_file_bytes + 1)
         await file.close()
-        return service.import_catalog(file.filename or "catalog", content)
+        # A large master takes minutes to parse. Running it on the event loop
+        # freezes every other request (health, stats, uploads) for that long.
+        return await run_in_threadpool(
+            service.import_catalog, file.filename or "catalog", content
+        )
 
     @app.get("/api/aliases")
     def aliases() -> dict[str, Any]:
@@ -267,7 +281,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def import_aliases(file: UploadFile = File(...)) -> dict[str, Any]:
         content = await file.read(5 * 1024 * 1024 + 1)
         await file.close()
-        return service.import_aliases(file.filename or "aliases.json", content)
+        return await run_in_threadpool(
+            service.import_aliases, file.filename or "aliases.json", content
+        )
 
     @app.post("/api/exports")
     def export_invoices(request: ExportRequest) -> FileResponse:

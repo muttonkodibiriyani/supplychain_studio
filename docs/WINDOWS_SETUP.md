@@ -209,6 +209,8 @@ Show the most recent log entries:
 docker compose --project-name $ProjectName logs --tail 200 invoice-review
 ```
 
+A health status of `degraded` means the extraction worker pool needs attention: the `problems` list says whether workers are dead (they are respawned on the next health check) or whether the queue has stalled. The log shows `extraction worker error` lines with the cause.
+
 Follow new log entries until you press Ctrl+C:
 
 ```powershell

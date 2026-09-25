@@ -4,6 +4,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -22,6 +23,31 @@ from PIL import Image, ImageDraw
 
 from .db import Database, INVOICE_STATUSES, json_dumps, utc_now
 from .exporter import SCHEMA_NAME, build_target_workbook
+
+logger = logging.getLogger("invoice_studio.service")
+
+CATALOG_COMMIT_ROWS = 1000
+MAX_WORKERS_PER_CORE = 2
+
+
+def _bounded_workers(raw: str) -> int:
+    """Clamp INVOICE_WORKERS to what the machine can use.
+
+    Extraction is CPU-bound (OCR), so more threads than cores adds memory
+    without throughput. Allow up to two per core for I/O overlap and warn
+    when the request was cut, so a mis-set value is visible in the logs.
+    """
+
+    requested = max(0, int(raw))
+    cores = os.cpu_count() or 1
+    limit = max(1, cores * MAX_WORKERS_PER_CORE)
+    if requested > limit:
+        logger.warning(
+            "INVOICE_WORKERS=%s exceeds %s (%s cores x %s); using %s",
+            requested, limit, cores, MAX_WORKERS_PER_CORE, limit,
+        )
+        return limit
+    return requested
 
 
 DOCUMENT_EXTENSIONS = {
@@ -125,6 +151,8 @@ class Settings:
     max_pages: int = 50
     max_attempts: int = 3
     poll_seconds: float = 0.25
+    db_busy_timeout_seconds: float = 30.0
+    worker_stall_seconds: float = 120.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -133,7 +161,7 @@ class Settings:
             database_path=Path(os.getenv("INVOICE_DB_PATH", data_dir / "invoices.sqlite3")),
             source_dir=Path(os.getenv("INVOICE_SOURCE_DIR", data_dir / "sources")),
             export_dir=Path(os.getenv("INVOICE_EXPORT_DIR", data_dir / "exports")),
-            workers=max(0, min(8, int(os.getenv("INVOICE_WORKERS", "2")))),
+            workers=_bounded_workers(os.getenv("INVOICE_WORKERS", "4")),
             max_file_bytes=int(os.getenv("INVOICE_MAX_FILE_BYTES", str(25 * 1024 * 1024))),
             max_catalog_file_bytes=int(
                 os.getenv("INVOICE_MAX_CATALOG_FILE_BYTES", str(128 * 1024 * 1024))
@@ -142,6 +170,12 @@ class Settings:
             max_pages=int(os.getenv("INVOICE_MAX_PAGES", "50")),
             max_attempts=max(1, int(os.getenv("INVOICE_MAX_ATTEMPTS", "3"))),
             poll_seconds=max(0.05, float(os.getenv("INVOICE_POLL_SECONDS", "0.25"))),
+            db_busy_timeout_seconds=max(
+                0.05, float(os.getenv("INVOICE_DB_BUSY_TIMEOUT_SECONDS", "30"))
+            ),
+            worker_stall_seconds=max(
+                5.0, float(os.getenv("INVOICE_WORKER_STALL_SECONDS", "120"))
+            ),
         )
 
 
@@ -261,11 +295,26 @@ class InvoiceService:
         self.settings = settings
         self.settings.source_dir.mkdir(parents=True, exist_ok=True)
         self.settings.export_dir.mkdir(parents=True, exist_ok=True)
-        self.db = Database(settings.database_path)
+        self.db = Database(
+            settings.database_path,
+            busy_timeout_seconds=settings.db_busy_timeout_seconds,
+        )
         self.db.initialize()
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._threads: list[threading.Thread] = []
+        self._worker_lock = threading.Lock()
+        self._worker_state: dict[str, Any] = {
+            "started_at": utc_now(),
+            "last_claim_at": None,
+            "last_complete_at": None,
+            "last_error": None,
+            "last_error_at": None,
+            "error_count": 0,
+            "thread_exits": 0,
+            "respawns": 0,
+        }
+        self._orphaned_jobs: set[str] = set()
 
     def _settings_from_row(self, row: Mapping[str, Any]) -> dict[str, Any]:
         policy = _load_json(row["target_cost_policy_json"], {})
@@ -463,18 +512,19 @@ class InvoiceService:
         return sorted(extension.lstrip(".") for extension in DOCUMENT_EXTENSIONS)
 
     def start(self) -> int:
-        recovered = self.db.recover_interrupted_jobs()
-        if self._threads or self.settings.workers <= 0:
+        try:
+            recovered = self.db.recover_interrupted_jobs()
+        except Exception as error:
+            # Recovery must never stop the workers from being created; the
+            # rows stay 'processing' until the next start, but the pool runs.
+            self._record_worker_error("recover", error)
+            recovered = 0
+        if self.settings.workers <= 0:
             return recovered
         self._stop.clear()
-        for index in range(self.settings.workers):
-            thread = threading.Thread(
-                target=self._worker_loop,
-                name=f"invoice-worker-{index + 1}",
-                daemon=True,
-            )
-            thread.start()
-            self._threads.append(thread)
+        with self._worker_lock:
+            self._worker_state["started_at"] = utc_now()
+        self.ensure_workers()
         self._wake.set()
         return recovered
 
@@ -484,6 +534,114 @@ class InvoiceService:
         for thread in self._threads:
             thread.join(timeout=5)
         self._threads.clear()
+
+    def _spawn_worker(self, index: int) -> threading.Thread:
+        thread = threading.Thread(
+            target=self._worker_main,
+            name=f"invoice-worker-{index + 1}",
+            daemon=True,
+        )
+        thread.start()
+        return thread
+
+    def ensure_workers(self) -> int:
+        """Replace any worker thread that has exited; return the live count.
+
+        The pool must never be silently smaller than configured: a dead worker
+        leaves uploads queued forever with no error. Called at start and from
+        every health probe, so a dead pool heals on the next poll.
+        """
+
+        if self._stop.is_set() or self.settings.workers <= 0:
+            return sum(1 for thread in self._threads if thread.is_alive())
+        with self._worker_lock:
+            alive: list[threading.Thread] = []
+            for thread in self._threads:
+                if thread.is_alive():
+                    alive.append(thread)
+                else:
+                    self._worker_state["respawns"] += 1
+                    logger.warning("worker %s was not alive; respawning", thread.name)
+            self._threads = alive
+            index = len(self._threads)
+            while len(self._threads) < self.settings.workers:
+                self._threads.append(self._spawn_worker(index))
+                index += 1
+            return len(self._threads)
+
+    def worker_status(self) -> dict[str, Any]:
+        """Liveness of the extraction pool, for /api/health and operators."""
+
+        alive = self.ensure_workers()
+        with self.db.connection() as conn:
+            counts = {
+                row["status"]: row["count"]
+                for row in conn.execute(
+                    "SELECT status, COUNT(*) AS count FROM invoices "
+                    "WHERE status IN ('queued','processing') GROUP BY status"
+                ).fetchall()
+            }
+        queued = int(counts.get("queued", 0))
+        processing = int(counts.get("processing", 0))
+        with self._worker_lock:
+            state = dict(self._worker_state)
+        last_activity = max(
+            (
+                value
+                for value in (
+                    state["started_at"],
+                    state["last_claim_at"],
+                    state["last_complete_at"],
+                )
+                if value
+            ),
+            default=None,
+        )
+        idle_seconds = None
+        if last_activity:
+            idle_seconds = round(
+                (datetime.now(UTC) - datetime.fromisoformat(last_activity.replace("Z", "+00:00")))
+                .total_seconds(),
+                1,
+            )
+        stalled = bool(
+            queued > 0
+            and processing == 0
+            and idle_seconds is not None
+            and idle_seconds > self.settings.worker_stall_seconds
+        )
+        problems: list[str] = []
+        if self.settings.workers > 0 and alive < self.settings.workers:
+            problems.append(f"{alive} of {self.settings.workers} extraction workers alive")
+        if stalled:
+            problems.append(
+                f"{queued} queued with no worker activity for {idle_seconds:.0f}s"
+            )
+        if state["respawns"] or state["thread_exits"]:
+            # Self-healing must not hide the failure: a pool that keeps dying
+            # and being respawned stays visibly abnormal until the next restart.
+            problems.append(
+                f"{state['thread_exits']} worker thread exit(s) and {state['respawns']} "
+                f"respawn(s) since start; last error: {state['last_error'] or 'none'}"
+            )
+        return {
+            "configured": self.settings.workers,
+            "alive": alive,
+            "queued": queued,
+            "processing": processing,
+            "stalled": stalled,
+            "idle_seconds": idle_seconds,
+            "problems": problems,
+            **state,
+        }
+
+    def _record_worker_error(self, stage: str, error: BaseException) -> None:
+        message = f"{stage}: {error.__class__.__name__}: {error}"[:500]
+        with self._worker_lock:
+            self._worker_state["error_count"] += 1
+            self._worker_state["last_error"] = message
+            self._worker_state["last_error_at"] = utc_now()
+        logger.warning("extraction worker error: %s", message)
 
     def ocr_available(self) -> bool:
         return shutil.which("tesseract") is not None
@@ -858,17 +1016,86 @@ class InvoiceService:
                 raise NotFound("stored source file is missing")
             return path, row["filename"], row["mime_type"]
 
+    def _worker_main(self) -> None:
+        try:
+            self._worker_loop()
+        except BaseException as error:  # pragma: no cover - last line of defence
+            self._record_worker_error("loop", error)
+            raise
+        finally:
+            with self._worker_lock:
+                self._worker_state["thread_exits"] += 1
+            if not self._stop.is_set():
+                logger.warning("extraction worker %s exited", threading.current_thread().name)
+
     def _worker_loop(self) -> None:
+        """Claim and process jobs until stopped.
+
+        Every database step can raise ``sqlite3.OperationalError: database is
+        locked`` when a long write (a 100k-row catalog import) outlives the busy
+        timeout. That must never end the thread: log it, back off, retry.
+        """
+
+        backoff = self.settings.poll_seconds
         while not self._stop.is_set():
-            invoice_id = self._claim_job()
+            self._retry_orphaned_jobs()
+            try:
+                invoice_id = self._claim_job()
+            except Exception as error:
+                self._record_worker_error("claim", error)
+                self._wake.wait(backoff)
+                self._wake.clear()
+                backoff = min(backoff * 2, 10.0)
+                continue
+            backoff = self.settings.poll_seconds
             if invoice_id is None:
                 self._wake.wait(self.settings.poll_seconds)
                 self._wake.clear()
                 continue
-            self._process_job(invoice_id)
+            with self._worker_lock:
+                self._worker_state["last_claim_at"] = utc_now()
+            try:
+                self._process_job(invoice_id)
+            except Exception as error:
+                # _process_job handles extraction failures itself; reaching here
+                # means recording the failure hit the database lock. Keep the id
+                # so the job is not left in 'processing' until the next restart.
+                self._record_worker_error("process", error)
+                self._orphaned_jobs.add(invoice_id)
+            with self._worker_lock:
+                self._worker_state["last_complete_at"] = utc_now()
+
+    def _retry_orphaned_jobs(self) -> None:
+        if not self._orphaned_jobs:
+            return
+        for invoice_id in list(self._orphaned_jobs):
+            try:
+                self._fail_processing(
+                    invoice_id,
+                    RuntimeError("worker could not record the outcome; requeued"),
+                    permanent=False,
+                )
+            except Exception as error:
+                self._record_worker_error("requeue", error)
+                return
+            self._orphaned_jobs.discard(invoice_id)
 
     def _claim_job(self) -> str | None:
         now = utc_now()
+        # Poll with a plain read first. Taking BEGIN IMMEDIATE just to look at
+        # an empty queue makes every idle worker a writer competing with
+        # imports and uploads for the single SQLite write lock.
+        with self.db.connection() as conn:
+            candidate = conn.execute(
+                """
+                SELECT 1 FROM invoices
+                WHERE status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                LIMIT 1
+                """,
+                (now,),
+            ).fetchone()
+        if candidate is None:
+            return None
         with self.db.transaction(immediate=True) as conn:
             row = conn.execute(
                 """
@@ -2130,8 +2357,11 @@ class InvoiceService:
                 source_name=excluded.source_name,
                 updated_at=excluded.updated_at
         """
+        # Parse the whole file before taking the write lock. Holding BEGIN
+        # IMMEDIATE across a multi-minute parse blocks every worker's job claim
+        # past the busy timeout; the insert itself takes seconds.
         pending: list[tuple[Any, ...]] = []
-        with self.db.transaction(immediate=True) as conn:
+        if True:
             for row_number, source in enumerate(self._catalog_rows(filename, content), start=2):
                 row: dict[str, Any] = {}
                 for key, value in source.items():
@@ -2204,11 +2434,16 @@ class InvoiceService:
                     )
                 )
                 imported += 1
-                if len(pending) >= 1000:
-                    conn.executemany(insert_sql, pending)
-                    pending.clear()
-            if pending:
-                conn.executemany(insert_sql, pending)
+        # Commit in chunks so no single write transaction approaches the busy
+        # timeout; workers and uploads interleave between chunks. Every row was
+        # validated above, so a mid-import failure can only be a storage error.
+        for start in range(0, len(pending), CATALOG_COMMIT_ROWS):
+            with self.db.transaction(immediate=True) as conn:
+                conn.executemany(insert_sql, pending[start : start + CATALOG_COMMIT_ROWS])
+            # Let a waiting upload or worker take the lock between chunks;
+            # SQLite's busy handler does not queue writers fairly.
+            time.sleep(0.01)
+        self._wake.set()
         return {"imported": imported, "skipped": skipped, "warnings": warnings}
 
     def import_aliases(self, filename: str, content: bytes) -> dict[str, Any]:
