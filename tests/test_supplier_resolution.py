@@ -263,9 +263,20 @@ def test_aliases_table_stays_empty_after_approving_a_resolved_invoice(tmp_path: 
     # Bar (f-2): supplier resolution ships with alias persistence disabled by an
     # explicit named switch (INVOICE_LEARN_ALIASES, default off).  Confirming
     # and approving a resolved invoice must not write a single alias row.
-    service = make_service(tmp_path)
+    # seed_demo refuses a database that already holds non-demo catalog rows,
+    # so the fictional demo workspace is seeded first and the fixture catalog
+    # is imported on top of it.  Every assertion below is unchanged.
+    service = InvoiceService(
+        Settings(
+            database_path=tmp_path / "service.db",
+            source_dir=tmp_path / "sources",
+            export_dir=tmp_path / "exports",
+            workers=0,
+        )
+    )
     assert service.settings.learn_aliases is False
     service.seed_demo()
+    assert service.import_catalog("catalog.csv", CATALOG_CSV)["skipped"] == 0
     invoice = service.get_invoice("demo-invoice-002")
     assert invoice["supplier_id"]
     line = dict(invoice["lines"][0])

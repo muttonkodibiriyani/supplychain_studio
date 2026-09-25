@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from .service import (
     Conflict,
+    DemoSeedRefused,
     InvoiceService,
     NotFound,
     Settings,
@@ -139,6 +140,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def upload_handler(_: Request, error: UploadRejected) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": str(error)})
 
+    @app.exception_handler(DemoSeedRefused)
+    async def demo_seed_refused_handler(_: Request, error: DemoSeedRefused) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": {
+                    "message": str(error),
+                    "non_demo_catalog_rows": error.non_demo_catalog_rows,
+                    "non_demo_invoices": error.non_demo_invoices,
+                }
+            },
+        )
+
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         workers = service.worker_status()
@@ -151,7 +165,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/stats")
-    def stats() -> dict[str, int]:
+    def stats() -> dict[str, Any]:
         return service.stats()
 
     @app.get("/api/settings")
@@ -317,7 +331,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/api/demo")
-    def demo() -> dict[str, Any]:
+    def demo() -> Any:
+        if not service.settings.enable_demo_seed:
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "demo seeding is disabled; set INVOICE_ENABLE_DEMO_SEED=true "
+                    "on a demo-only workspace to enable POST /api/demo"
+                },
+            )
         return service.seed_demo()
 
     project_root = Path(__file__).resolve().parents[1]

@@ -140,6 +140,27 @@ class UploadRejected(ServiceError):
     pass
 
 
+# Every row POST /api/demo writes is recognisable by one of these prefixes.
+# Seeded lines carry match_status 'auto' and confidence 100 as literals, so a
+# database holding them must never be read as a measurement of the matcher.
+DEMO_CATALOG_PREFIX = "demo:"
+DEMO_INVOICE_PREFIX = "demo-"
+DEMO_SOURCE_PREFIX = "FICTIONAL-demo-invoice-"
+
+
+class DemoSeedRefused(ServiceError):
+    """Raised when demo seeding would write fictional rows next to real data."""
+
+    def __init__(self, *, non_demo_catalog_rows: int, non_demo_invoices: int):
+        super().__init__(
+            "demo seed refused: the database already holds "
+            f"{non_demo_catalog_rows} non-demo catalog rows and "
+            f"{non_demo_invoices} non-demo invoices; demo data is only seeded into an empty or demo-only database"
+        )
+        self.non_demo_catalog_rows = non_demo_catalog_rows
+        self.non_demo_invoices = non_demo_invoices
+
+
 @dataclass(slots=True)
 class Settings:
     database_path: Path
@@ -160,6 +181,9 @@ class Settings:
     # that taught it with its provenance erased.  Set INVOICE_LEARN_ALIASES=1
     # to opt in explicitly.
     learn_aliases: bool = False
+    # POST /api/demo writes fictional catalog rows and invoices whose lines are
+    # marked matched without running the matcher. Off unless explicitly enabled.
+    enable_demo_seed: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -185,7 +209,12 @@ class Settings:
             ),
             learn_aliases=os.getenv("INVOICE_LEARN_ALIASES", "").strip().lower()
             in {"1", "true", "yes", "on"},
+            enable_demo_seed=_env_flag(os.getenv("INVOICE_ENABLE_DEMO_SEED")),
         )
+
+
+def _env_flag(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _load_json(value: str | None, fallback: Any) -> Any:
@@ -883,7 +912,7 @@ class InvoiceService:
                 "offset": offset,
             }
 
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> dict[str, Any]:
         with self.db.connection() as conn:
             status_counts = {
                 row["status"]: row["count"]
@@ -907,6 +936,23 @@ class InvoiceService:
             result["total_lines"] = line_counts["total_lines"]
             result["catalog_items"] = conn.execute("SELECT COUNT(*) FROM catalog_items").fetchone()[0]
             result["alias_count"] = conn.execute("SELECT COUNT(*) FROM aliases").fetchone()[0]
+            # Demo rows are flagged, not hidden: matched_lines above counts the
+            # seeded 'auto' literals, so any rate read from a flagged database
+            # is inflated by fiat and must not be reported as a measurement.
+            result["demo_catalog_items"] = conn.execute(
+                "SELECT COUNT(*) FROM catalog_items WHERE catalog_item_id LIKE ?",
+                (f"{DEMO_CATALOG_PREFIX}%",),
+            ).fetchone()[0]
+            result["demo_invoices"] = conn.execute(
+                "SELECT COUNT(*) FROM invoices WHERE id LIKE ?", (f"{DEMO_INVOICE_PREFIX}%",)
+            ).fetchone()[0]
+            result["demo_lines"] = conn.execute(
+                "SELECT COUNT(*) FROM invoice_lines WHERE invoice_id LIKE ?",
+                (f"{DEMO_INVOICE_PREFIX}%",),
+            ).fetchone()[0]
+            result["contains_demo_data"] = bool(
+                result["demo_catalog_items"] or result["demo_invoices"]
+            )
             return result
 
     def _validate_document_name(self, filename: str) -> str:
@@ -1079,7 +1125,7 @@ class InvoiceService:
         """Claim and process jobs until stopped.
 
         Every database step can raise ``sqlite3.OperationalError: database is
-        locked`` when a long write (a 100k-row catalog import) outlives the busy
+        locked`` when a long write (a large catalog import) outlives the busy
         timeout. That must never end the thread: log it, back off, retry.
         """
 
@@ -3237,8 +3283,24 @@ class InvoiceService:
         catalog_upserted = 0
         invoices_created = 0
         with self.db.transaction(immediate=True) as conn:
+            # Demo rows are recognisable by prefix. Seeding next to anything
+            # else would put fictional, matcher-bypassing lines into a real
+            # workspace and inflate every match-rate figure read from it.
+            non_demo_catalog_rows = conn.execute(
+                "SELECT COUNT(*) FROM catalog_items WHERE catalog_item_id NOT LIKE ?",
+                (f"{DEMO_CATALOG_PREFIX}%",),
+            ).fetchone()[0]
+            non_demo_invoices = conn.execute(
+                "SELECT COUNT(*) FROM invoices WHERE id NOT LIKE ?",
+                (f"{DEMO_INVOICE_PREFIX}%",),
+            ).fetchone()[0]
+            if non_demo_catalog_rows or non_demo_invoices:
+                raise DemoSeedRefused(
+                    non_demo_catalog_rows=non_demo_catalog_rows,
+                    non_demo_invoices=non_demo_invoices,
+                )
             for item in catalog:
-                catalog_item_id = f"demo:{item[0]}"
+                catalog_item_id = f"{DEMO_CATALOG_PREFIX}{item[0]}"
                 conn.execute(
                     """
                     INSERT INTO catalog_items
