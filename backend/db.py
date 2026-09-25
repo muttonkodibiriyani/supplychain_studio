@@ -332,6 +332,10 @@ class Database:
                 "target_cost_variance": "TEXT",
                 "target_cost_comparison_status": "TEXT",
                 "target_cost_review_required": "INTEGER NOT NULL DEFAULT 0",
+                "rms_unit_cost_min": "TEXT",
+                "rms_unit_cost_max": "TEXT",
+                "unit_status": "TEXT",
+                "unit_reason": "TEXT",
             }
             for name, definition in line_additions.items():
                 if name not in line_columns:

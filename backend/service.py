@@ -23,6 +23,7 @@ from PIL import Image, ImageDraw
 
 from .db import Database, INVOICE_STATUSES, json_dumps, utc_now
 from .exporter import SCHEMA_NAME, build_target_workbook
+from . import matching
 
 logger = logging.getLogger("invoice_studio.service")
 
@@ -729,6 +730,15 @@ class InvoiceService:
             "rms_parent_item": row["rms_item_id"],
             "rms_upc": row["rms_upc"],
             "rms_unit_cost": _number(row["rms_unit_cost"]),
+            "rms_unit_cost_min": _number(row["rms_unit_cost_min"]),
+            "rms_unit_cost_max": _number(row["rms_unit_cost_max"]),
+            "rms_unit_cost_note": (
+                "master holds multiple prices for this RMS item"
+                if row["rms_unit_cost_min"] is not None
+                else None
+            ),
+            "unit_status": row["unit_status"],
+            "unit_reason": row["unit_reason"],
             "rms_po_number": row["rms_po_number"],
             "target_unit_cost": _number(row["target_unit_cost"]),
             "target_cost_source": row["target_cost_source"],
@@ -1178,10 +1188,16 @@ class InvoiceService:
         Order of evidence: an explicit/printed supplier id known to the catalog;
         a printed supplier name equal to a catalog supplier name; otherwise the
         letters of the printed name against the alphabetic prefix of coded
-        catalog supplier names (``ABC001…`` style).  When several coded
-        suppliers share that prefix the invoice lines decide: the supplier whose
-        rows contain the most exact normalized line descriptions wins, and a tie
-        or no evidence leaves the supplier unresolved with an explicit warning.
+        catalog supplier names (``ABC001...`` style).  When several coded
+        suppliers share that prefix, only DISTINGUISHING evidence decides: each
+        candidate is credited with the exact normalized line descriptions its
+        own rows carry, and the invoice resolves only if one candidate is
+        credited STRICTLY more than every other.  Descriptions stocked by
+        several candidates credit all of them and therefore cannot separate
+        them, so an invoice made up of shared items leaves the supplier
+        unresolved with an explicit warning.  Refusing is the designed outcome,
+        not a failure path: relaxing strictly-greater to greater-or-equal would
+        turn every confusable invoice into a coin flip.
         """
 
         from .matching import normalize_description as match_normalize
@@ -1209,7 +1225,7 @@ class InvoiceService:
             if known:
                 warnings.append(
                     f"Supplier id '{supplier_id}' is not present in the catalog; "
-                    "matching is scoped to it and global rows only."
+                    "matching falls back to the full catalog at low confidence."
                 )
             return {
                 "supplier_id": supplier_id,
@@ -1321,6 +1337,30 @@ class InvoiceService:
             self._full_catalog_cache = (fingerprint, catalog)
         return catalog
 
+    def _rms_cost_facts(
+        self, conn: Any, selected: Any, supplier_id: str | None
+    ) -> dict[str, Any]:
+        """Cost facts over every eligible row of the selected RMS item.
+
+        Same rule as matching._cost_facts: rows of the same RMS item in the
+        supplier scope (the selected row's own supplier when the invoice has
+        none) contribute their costs; several distinct costs give a range
+        instead of one silently picked row.
+        """
+
+        scope = supplier_id or selected["supplier_id"]
+        rows = conn.execute(
+            """
+            SELECT unit_cost FROM catalog_items WHERE rms_item_id = ?
+              AND (supplier_id IS NULL OR supplier_id = '' OR supplier_id = ?)
+            """,
+            (selected["rms_item_id"], scope or ""),
+        ).fetchall()
+        return matching._cost_facts(
+            self._catalog_row(selected),
+            [{"unit_cost": _number(row["unit_cost"])} for row in rows],
+        )
+
     @staticmethod
     def _catalog_row(row: Any) -> dict[str, Any]:
         return {
@@ -1336,7 +1376,25 @@ class InvoiceService:
             "master_po_number": row["master_po_number"],
         }
 
+    def _matching_scope_supplier(self, conn: Any, supplier_id: str | None) -> str | None:
+        """Supplier scope for the matcher: the id only when the catalog knows it.
+
+        An unverified id (printed on the invoice but absent from the catalog)
+        would otherwise take the scoped branch and see 0 supplier rows plus
+        the global rows: the silently narrowed set through a second door.
+        Absent or unverified ids take the same full-catalog fallback as an
+        unresolved supplier (matching.match_lines marks it, never auto).
+        """
+
+        if not supplier_id:
+            return None
+        known = conn.execute(
+            "SELECT 1 FROM catalog_items WHERE supplier_id = ? LIMIT 1", (supplier_id,)
+        ).fetchone()
+        return supplier_id if known else None
+
     def _catalog_for_matching(self, conn: Any, supplier_id: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        supplier_id = self._matching_scope_supplier(conn, supplier_id)
         if supplier_id:
             catalog_rows = conn.execute(
                 """
@@ -1413,15 +1471,35 @@ class InvoiceService:
                 candidates = []
             invoice_unit_cost = _decimal(source.get("unit_price"))
             rms_unit_cost = _decimal(source.get("rms_unit_cost"))
+            rms_cost_min = _decimal(source.get("rms_unit_cost_min"))
+            rms_cost_max = _decimal(source.get("rms_unit_cost_max"))
+            rms_range = (
+                rms_cost_min is not None
+                and rms_cost_max is not None
+                and rms_cost_max > rms_cost_min
+            )
             rms_usable = rms_unit_cost is not None and rms_unit_cost > Decimal("0.01")
             target_unit_cost = invoice_unit_cost
             target_source = "invoice"
             comparison_currency_available = str(currency or "").upper() == "AED"
             variance = None
+            unit_status = source.get("unit_status")
+            # The RMS cost comparison is a HEURISTIC backstop: it never enters
+            # the exported money (target cost is always the invoice cost) and
+            # it is half of the unit guard.  The other half is the unit check
+            # at the auto boundary (matching.unit_check); the two must not be
+            # split, because a wrong unit shows up here as a cost gap.
             if source.get("rms_item_id") in (None, ""):
                 # Matching failed: the invoice price is unchecked, so the cost
                 # sanity guard must stay ON (it was silently switched off here).
                 comparison_status = "unavailable_no_match"
+                review_required = True
+            elif unit_status in matching.BLOCKING_UNIT_STATUSES or rms_range:
+                # Refuse and label: size / pack / UOM unknown on one side or in
+                # disagreement, or the master holds divergent unit costs for
+                # this RMS item (tied rows).  No row is picked and no number is
+                # shown, because a figure here reads as verification.
+                comparison_status = "unavailable_uom_mismatch"
                 review_required = True
             elif not rms_usable:
                 comparison_status = "unavailable_rms_cost"
@@ -1457,6 +1535,12 @@ class InvoiceService:
                     ),
                     "rms_upc": _normalize_upc(source.get("rms_upc")),
                     "rms_unit_cost": _decimal_text(rms_unit_cost),
+                    "rms_unit_cost_min": _decimal_text(rms_cost_min) if rms_range else None,
+                    "rms_unit_cost_max": _decimal_text(rms_cost_max) if rms_range else None,
+                    "unit_status": (str(unit_status)[:40] if unit_status else None),
+                    "unit_reason": (
+                        str(source.get("unit_reason"))[:500] if source.get("unit_reason") else None
+                    ),
                     "rms_po_number": _valid_order_number(source.get("rms_po_number")),
                     "target_unit_cost": _decimal_text(target_unit_cost),
                     "target_cost_source": target_source,
@@ -1479,8 +1563,9 @@ class InvoiceService:
                  uom,upc,catalog_item_id,rms_item_id,rms_upc,rms_unit_cost,rms_po_number,
                  target_unit_cost,target_cost_source,target_cost_variance,
                  target_cost_comparison_status,target_cost_review_required,
-                 match_status,confidence,candidates_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 match_status,confidence,candidates_json,
+                 rms_unit_cost_min,rms_unit_cost_max,unit_status,unit_reason)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             [
                 (
@@ -1507,6 +1592,10 @@ class InvoiceService:
                     line["match_status"],
                     line["confidence"],
                     json_dumps(line["candidates"]),
+                    line.get("rms_unit_cost_min"),
+                    line.get("rms_unit_cost_max"),
+                    line.get("unit_status"),
+                    line.get("unit_reason"),
                 )
                 for line in lines
             ],
@@ -1536,8 +1625,9 @@ class InvoiceService:
                     lines=extracted.get("lines") or [],
                 )
                 supplier_id = resolution["supplier_id"]
+                scope_supplier_id = self._matching_scope_supplier(conn, supplier_id)
                 if extracted.get("lines"):
-                    catalog, aliases = self._catalog_for_matching(conn, supplier_id)
+                    catalog, aliases = self._catalog_for_matching(conn, scope_supplier_id)
                 else:
                     catalog, aliases = [], []
                 defaults = self._target_defaults(conn, supplier_id)
@@ -1548,7 +1638,8 @@ class InvoiceService:
                 extracted,
                 catalog,
                 aliases,
-                supplier_id=supplier_id,
+                supplier_id=scope_supplier_id,
+                scope_resolved=True,
             )
             enriched["supplier_id"] = supplier_id
             enriched["supplier_resolution_method"] = resolution["method"]
@@ -1730,12 +1821,13 @@ class InvoiceService:
                     current_version=row["version"],
                 )
             invoice = self._invoice_from_row(conn, row, full=True)
-            catalog, aliases = self._catalog_for_matching(conn, invoice.get("supplier_id"))
+            scope_supplier_id = self._matching_scope_supplier(conn, invoice.get("supplier_id"))
+            catalog, aliases = self._catalog_for_matching(conn, scope_supplier_id)
             enriched_lines = matching.match_lines(
                 invoice.get("lines") or [],
                 catalog,
                 aliases,
-                invoice.get("supplier_id"),
+                scope_supplier_id,
             )
             policy = self._target_defaults(
                 conn, invoice.get("supplier_id")
@@ -2020,14 +2112,25 @@ class InvoiceService:
                                     }
                                 ]
                             )
+                        unit = matching.unit_check(
+                            source.get("description"),
+                            source.get("uom"),
+                            selected["description"],
+                            selected["uom"],
+                        )
+                        cost = self._rms_cost_facts(conn, selected, effective_supplier_id)
                         source.update(
                             {
                                 "catalog_item_id": selected["catalog_item_id"],
                                 "rms_item_id": selected["rms_item_id"],
                                 "rms_parent_item": selected["parent_item"],
                                 "rms_upc": selected["upc"],
-                                "rms_unit_cost": selected["unit_cost"],
+                                "rms_unit_cost": cost["rms_unit_cost"],
+                                "rms_unit_cost_min": cost["rms_unit_cost_min"],
+                                "rms_unit_cost_max": cost["rms_unit_cost_max"],
                                 "rms_po_number": selected["master_po_number"],
+                                "unit_status": unit["status"],
+                                "unit_reason": unit["reason"],
                             }
                         )
                     elif rms_item_id or catalog_item_id:
@@ -2280,6 +2383,19 @@ class InvoiceService:
                         "supplier_item_mismatch",
                         "RMS item belongs to a different supplier scope",
                     )
+                else:
+                    # Unit tier at approval, recomputed from the catalog row:
+                    # the RMS item id is the export's unit carrier, so a
+                    # multi-unit row or a stated disagreement cannot be
+                    # approved with the reason "unit unconfirmed".
+                    unit = matching.unit_check(
+                        line.get("description"),
+                        line.get("uom"),
+                        catalog_item["description"],
+                        catalog_item["uom"],
+                    )
+                    if unit["block"]:
+                        error(f"{prefix}.uom", "unit_unconfirmed", unit["reason"])
             try:
                 target_unit_cost = _decimal(line.get("target_unit_cost"))
             except (InvalidOperation, ValueError, TypeError):

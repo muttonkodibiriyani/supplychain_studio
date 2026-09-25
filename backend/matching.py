@@ -24,7 +24,15 @@ class CatalogValidationError(ValueError):
 
 AUTO_FUZZY_THRESHOLD = 96.0
 AUTO_FUZZY_MARGIN = 8.0
+# Score ceiling for candidates with a one-sided critical attribute; must stay
+# strictly below AUTO_FUZZY_THRESHOLD (see _rank_candidates).
+CRITICAL_UNKNOWN_SCORE_CAP = 92.0
 SUGGEST_THRESHOLD = 70.0
+# Unit kinds for the auto-boundary unit check (see unit_check).  Values are the
+# canonical forms produced by _normalize_uom.
+SINGLE_UNIT_UOMS = frozenset({"EACH", "BOTTLE"})
+MULTI_UNIT_UOMS = frozenset({"PACK", "BOX", "CASE", "CARTON", "DOZEN"})
+UNIT_UNCONFIRMED = "unit unconfirmed"
 DEFAULT_CANDIDATE_LIMIT = 5
 # Above this many eligible rows a token prefilter narrows the fuzzy scan so an
 # unresolved-supplier fallback over a large full catalog stays bounded.
@@ -82,6 +90,9 @@ _UOM_ALIASES = {
     "CS": "CASE",
     "CTN": "CARTON",
     "CARTON": "CARTON",
+    "DOZ": "DOZEN",
+    "DZ": "DOZEN",
+    "DOZEN": "DOZEN",
     "BTL": "BOTTLE",
     "BOTTLE": "BOTTLE",
     "ML": "ML",
@@ -211,6 +222,10 @@ def match_lines(
         if supplied_catalog_key not in (None, "") or supplied_id not in (None, ""):
             supplied_key = str(supplied_id or supplied_catalog_key)
             if selected is not None:
+                unit = unit_check(
+                    line.get("description"), line.get("uom"), selected["description"], selected.get("uom")
+                )
+                cost = _cost_facts(selected, catalog_by_rms.get(str(selected["rms_item_id"]), []))
                 line.update(
                     {
                         "catalog_item_id": selected.get("catalog_item_id"),
@@ -218,8 +233,12 @@ def match_lines(
                         "rms_parent_item": selected.get("parent_item")
                         or selected["rms_item_id"],
                         "rms_upc": selected.get("upc"),
-                        "rms_unit_cost": selected.get("unit_cost"),
+                        "rms_unit_cost": cost["rms_unit_cost"],
+                        "rms_unit_cost_min": cost["rms_unit_cost_min"],
+                        "rms_unit_cost_max": cost["rms_unit_cost_max"],
                         "rms_po_number": selected.get("master_po_number"),
+                        "unit_status": unit["status"],
+                        "unit_reason": unit["reason"],
                         "match_status": "confirmed",
                         "confidence": 100.0,
                         "candidates": [_public_candidate({
@@ -313,10 +332,11 @@ def match_lines(
         upc_blocks_automatic_selection = (
             upc_state not in {"absent", "matched"} or upc_alias_conflict
         )
+        path = None
         if upc_candidate is not None and not upc_alias_conflict:
-            selected, status, confidence = upc_candidate, "auto", 100.0
+            selected, status, confidence, path = upc_candidate, "auto", 100.0, "upc"
         elif not upc_blocks_automatic_selection and alias_candidate and alias_candidate["_compatible"]:
-            selected, status, confidence = alias_candidate, "auto", 100.0
+            selected, status, confidence, path = alias_candidate, "auto", 100.0, "alias"
         elif ranked:
             top = ranked[0]
             exact_candidates = [
@@ -329,7 +349,10 @@ def match_lines(
                 and len(exact_candidates) == 1
                 and top is exact_candidates[0]
             ):
-                selected, status, confidence = top, "auto", 100.0
+                # Exact means identical normalised strings, so size / pack /
+                # shade cannot be unknown here; a UOM-only unknown is settled
+                # by the unit check at the auto boundary below.
+                selected, status, confidence, path = top, "auto", 100.0, "exact"
             else:
                 second_score = ranked[1]["score"] if len(ranked) > 1 else 0.0
                 margin = top["score"] - second_score
@@ -340,9 +363,26 @@ def match_lines(
                     and top["_compatible"]
                     and not top["_critical_unknown"]
                 ):
-                    selected, status, confidence = top, "auto", top["score"]
+                    selected, status, confidence, path = top, "auto", top["score"], "fuzzy"
                 elif top["score"] >= SUGGEST_THRESHOLD and top["_compatible"]:
                     status = "suggested"
+
+        # Auto boundary: the RMS item id is the unit carrier in the export
+        # (the Details sheet has no UOM column), so the unit question is
+        # settled here.  Every auto selection carries the unit flag; the
+        # kind-keyed demotion applies to the description paths (exact, fuzzy).
+        # The UPC and alias paths keep their own evidence checks
+        # (_resolve_exact_upc, _find_alias) and are not demoted here; the
+        # alias path is unreachable while alias learning is off.
+        unit = None
+        if selected is not None and status == "auto":
+            item = catalog_by_key[str(selected["_catalog_key"])]
+            unit = unit_check(description, line.get("uom"), item["description"], item.get("uom"))
+            if unit["demote"] and path in {"exact", "fuzzy"}:
+                line["match_warnings"].append(unit["reason"])
+                selected = None
+                status = "suggested"
+                confidence = ranked[0]["score"] if ranked else 0.0
 
         if fallback_active and status == "auto":
             # A full-catalog fallback cannot select a row automatically:
@@ -351,6 +391,9 @@ def match_lines(
             status = "suggested"
             confidence = ranked[0]["score"] if ranked else 0.0
 
+        cost = _cost_facts(
+            selected, catalog_by_rms.get(str(selected["rms_item_id"]), []) if selected else []
+        )
         line.update(
             {
                 "catalog_item_id": selected.get("catalog_item_id") if selected else None,
@@ -361,8 +404,12 @@ def match_lines(
                     else None
                 ),
                 "rms_upc": selected.get("upc") if selected else None,
-                "rms_unit_cost": selected.get("unit_cost") if selected else None,
+                "rms_unit_cost": cost["rms_unit_cost"],
+                "rms_unit_cost_min": cost["rms_unit_cost_min"],
+                "rms_unit_cost_max": cost["rms_unit_cost_max"],
                 "rms_po_number": selected.get("master_po_number") if selected else None,
+                "unit_status": unit["status"] if unit else None,
+                "unit_reason": unit["reason"] if unit else None,
                 "match_status": status,
                 "confidence": round(float(confidence), 1),
                 "candidates": public_candidates,
@@ -372,16 +419,149 @@ def match_lines(
     return output
 
 
+# Unit statuses for which the RMS cost comparison must refuse to show a number
+# (InvoiceService._prepare_lines); produced only by unit_check below.
+BLOCKING_UNIT_STATUSES = frozenset({"unverified", "unconfirmed"})
+
+
+def has_blocking_unknown(compatibility: Mapping[str, Sequence[str]]) -> bool:
+    """The ONE kind-keyed rule shared by the auto boundary and the cost site.
+
+    True for any stated disagreement, and for a SIZE, PACK COUNT or SHADE
+    known on only one side.  False for a UOM-only unknown: the master's UOM
+    column is a constant single unit compared against a line that states
+    none, which carries no information (it would fire on every line).
+    """
+
+    if compatibility["conflicts"]:
+        return True
+    return any(not unknown.startswith("UOM") for unknown in compatibility["unknowns"])
+
+
+def unit_check(
+    line_description: Any,
+    line_uom: Any,
+    item_description: Any,
+    item_uom: Any,
+) -> dict[str, Any]:
+    """Decide whether a selected catalog row's unit is settled for a line.
+
+    Keyed on the KIND of the unknown, not on the master UOM alone:
+
+    * a stated disagreement of any kind (UOM, size, pack count, shade) ->
+      ``unconfirmed``: demote and block approval, reason "unit unconfirmed";
+    * the master row is a multi-unit row (case / box / carton / pack / dozen
+      UOM, or an NxSIZE pack in its description) and the line is silent on
+      the unit -> ``unconfirmed``, same reason.  Dead against the current
+      master (its UOM column is a constant single unit) but it is the gate
+      for a master that carries case rows;
+    * size, pack count or shade known on only one side -> ``unverified``:
+      demote to suggested (the words agree but the item cannot be told apart
+      from its sibling), approval is not blocked once an operator confirms;
+    * UOM known on only one side, master single-unit or unstated ->
+      ``assumed``: permitted, the line carries the flag "unit assumed";
+    * both sides agree -> ``confirmed``.
+    """
+
+    line_attributes = _attributes(str(line_description or ""), line_uom)
+    item_attributes = _attributes(str(item_description or ""), item_uom)
+    compatibility = _compatibility(line_attributes, item_attributes)
+    line_unit, item_unit = line_attributes["uom"], item_attributes["uom"]
+    master_multi = item_unit in MULTI_UNIT_UOMS or bool(item_attributes["packs"])
+    if compatibility["conflicts"]:
+        reason = f"{UNIT_UNCONFIRMED}: " + "; ".join(compatibility["conflicts"])
+        return {"status": "unconfirmed", "reason": reason, "demote": True, "block": True}
+    non_uom_unknowns = [
+        unknown for unknown in compatibility["unknowns"] if not unknown.startswith("UOM")
+    ]
+    assert bool(non_uom_unknowns) == has_blocking_unknown(compatibility)
+    if line_unit is None and master_multi:
+        reason = (
+            f"{UNIT_UNCONFIRMED}: invoice line states no unit and the RMS item is a "
+            f"multi-unit row ({item_unit if item_unit in MULTI_UNIT_UOMS else 'pack of ' + _format_attribute(item_attributes['packs'])})"
+        )
+        return {"status": "unconfirmed", "reason": reason, "demote": True, "block": True}
+    if non_uom_unknowns:
+        reason = "item attribute unverified: " + "; ".join(non_uom_unknowns)
+        return {"status": "unverified", "reason": reason, "demote": True, "block": False}
+    if line_unit and item_unit:
+        return {
+            "status": "confirmed",
+            "reason": f"unit confirmed ({line_unit})",
+            "demote": False,
+            "block": False,
+        }
+    if line_unit is None and item_unit is not None and item_unit not in SINGLE_UNIT_UOMS:
+        # A master unit that is neither single nor multi (e.g. a size unit in
+        # the UOM column) cannot be assumed for a line that states none.
+        reason = f"{UNIT_UNCONFIRMED}: invoice line states no unit and the RMS item unit is {item_unit}"
+        return {"status": "unconfirmed", "reason": reason, "demote": True, "block": True}
+    stated = item_unit or line_unit
+    reason = (
+        f"unit assumed: {'invoice line' if line_unit is None else 'RMS item'} states no unit"
+        + (f"; {stated} taken from the {'RMS item' if line_unit is None else 'invoice line'}" if stated else "")
+    )
+    return {"status": "assumed", "reason": reason, "demote": False, "block": False}
+
+
+def _cost_facts(
+    selected: Mapping[str, Any] | None, tied_rows: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Cost facts for a selected RMS item over every eligible row of that id.
+
+    A master can hold several rows (sites) for one RMS item with different
+    unit costs.  The first ranked row's cost must not be picked silently, so
+    with more than one distinct cost the line carries the [min, max] range
+    and no single ``rms_unit_cost``; the service turns the range into a
+    comparison (see InvoiceService._prepare_lines).
+    """
+
+    if selected is None:
+        return {"rms_unit_cost": None, "rms_unit_cost_min": None, "rms_unit_cost_max": None}
+    costs: set[float] = set()
+    for row in tied_rows or [selected]:
+        value = row.get("unit_cost")
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number > 0.01:
+            costs.add(number)
+    if len(costs) > 1:
+        return {
+            "rms_unit_cost": None,
+            "rms_unit_cost_min": min(costs),
+            "rms_unit_cost_max": max(costs),
+        }
+    return {
+        "rms_unit_cost": selected.get("unit_cost"),
+        "rms_unit_cost_min": None,
+        "rms_unit_cost_max": None,
+    }
+
+
 def enrich_invoice(
     invoice: Mapping[str, Any],
     catalog: Sequence[Mapping[str, Any]],
     aliases: Sequence[Mapping[str, Any]] | Mapping[str, str] | None = None,
     supplier_id: str | None = None,
+    *,
+    scope_resolved: bool = False,
 ) -> dict[str, Any]:
-    """Return a copy of an extracted invoice with its lines matched."""
+    """Return a copy of an extracted invoice with its lines matched.
+
+    With ``scope_resolved`` the caller has already decided the matching scope:
+    ``supplier_id`` is authoritative and ``None`` means unresolved, so the id
+    printed on the invoice is NOT used as a scope.  A printed id the catalog
+    does not know would otherwise scope matching to 0 supplier rows plus the
+    global rows, the silently narrowed set through a second door.
+    """
 
     enriched = dict(invoice)
-    effective_supplier = supplier_id or _optional_string(invoice.get("supplier_id"))
+    if scope_resolved:
+        effective_supplier = supplier_id
+    else:
+        effective_supplier = supplier_id or _optional_string(invoice.get("supplier_id"))
     enriched["lines"] = match_lines(
         invoice.get("lines") or [],
         catalog,
@@ -632,7 +812,12 @@ def _rank_candidates(
         elif compatibility["unknowns"]:
             # Missing critical attributes should remain reviewable even when the
             # words happen to be very similar.
-            score = min(score, 92.0)
+            # Partner constant: AUTO_FUZZY_THRESHOLD (top of this module).  This
+            # cap must stay strictly below it; the gap is the only thing that
+            # keeps a near-identical line with a one-sided size / pack / shade
+            # out of the auto tier on the fuzzy path
+            # (tests/test_matching.py::test_critical_unknown_cap_stays_below_auto_fuzzy_threshold).
+            score = min(score, CRITICAL_UNKNOWN_SCORE_CAP)
         candidates.append(
             {
                 "catalog_item_id": item.get("catalog_item_id"),
