@@ -1172,24 +1172,45 @@ catalog rows of one RMS item that were tying at the top and zeroing the margin. 
 prediction's corollary, which matters more: **the matcher's share of the refusal moves and the export
 count does not.** Metric 1a is 0 of 20 on the baseline and 0 of 20 with both mechanisms in.
 
-**The cap-lifted row and the earlier finding above are not in conflict, and the reason is worth
-stating because the record reads as self-contradicting without it.** The round above reports, in bold,
-that removing the cap alone changed zero line statuses. Here the same intervention moves twenty-one.
-Both are correct, and different denominators do not explain it — these are counts of the same event
-type. The explanation is the mechanism, which neither measurement named at the time. The cap and the
-critical-unknown flag are computed from *one* predicate, and the fuzzy automatic path already requires
-that flag to be clear, so lifting the cap cannot admit a single new line through the score bar; that
-is structural at the baseline commit, not an empirical result. What lifting the cap does instead is
-restore **rank**. Ranking is performed on the capped score, so an exactly-named candidate held at the
-cap can be outranked by a merely-similar candidate carrying no unknown. Lift the cap, the exact
-candidate returns to the top, and it then satisfies the *exact* automatic condition — which consults
-no threshold and has no critical-unknown term at all. So cap-off produces automatic matches by
-restoring rank into the exact path, never by clearing the score bar. On the smaller corpus measured
-earlier none of the rank flips crossed that condition, which is why the honest answer there was zero;
-on the fuller corpus twenty-one of them do. The check that settles it is one field: the `path`
-recorded on those twenty-one. All `exact` and this account is right; any `fuzzy` and the row is
-mislabelled, because the arm would have cleared a second gate as well. That check is outstanding and
-the row should be read as provisional until it returns.
+**The cap-lifted row and the earlier finding above are not in conflict, and the account this record
+gave of why was wrong.** The round above reports, in bold, that removing the cap alone changed zero
+line statuses; the row here moves twenty-one. This record previously explained that by rank
+restoration: lifting the cap returns an exactly-named candidate to the top, where it satisfies the
+*exact* automatic condition, which consults no threshold. A single field discriminated that account,
+it was named in advance, and it came back against it. **The path recorded on all twenty-one is
+`fuzzy`. None is `exact`.** The reason clause on every one of them is strong name similarity, and the
+stored scores run from 96.6 to 99.0 — above the fuzzy threshold of 96.0, not around the exact
+condition. The rank-restoration account is therefore withdrawn. It was a structurally sound reading of
+the baseline code and it described something the baseline code can do; it is not what produced these
+twenty-one.
+
+**The real reconciliation is that the two measurements are not the same intervention, and the row's
+label said they were.** The zero was obtained by patching the score-cap *constant* and nothing else,
+which leaves the critical-unknown flag computed exactly as before. The automatic fuzzy path requires
+that flag to be clear, so a constant-only lift is structurally incapable of admitting a fuzzy
+automatic match — the zero was guaranteed before it was measured, which is why it is a weak result
+rather than a surprising one. The twenty-one come from a different arm entirely: it does not patch the
+baseline at all. It runs the candidate change's own tree with the row collapse disabled, and on that
+tree the mechanism removes a single-valued unit-of-measure from the predicate that feeds **both** the
+cap and the flag. Two terms clear at once. So the arm labelled as a cap lift measures the candidate
+mechanism with one component switched off, and the phrase describes an experiment nobody ran. The row
+is relabelled accordingly wherever it appears: *the uninformative-unit mechanism, cap and gate cleared
+together for a unit-only unknown on a single-valued column, row collapse disabled.* Both numbers were
+correct throughout; the label and the explanation were not. Two independent verification passes
+reached the relabelling conclusion separately, one of them from its own replay rather than from the
+supplied data.
+
+**A gate property that follows from the same evidence, and that is not a defect in the change.** On
+the twenty-one, the selected item has exactly one eligible row in scope. The margin test compares the
+best candidate against the strongest runner-up, so with one eligible row the runner-up score is zero
+and the eight-point margin clears automatically. The margin therefore contributes no discrimination on
+those lines, and the automatic decision rests on the similarity score alone clearing 96.0 — in the
+closest case by 0.6. This is a property of the gate rather than a regression: it is equally true at the
+baseline, where the automatic set also contains single-candidate lines, and no change under review
+introduced it. What the change does is **enlarge the population that leans on it**, which is the
+reason the automatic decisions outside the independently checked subset were verified one by one by two
+parties rather than accepted on the arm counts. Recorded here so that a later reader does not count
+three conditions on the automatic gate where, on a single-candidate line, there is effectively one.
 
 A change of this shape moves 141 lines from operator-reviewed to machine-decided, which is the
 population where a ranking error stops being a suggestion somebody rejects and becomes an export
@@ -1262,3 +1283,126 @@ already holds non-demo rows, flags its rows in the statistics endpoint so a seed
 read as a measurement, and the corpus evaluator refuses an input set containing seeded sources
 outright. One gap remains filed: the statistics endpoint reports the flag and the interface does not
 yet read it.
+
+## Post-freeze findings, fourth round: the ceiling was a claim about the wrong metric
+
+Three claims from the round above are revised here. Two are withdrawn and one is confirmed by
+measurement after being challenged. All figures in this section are recomputed at the release-candidate
+baseline commit against the twenty real uploads, with the catalog scope and the alias set stated.
+
+**The threshold that the sub-floor lines are short of is the suggestion floor, not the automatic bar,
+and that makes the finding about a different metric than the ceiling it was offered as a replacement
+for.** A line lifted from the 60s to just above 70.0 becomes a *suggestion*. A suggestion is an
+operator touch. Metric 1a counts invoices exportable with **zero** operator action, so lifting every
+one of the eighty-four lines within twenty points of the floor moves Metric 1b and Metric 2 and leaves
+Metric 1a exactly where it is. The ceiling in the round above was a statement about 1a; the distribution
+offered in its place is a statement about 1b and 2. The premise of the original ceiling was false — that
+correction stands — but its conclusion was never reachable by the evidence that replaced it, in either
+direction. The only route from a sub-floor score to an automatic decision is the exact condition, which
+requires the normalised strings to be *identical* rather than merely closer; the fuzzy route needs 96.0
+with a clear unknown flag, which is not reachable from the 60s by any normalisation of this kind.
+
+**The distribution itself was challenged as an artefact and it survives, verified.** The challenge was
+that the published bands were the stored confidence column read back rather than a measurement, that
+the column was written by older code, and that the stored values exceeded a recomputation by a median of
+more than twenty points in one direction. Recomputed at the baseline commit over the eighty-five
+sub-floor lines in the resolved-supplier scope: the highest-scoring candidate is the first element on
+eighty-five of eighty-five, so the figure is not an ordering artefact; and **the stored column equals
+the recomputation exactly on all eighty-five** — median, minimum and maximum difference all zero, with
+the stored value higher on none of them. The bands are 50 in 60–70, 34 in 50–60, and 1 in 30–40; eighty-
+four of eighty-five sit within twenty points of the floor. The column is live, and it agrees with the
+recomputation because the code that wrote it is the code that recomputes it. The alias table carries no
+rows at all, so the empty alias list used in every recomputation is the system's actual state rather
+than a simplification, and cannot account for a discrepancy in either direction. One recomputation of
+the baseline disagrees with the stored state on six lines; two independent recomputations, one of them
+inside a container built from the delivery image, reproduce it exactly. The disagreement is being
+located as a harness difference and no figure in this record rests on it.
+
+**The size-token hypothesis is withdrawn, and it was this document's own suggestion.** The round above
+named asymmetric size tokens between invoice descriptions and catalog descriptions as the intervention
+most likely to lift the sub-floor block. Three measurements, designed independently and pointing the
+same way, refuse it. First, the touched population on the invoice side is empty: none of the sub-floor
+lines carries a size token at all, against an instrument verified to fire on the suggestion population,
+on the automatic population and on the catalog side before the zero was accepted. Second, on the catalog
+side the population is one line by the direct reading — the single line in the lowest band — and
+seventeen under the most generous reading that counts any currently-stored near-candidate. Third, an
+independent test that strips size and pack tokens from *both* sides of every sub-floor line and its
+strongest fifty candidates produces no string identity, nothing reaching the fuzzy threshold, and
+nothing reaching even the suggestion floor. That test deletes tokens rather than parsing them, which is
+a crude proxy, but the crudeness runs one way only: had these descriptions differed mainly by a size
+token, deleting it on both sides would have produced high similarity, and it produced none. **What
+separates these descriptions from the master's is therefore not a size token, and naming it is open work
+rather than a finding.** No claim is made here about what would lift them.
+
+**One metric has moved on real uploads, for the first time in this programme.** Metric 1b is 0 of 20 at
+the baseline and 2 of 20 with the candidate matching change in, measured by rematching the same twenty
+uploads through the service. Metric 1a is 0 of 20 in both. The two invoices that move are single-line
+invoices whose one line becomes automatic. They do **not** pass the cost tolerance — they fail it, and
+failing it is precisely why they land in 1b rather than 1a: an above-tolerance cost is an
+invoice-level flag an operator can acknowledge without editing a line, which is what 1b measures.
+The flag they require is itself an artefact of the currency defect recorded below, so the movement in
+the matcher is real and the acknowledgement it still costs the operator is spurious. This is recorded with both
+numbers in one sentence deliberately: a change that moves 1b from zero to two while leaving 1a at zero
+is a real improvement to the matcher's share of the work and **not** a step toward the acceptance
+criterion, and the two readings must not be separated in later quotation. The refusal classes behind the
+remaining eighteen, counted per invoice and overlapping, are a sub-floor line, a suggested line, a
+missing subtotal or tax total, an above-tolerance cost line, and an unresolved supplier. The programme
+verdict is unchanged: **not accepted.**
+
+## Post-freeze findings, fifth round: two defects change owner, and one of them is not a matching defect
+
+**The cost-comparison block is a master-data defect, and this record's extraction parser is cleared of
+it.** Three signatures were pre-registered before the discriminator ran: a pack-or-case basis, a
+quantity-or-column misread by our own frozen parser, and a scale-or-currency factor. The ratio of
+invoice unit price to master unit cost was then computed on every above-tolerance line. It is a single
+constant, the *same* constant on all of them, and constant per item across different lines and different
+invoices. That decides it: a repeated constant is a basis difference, not a scatter of errors. The
+pack-basis signature fits the arithmetic but the master refuses it — the pack fields are unit-valued on
+every row of every item involved, with one unit cost per item. The parser-misread signature is measured
+at **zero**: line total equals quantity times invoice price on every one of these lines, and the size
+token survived into the description on every line that carries one, so the known frozen-parser defect
+did not fire here. The scale-or-currency signature as originally worded, a factor near one hundred,
+is also zero. The mechanism is the fourth possibility, which this record's own Gate 5 already names:
+**the master holds cost in more than one currency, the comparison assumes one, and the constant is a
+rate.** The fix is the standing Gate 5 design — record currency at import and require equality before
+comparing — and the absolute cost tolerance is not well-posed until that lands. **The convergence
+argument of the third round is withdrawn in full.** It rested on two lines of evidence pointing at the
+frozen extraction parser; one was the size-token hypothesis, refuted above, and the other was this cost
+block, which belongs to master data. Neither leg survives.
+
+**Sixty-eight of the eighty-five sub-floor lines are not product lines at all, and that is the real
+finding in this block.** A token-class characterisation of what actually differs on them returns two
+dominant classes that are not products: footer and contact text carrying a page marker, and
+pricing-adjustment label rows carrying a currency code and an internal identifier. The extractor emitted
+both as **line items with a quantity attached**. Their best candidates score in the 50s and 60s on a
+single shared word — coincidences, not near misses. Three consequences, and the third is the serious one:
+1. No matcher change can ever resolve these lines, because there is nothing to resolve them to. This is
+   why the unmatched count is the one number that does not move in any arm of any experiment — a figure
+   constant across every arm is usually a figure the experiment is not touching.
+2. The remaining seventeen are genuine product lines whose gap is alphabetic wording, with **no** numeric
+   and **no** size component in the symmetric difference. Within them, one sub-population of thirteen
+   differs by a trademark artefact in the master's stored text, and that is the only sub-population where
+   a normalisation-only change in the matcher could plausibly cross the suggestion floor. Ceiling
+   thirteen of eighty-five, untested, and stated as a ceiling rather than a forecast.
+3. **These phantom rows carry a quantity and would be exported.** A label row leaving the system as an
+   invoice line is a correctness defect in the deliverable itself, not a missed match, and it is more
+   serious than anything else in this block. It also contaminates every per-line denominator in this
+   record: per-line rates computed over the full line count are computed over a population that includes
+   non-product rows, so they understate per-product performance and must not be quoted as either.
+The owner is the extraction stage, which is frozen, so the routes are a parser-side filter under an
+exemption or a matcher-side refusal of lines carrying no product tokens. Both are open; neither is a
+decision this document can take.
+
+**A privacy defect in this document, found by someone else, and the check that would have caught it does
+not exist.** This file has been published with the repository since the first snapshot and carried four
+master-derived figures: a count of priced rows with their decimal-place distribution, a size multiple in
+the import-guard discussion, and a share-of-rows proportion. They are being replaced with the
+qualitative conclusion and an explicit statement that the figure is withheld. The lesson is structural
+rather than clerical. Every automated privacy pattern in this repository matches an **identifier shape**
+— a key, a token, a URL, a home path. A master-derived *quantity* has no shape to match: it is an
+ordinary numeral in an ordinary sentence, and it passes every pattern cleanly, which is exactly what
+happened on each of the sweeps this document records as clean. The only instrument that finds this class
+is a human numeral-by-numeral read against the stated test — does the number describe the software's
+behaviour on a sample, or the size, shape, content or cost structure of the master — and an extended grep
+found one of the three. **Those sweeps were clean and they were also uninformative about this class, and
+this record should not be read as having checked for it before this round.**
