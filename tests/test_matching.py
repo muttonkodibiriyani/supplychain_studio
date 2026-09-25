@@ -498,3 +498,170 @@ class HasBlockingUnknownPredicateTests(unittest.TestCase):
         harmless = self.compat("Fictional Sun Cream", None, "Fictional Sun Cream", "EA")
         harmless["unknowns"] = ["size reworded to look critical"]
         self.assertFalse(matching_module.has_blocking_unknown(harmless))
+
+
+class ResolvedScopeDuplicateRowCollapseTests(unittest.TestCase):
+    """Mechanism 1: several rows of ONE rms_item_id in a resolved supplier scope.
+
+    All names, ids and prices are fictional fixtures.
+    """
+
+    def two_site_rows(self, second_cost: float, second_uom: str = "EA") -> list[dict]:
+        return [
+            {"rms_item_id": "RMS-SITE", "catalog_item_id": "s1", "description": "Fictional Site Widget", "supplier_id": "900001", "uom": "EA", "unit_cost": 4.0},
+            {"rms_item_id": "RMS-SITE", "catalog_item_id": "s2", "description": "Fictional Site Widget", "supplier_id": "900001", "uom": second_uom, "unit_cost": second_cost},
+            {"rms_item_id": "RMS-OTHER", "catalog_item_id": "o1", "description": "Fictional Other Gadget", "supplier_id": "900001", "uom": "EA", "unit_cost": 9.0},
+        ]
+
+    def test_same_cost_rows_collapse_and_the_exact_item_is_auto(self) -> None:
+        line = match_lines(
+            [{"description": "Fictional Site Widget", "uom": "EA"}], self.two_site_rows(4.0), [], "900001"
+        )[0]
+        self.assertEqual(line["match_status"], "auto")
+        self.assertEqual(line["rms_item_id"], "RMS-SITE")
+        self.assertEqual(line["rms_unit_cost"], 4.0)
+        ids = [candidate["rms_item_id"] for candidate in line["candidates"]]
+        self.assertEqual(ids.count("RMS-SITE"), 1, ids)
+        self.assertIn("2 eligible catalog rows for this RMS item collapsed", line["candidates"][0]["reason"])
+
+    def test_divergent_costs_are_refused_and_the_tie_surfaces_as_suggested(self) -> None:
+        line = match_lines(
+            [{"description": "Fictional Site Widget", "uom": "EA"}], self.two_site_rows(4.5), [], "900001"
+        )[0]
+        self.assertEqual(line["match_status"], "suggested")
+        self.assertIsNone(line["rms_item_id"])
+        ids = [candidate["rms_item_id"] for candidate in line["candidates"]]
+        self.assertEqual(ids.count("RMS-SITE"), 2, ids)
+        self.assertIn("2 distinct unit costs", line["candidates"][0]["reason"])
+        self.assertIn("not collapsed", line["candidates"][0]["reason"])
+        self.assertTrue(any("2 distinct unit costs" in warning for warning in line["match_warnings"]))
+
+    def test_divergent_uoms_are_refused_even_with_one_cost(self) -> None:
+        # The line states no unit, so neither row is excluded by evidence and
+        # the refused group is a real tie.  (A line that states EA settles it:
+        # the CS row then conflicts and the EA row is the one exact candidate.)
+        line = match_lines(
+            [{"description": "Fictional Site Widget", "uom": None}], self.two_site_rows(4.0, "CS"), [], "900001"
+        )[0]
+        self.assertEqual(line["match_status"], "suggested")
+        self.assertIsNone(line["rms_item_id"])
+        self.assertEqual([c["rms_item_id"] for c in line["candidates"]].count("RMS-SITE"), 2)
+        self.assertIn("2 distinct UOMs", line["candidates"][0]["reason"])
+        stated = match_lines(
+            [{"description": "Fictional Site Widget", "uom": "EA"}], self.two_site_rows(4.0, "CS"), [], "900001"
+        )[0]
+        self.assertEqual(stated["match_status"], "auto")
+        self.assertEqual(stated["catalog_item_id"], "s1")
+
+    def test_no_collapse_in_the_unresolved_supplier_fallback(self) -> None:
+        catalog = [
+            {"rms_item_id": "RMS-SITE", "catalog_item_id": "s1", "description": "Fictional Site Widget", "supplier_id": "900001", "uom": "EA", "unit_cost": 4.0},
+            {"rms_item_id": "RMS-SITE", "catalog_item_id": "s2", "description": "Fictional Site Widget", "supplier_id": "900002", "uom": "EA", "unit_cost": 4.0},
+        ]
+        line = match_lines([{"description": "Fictional Site Widget", "uom": "EA"}], catalog, [], None)[0]
+        self.assertEqual(line["match_status"], "suggested")
+        self.assertIsNone(line["rms_item_id"])
+        ids = [candidate["rms_item_id"] for candidate in line["candidates"]]
+        self.assertEqual(ids.count("RMS-SITE"), 2, ids)
+        self.assertNotIn("collapsed", line["candidates"][0]["reason"])
+
+    def test_no_collapse_without_a_resolved_supplier_even_on_a_global_catalog(self) -> None:
+        catalog = [
+            {"rms_item_id": "RMS-SITE", "catalog_item_id": "s1", "description": "Fictional Site Widget", "uom": "EA", "unit_cost": 4.0},
+            {"rms_item_id": "RMS-SITE", "catalog_item_id": "s2", "description": "Fictional Site Widget", "uom": "EA", "unit_cost": 4.0},
+        ]
+        line = match_lines([{"description": "Fictional Site Widget", "uom": "EA"}], catalog, [], None)[0]
+        self.assertEqual(line["match_status"], "suggested")
+        self.assertEqual(len(line["candidates"]), 2)
+
+    def test_suggest_matches_collapses_in_a_resolved_scope_only(self) -> None:
+        scoped = suggest_matches("Fictional Site Widget", self.two_site_rows(4.0), [], "900001")
+        self.assertEqual([c["rms_item_id"] for c in scoped].count("RMS-SITE"), 1)
+        global_rows = [dict(row, supplier_id=None) for row in self.two_site_rows(4.0)]
+        unscoped = suggest_matches("Fictional Site Widget", global_rows, [], None)
+        self.assertEqual([c["rms_item_id"] for c in unscoped].count("RMS-SITE"), 2)
+
+
+class UninformativeUomUnknownTests(unittest.TestCase):
+    """Mechanism 2: a UOM column single-valued across the scope carries no information."""
+
+    def rows(self, second_uom: str) -> list[dict]:
+        return [
+            {"rms_item_id": "RMS-A", "description": "Fictional Hydrating Face Serum Night Repair Formula", "supplier_id": "900001", "uom": "EA", "unit_cost": 5.0},
+            {"rms_item_id": "RMS-B", "description": "Fictional Unrelated Mop Bucket", "supplier_id": "900001", "uom": second_uom, "unit_cost": 6.0},
+        ]
+
+    # One character off the catalog string: fuzzy path, above the auto threshold.
+    line = {"description": "Fictional Hydrating Face Serum Night Repair Formulas", "uom": None}
+
+    def test_single_valued_uom_does_not_cap_a_line_that_states_no_unit(self) -> None:
+        matched = match_lines([self.line], self.rows("EA"), [], "900001")[0]
+        self.assertEqual(matched["match_status"], "auto")
+        self.assertEqual(matched["rms_item_id"], "RMS-A")
+        self.assertGreaterEqual(matched["candidates"][0]["score"], matching_module.AUTO_FUZZY_THRESHOLD)
+        self.assertEqual(matched["unit_status"], "assumed")
+        self.assertIn("not held against the match", matched["candidates"][0]["reason"])
+
+    def test_a_uom_column_that_varies_keeps_the_cap(self) -> None:
+        matched = match_lines([self.line], self.rows("CS"), [], "900001")[0]
+        self.assertEqual(matched["match_status"], "suggested")
+        self.assertIsNone(matched["rms_item_id"])
+        self.assertEqual(matched["candidates"][0]["score"], matching_module.CRITICAL_UNKNOWN_SCORE_CAP)
+        self.assertIn("UOM appears on only one side", matched["candidates"][0]["reason"])
+
+    def test_a_one_sided_size_is_still_capped_when_the_uom_column_is_single_valued(self) -> None:
+        catalog = [
+            {"rms_item_id": "RMS-A", "description": "Fictional Hydrating Face Serum Night Repair Formula 30ml", "supplier_id": "900001", "uom": "EA"},
+            {"rms_item_id": "RMS-B", "description": "Fictional Unrelated Mop Bucket", "supplier_id": "900001", "uom": "EA"},
+        ]
+        matched = match_lines(
+            [{"description": "Fictional Hydrating Face Serum Night Repair Formula", "uom": "EA"}], catalog, [], "900001"
+        )[0]
+        self.assertNotEqual(matched["match_status"], "auto")
+        self.assertEqual(matched["candidates"][0]["score"], matching_module.CRITICAL_UNKNOWN_SCORE_CAP)
+
+    def test_kinds_helper_reads_the_uom_column_only(self) -> None:
+        prepared = matching_module._prepare_catalog(self.rows("EA"), "900001")
+        self.assertEqual(matching_module._uninformative_kinds(prepared), frozenset({matching_module.KIND_UOM}))
+        varied = matching_module._prepare_catalog(self.rows("CS"), "900001")
+        self.assertEqual(matching_module._uninformative_kinds(varied), frozenset())
+
+    def test_one_divergent_row_anywhere_in_the_scope_restores_the_cap_for_every_line(self) -> None:
+        # Documented cliff: the predicate is all-or-nothing over the eligible scope. A single row
+        # stating a different unit, unrelated to the line, restores the cap for every line at once.
+        filler = [
+            {"rms_item_id": f"RMS-F{i}", "description": f"Fictional Filler Product Number {i}", "supplier_id": "900001", "uom": "EA", "unit_cost": 1.0}
+            for i in range(20)
+        ]
+        uniform = self.rows("EA") + filler
+        one_off = uniform + [
+            {"rms_item_id": "RMS-ODD", "description": "Fictional Unrelated Garden Hose Reel", "supplier_id": "900001", "uom": "CS", "unit_cost": 9.0}
+        ]
+        self.assertEqual(matching_module._uninformative_kinds(matching_module._prepare_catalog(uniform, "900001")), frozenset({matching_module.KIND_UOM}))
+        self.assertEqual(matching_module._uninformative_kinds(matching_module._prepare_catalog(one_off, "900001")), frozenset())
+        before = match_lines([self.line], uniform, [], "900001")[0]
+        after = match_lines([self.line], one_off, [], "900001")[0]
+        self.assertEqual(before["match_status"], "auto")
+        self.assertEqual(after["match_status"], "suggested")
+        self.assertIsNone(after["rms_item_id"])
+        self.assertEqual(after["candidates"][0]["score"], matching_module.CRITICAL_UNKNOWN_SCORE_CAP)
+        self.assertEqual(after["candidates"][0]["rms_item_id"], "RMS-A")
+
+
+class UncappedOrderingTests(unittest.TestCase):
+    """Mechanism 3: ranking by the uncapped score; the cap decides auto, not order."""
+
+    catalog = [
+        {"rms_item_id": "RMS-NEAR", "description": "Fictional Hydrating Face Serum Night Repair Formula 30ml", "supplier_id": "900001", "uom": "EA"},
+        {"rms_item_id": "RMS-FAR", "description": "Fictional Hydrating Face Serum Night Formula", "supplier_id": "900001", "uom": "EA"},
+    ]
+
+    def test_the_first_candidate_is_the_best_guess_not_the_best_capped_score(self) -> None:
+        matched = match_lines(
+            [{"description": "Fictional Hydrating Face Serum Night Repair Formula", "uom": "EA"}], self.catalog, [], "900001"
+        )[0]
+        self.assertNotEqual(matched["match_status"], "auto")
+        first, second = matched["candidates"][0], matched["candidates"][1]
+        self.assertEqual(first["rms_item_id"], "RMS-NEAR")
+        self.assertEqual(first["score"], matching_module.CRITICAL_UNKNOWN_SCORE_CAP)
+        self.assertGreater(second["score"], first["score"])

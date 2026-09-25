@@ -142,7 +142,9 @@ def suggest_matches(
         return []
     prepared_catalog = _prepare_catalog(catalog, supplier_id)
     alias_map = _prepare_aliases(aliases, supplier_id, prepared_catalog)
-    ranked = _rank_candidates(line_mapping, prepared_catalog)
+    ranked = _rank_candidates(
+        line_mapping, prepared_catalog, uninformative_kinds=_uninformative_kinds(prepared_catalog)
+    )
 
     upc_state, upc_item, _ = _resolve_exact_upc(
         line_mapping, prepared_catalog, supplier_id
@@ -150,7 +152,7 @@ def suggest_matches(
     if upc_state == "matched" and upc_item is not None:
         for candidate in ranked:
             if candidate["_catalog_key"] == upc_item["_catalog_key"]:
-                candidate["score"] = 100.0
+                candidate["score"] = candidate["_raw_score"] = 100.0
                 candidate["reason"] = (
                     "Exact supplier-scoped UPC with compatible UOM/pack evidence; "
                     + candidate["reason"]
@@ -162,11 +164,13 @@ def suggest_matches(
     if alias_id:
         for candidate in ranked:
             if str(candidate["_catalog_key"]) == alias_id and candidate["_compatible"]:
-                candidate["score"] = 100.0
+                candidate["score"] = candidate["_raw_score"] = 100.0
                 candidate["reason"] = "Approved supplier alias; " + candidate["reason"]
                 candidate["_alias"] = True
                 break
-    ranked.sort(key=lambda item: (-item["score"], str(item["rms_item_id"])))
+    ranked.sort(key=_ranking_key)
+    if _supplier_key(supplier_id) is not None:
+        ranked = _collapse_duplicate_rows(ranked)
     return [_public_candidate(candidate) for candidate in ranked[:limit]]
 
 
@@ -196,9 +200,14 @@ def match_lines(
         # Nothing to match: do not pay for preparing a (possibly very large)
         # catalog.  Catalog validation still runs whenever a line is matched.
         return []
-    prepared_catalog, candidate_index = _prepared_catalog_and_index(
+    prepared_catalog, candidate_index, uninformative_kinds = _prepared_catalog_and_index(
         catalog, supplier_id, include_all_suppliers=fallback_active
     )
+    # Duplicate rows of one RMS item are folded only inside a resolved
+    # supplier's scope (see _collapse_duplicate_rows); never in the
+    # unresolved-supplier fallback, where rows from different suppliers with
+    # one rms_item_id are not the same thing.
+    collapse_duplicates = _supplier_key(supplier_id) is not None and not fallback_active
     catalog_by_key = {str(item["_catalog_key"]): item for item in prepared_catalog}
     catalog_by_rms: dict[str, list[dict[str, Any]]] = {}
     for item in prepared_catalog:
@@ -291,7 +300,9 @@ def match_lines(
             output.append(line)
             continue
 
-        ranked = _rank_candidates(line, prepared_catalog, index=candidate_index)
+        ranked = _rank_candidates(
+            line, prepared_catalog, index=candidate_index, uninformative_kinds=uninformative_kinds
+        )
         upc_candidate: dict[str, Any] | None = None
         if upc_state == "matched" and upc_item is not None:
             upc_candidate = next(
@@ -303,7 +314,7 @@ def match_lines(
                 None,
             )
             if upc_candidate is not None:
-                upc_candidate["score"] = 100.0
+                upc_candidate["score"] = upc_candidate["_raw_score"] = 100.0
                 upc_candidate["reason"] = (
                     "Exact supplier-scoped UPC with compatible UOM/pack evidence; "
                     + upc_candidate["reason"]
@@ -316,7 +327,7 @@ def match_lines(
                 (candidate for candidate in ranked if str(candidate["_catalog_key"]) == alias_id), None
             )
             if alias_candidate and alias_candidate["_compatible"]:
-                alias_candidate["score"] = 100.0
+                alias_candidate["score"] = alias_candidate["_raw_score"] = 100.0
                 alias_candidate["reason"] = "Approved supplier alias; " + alias_candidate["reason"]
                 alias_candidate["_alias"] = True
         upc_alias_conflict = bool(
@@ -328,7 +339,11 @@ def match_lines(
             line["match_warnings"].append(
                 "Exact supplier-scoped UPC and saved alias resolve to different catalog rows; manual review is required."
             )
-        ranked.sort(key=lambda item: (-item["score"], str(item["rms_item_id"])))
+        ranked.sort(key=_ranking_key)
+        if collapse_duplicates:
+            ranked = _collapse_duplicate_rows(ranked)
+            if ranked and ranked[0].get("_collapse_refused"):
+                line["match_warnings"].append(ranked[0]["_collapse_refused"])
         if fallback_active:
             for candidate in ranked[:DEFAULT_CANDIDATE_LIMIT]:
                 candidate["reason"] = (
@@ -365,7 +380,11 @@ def match_lines(
                 # by the unit check at the auto boundary below.
                 selected, status, confidence, path = top, "auto", 100.0, "exact"
             else:
-                second_score = ranked[1]["score"] if len(ranked) > 1 else 0.0
+                # Ranking is by uncapped score (_ranking_key); the margin is
+                # measured on capped scores against the strongest runner-up,
+                # wherever it sits, so the ordering change cannot admit a
+                # line the capped ordering would have held.
+                second_score = max((candidate["score"] for candidate in ranked[1:]), default=0.0)
                 margin = top["score"] - second_score
                 if (
                     not upc_blocks_automatic_selection
@@ -697,7 +716,10 @@ def _prepare_catalog(
 # index) is memoised per catalog object.  Prepared rows are never mutated by
 # the matcher, which makes sharing them across calls safe.
 _PREPARED_CACHE_LOCK = threading.Lock()
-_PREPARED_CACHE: dict[tuple[int, int, str | None, bool], tuple[Any, list[dict[str, Any]], Any]] = {}
+_PREPARED_CACHE: dict[
+    tuple[int, int, str | None, bool],
+    tuple[Any, list[dict[str, Any]], Any, frozenset[str]],
+] = {}
 
 
 def _prepared_catalog_and_index(
@@ -705,7 +727,7 @@ def _prepared_catalog_and_index(
     supplier_id: str | None,
     *,
     include_all_suppliers: bool,
-) -> tuple[list[dict[str, Any]], "_CandidateIndex | None"]:
+) -> tuple[list[dict[str, Any]], "_CandidateIndex | None", frozenset[str]]:
     cacheable = len(catalog) >= PREFILTER_MIN_ROWS
     key = (id(catalog), len(catalog), _supplier_key(supplier_id), include_all_suppliers)
     if cacheable:
@@ -714,14 +736,40 @@ def _prepared_catalog_and_index(
         # The cached entry keeps the catalog object alive, so an identity match
         # guarantees the id() was not recycled for a different list.
         if entry is not None and entry[0] is catalog:
-            return entry[1], entry[2]
+            return entry[1], entry[2], entry[3]
     prepared = _prepare_catalog(catalog, supplier_id, include_all_suppliers=include_all_suppliers)
     index = _CandidateIndex(prepared) if len(prepared) > PREFILTER_MIN_ROWS else None
+    uninformative = _uninformative_kinds(prepared)
     if cacheable:
         with _PREPARED_CACHE_LOCK:
             _PREPARED_CACHE.clear()
-            _PREPARED_CACHE[key] = (catalog, prepared, index)
-    return prepared, index
+            _PREPARED_CACHE[key] = (catalog, prepared, index, uninformative)
+    return prepared, index, uninformative
+
+
+def _uninformative_kinds(prepared: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    """Attribute kinds that carry no information in this eligible catalog.
+
+    An attribute single-valued across the supplier-scoped catalog cannot tell
+    one row from another, so a line that omits it has not lost anything by
+    omitting it.  Today this is decided for the UOM column only: when every
+    eligible row states the same unit (the current master's UOM column is a
+    constant single unit) a "UOM appears on only one side" unknown must not
+    cap the score or set ``_critical_unknown`` in ``_rank_candidates``.  The
+    unit itself is still settled at the auto boundary by ``unit_check``
+    (``assumed`` against a SINGLE_UNIT_UOMS row, ``unconfirmed`` otherwise).
+
+    Size, pack count and shade are NOT lifted here even when single-valued:
+    ``unit_check`` treats a one-sided size / pack / shade as blocking on the
+    exact path, so lifting their cap on the fuzzy path would make the fuzzy
+    path looser than the exact one
+    (tests/test_matching.py::test_critical_unknown_cap_stays_below_auto_fuzzy_threshold).
+    """
+
+    if not prepared:
+        return frozenset()
+    units = {item["_attributes"]["uom"] for item in prepared}
+    return frozenset({KIND_UOM}) if len(units) == 1 else frozenset()
 
 
 def _prepare_aliases(
@@ -815,6 +863,7 @@ def _rank_candidates(
     line: Mapping[str, Any],
     catalog: Sequence[Mapping[str, Any]],
     index: _CandidateIndex | None = None,
+    uninformative_kinds: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     description = str(line.get("description") or "").strip()
     normalized = normalize_description(description)
@@ -828,12 +877,24 @@ def _rank_candidates(
         reason_parts = [_score_reason(score, exact)]
         if compatibility["matches"]:
             reason_parts.extend(compatibility["matches"])
-        if compatibility["unknowns"]:
-            reason_parts.extend(compatibility["unknowns"])
+        # An unknown on a kind that is single-valued across the eligible
+        # catalog (see _uninformative_kinds) is reported but not held against
+        # the candidate: it cannot cap the score or block the auto decision.
+        informative_unknowns: list[str] = []
+        for kind, label in zip(compatibility["unknown_kinds"], compatibility["unknowns"]):
+            if kind in uninformative_kinds:
+                reason_parts.append(f"{label} (single-valued across the eligible catalog; not held against the match)")
+            else:
+                reason_parts.append(label)
+                informative_unknowns.append(label)
         if compatibility["conflicts"]:
             score = min(score, 45.0)
             reason_parts.extend(compatibility["conflicts"])
-        elif compatibility["unknowns"]:
+        # The score before the critical-unknown cap.  Ordering and tie-breaking
+        # use it so the first candidate is the system's own best guess; the
+        # capped ``score`` is what the auto decision reads.
+        raw_score = round(max(0.0, min(100.0, score)), 1)
+        if not compatibility["conflicts"] and informative_unknowns:
             # Missing critical attributes should remain reviewable even when the
             # words happen to be very similar.
             # Partner constant: AUTO_FUZZY_THRESHOLD (top of this module).  This
@@ -850,19 +911,105 @@ def _rank_candidates(
                 "parent_item": item.get("parent_item") or item["rms_item_id"],
                 "upc": item.get("upc"),
                 "unit_cost": item.get("unit_cost"),
+                "uom": item.get("uom"),
                 "master_po_number": item.get("master_po_number"),
                 "description": item["description"],
                 "supplier_id": item.get("supplier_id"),
                 "score": round(max(0.0, min(100.0, score)), 1),
+                "_raw_score": raw_score,
                 "reason": "; ".join(reason_parts),
                 "_compatible": not compatibility["conflicts"],
-                "_critical_unknown": bool(compatibility["unknowns"]),
+                "_critical_unknown": bool(informative_unknowns),
                 "_exact": exact,
                 "_alias": False,
             }
         )
-    candidates.sort(key=lambda item: (-item["score"], str(item["rms_item_id"])))
+    candidates.sort(key=_ranking_key)
     return candidates
+
+
+def _ranking_key(candidate: Mapping[str, Any]) -> tuple[float, float, str, str]:
+    """Order by the uncapped score first so the shown row is the best guess.
+
+    The critical-unknown cap (CRITICAL_UNKNOWN_SCORE_CAP) applies to the auto
+    decision, not to ranking: with capped-score ordering two near-identical
+    rows could be shown in rms_item_id order rather than by how well they
+    match.  The margin in match_lines is still measured on capped scores
+    against the strongest runner-up, so this ordering never loosens the gate.
+    """
+
+    return (
+        -float(candidate.get("_raw_score", candidate["score"])),
+        -float(candidate["score"]),
+        str(candidate["rms_item_id"]),
+        str(candidate.get("_catalog_key") or ""),
+    )
+
+
+def _collapse_duplicate_rows(ranked: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fold several eligible rows of ONE RMS item into their best row.
+
+    A master holds one row per site for an item, so a resolved supplier's
+    scope can present the same rms_item_id several times.  Left alone those
+    rows tie at the top, the margin is zero and an exactly named item is
+    never selected.  Reviewer A's conditions, applied verbatim: collapse
+    ONLY within a resolved supplier scope, or refuse to collapse any group
+    whose unit_cost values differ.  The caller enforces the first (this is
+    never called in unresolved_supplier_fallback mode); this function
+    enforces the second and additionally refuses a group whose UOM differs,
+    because the selected row's unit is what unit_check reads.  A refused
+    group keeps every row, so the tie stands and the line surfaces as
+    ``suggested`` with a reason naming the divergence.
+    """
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for candidate in ranked:
+        groups.setdefault(str(candidate["rms_item_id"]), []).append(candidate)
+    if len(groups) == len(ranked):
+        return ranked
+    kept: list[dict[str, Any]] = []
+    noted: set[str] = set()
+    for candidate in ranked:
+        rms_item_id = str(candidate["rms_item_id"])
+        group = groups[rms_item_id]
+        if len(group) == 1:
+            kept.append(candidate)
+            continue
+        costs = {_cost_value(member.get("unit_cost")) for member in group}
+        units = {_normalize_uom(member.get("uom")) for member in group}
+        divergence = []
+        if len(costs) > 1:
+            divergence.append(f"{len(costs)} distinct unit costs")
+        if len(units) > 1:
+            divergence.append(f"{len(units)} distinct UOMs")
+        if divergence:
+            if rms_item_id not in noted:
+                noted.add(rms_item_id)
+                note = (
+                    f"{len(group)} eligible catalog rows for this RMS item carry "
+                    + " and ".join(divergence)
+                    + "; not collapsed, the row must be chosen by an operator"
+                )
+                for member in group:
+                    member["reason"] = member["reason"] + "; " + note
+                    member["_collapse_refused"] = note
+            kept.append(candidate)
+            continue
+        if candidate is group[0]:
+            candidate["reason"] = (
+                candidate["reason"]
+                + f"; {len(group)} eligible catalog rows for this RMS item collapsed (same unit cost and UOM)"
+            )
+            candidate["_collapsed_rows"] = len(group)
+            kept.append(candidate)
+    return kept
+
+
+def _cost_value(value: Any) -> float | None:
+    try:
+        return round(float(value), 6)
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_exact_upc(
