@@ -263,3 +263,31 @@ def test_worker_count_is_bounded_by_cores(monkeypatch) -> None:
     assert _bounded_workers("16") == 16
     assert _bounded_workers("64") == 16
     assert _bounded_workers("0") == 0
+
+
+def test_start_creates_workers_even_when_recovery_hits_a_locked_database(tmp_path: Path) -> None:
+    """Second death path: start() used to run recover_interrupted_jobs() (a
+    BEGIN IMMEDIATE) before creating any thread, so a lock held at startup
+    meant the pool was never created at all: threads exist nowhere, or exist
+    with zero CPU time. Recovery failure must not prevent thread creation."""
+
+    service = make_service(tmp_path)
+    blocker = sqlite3.connect(service.settings.database_path, isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        started = time.monotonic()
+        recovered = service.start()
+        assert time.monotonic() - started < 5, "start() blocked on the held lock"
+        assert recovered == 0
+        assert len(service._threads) == 2 and all(t.is_alive() for t in service._threads)
+        status = service.worker_status()
+        assert status["alive"] == 2
+        assert "recover" in (status["last_error"] or ""), status
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+    try:
+        job, _ = service.ingest_bytes("after-startup-lock.txt", b"processed by a pool created under lock")
+        assert wait_until(lambda: terminal(service, job["id"])), service.worker_status()
+    finally:
+        service.stop()
