@@ -25,7 +25,7 @@ RMS-FREE,Fictional Widget Free,,,EA,0
 def make_service(tmp_path: Path) -> InvoiceService:
     service = InvoiceService(
         Settings(
-            database_path=tmp_path / "invoice.sqlite3",
+            database_path=tmp_path / "service.db",
             source_dir=tmp_path / "sources",
             export_dir=tmp_path / "exports",
             workers=0,
@@ -107,8 +107,25 @@ def test_unresolved_supplier_falls_back_to_full_catalog_as_review_only(tmp_path:
     assert line["target_cost_comparison_status"] == "unavailable_no_match"
 
 
+def test_alias_persistence_is_off_by_default_and_confirmation_still_applies(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    assert service.settings.alias_learning is False
+    invoice = process(service, "unknown.txt", real_shaped_invoice("Unknown Vendor LLC"))
+    line = dict(invoice["lines"][0])
+    line.update({"rms_item_id": "RMS-RED", "match_status": "confirmed", "confidence": 100})
+
+    corrected = service.update_invoice(invoice["id"], invoice["version"], {"lines": [line]})
+
+    assert corrected["lines"][0]["rms_item_id"] == "RMS-RED"
+    assert service.list_aliases()["total"] == 0
+    audit = [entry for entry in service.audit(invoice["id"])["items"] if entry["event_type"] == "invoice_edited"]
+    assert audit and audit[0]["details"]["alias_learning_enabled"] is False
+    assert audit[0]["details"]["aliases_learned"] == []
+
+
 def test_operator_confirmation_with_unresolved_supplier_learns_row_scoped_alias(tmp_path: Path) -> None:
     service = make_service(tmp_path)
+    service.settings.alias_learning = True  # explicit opt-in (INVOICE_ALIAS_LEARNING=1)
     invoice = process(service, "unknown.txt", real_shaped_invoice("Unknown Vendor LLC"))
     line = dict(invoice["lines"][0])
     line.update({"rms_item_id": "RMS-RED", "match_status": "confirmed", "confidence": 100})

@@ -153,6 +153,12 @@ class Settings:
     poll_seconds: float = 0.25
     db_busy_timeout_seconds: float = 30.0
     worker_stall_seconds: float = 120.0
+    # Persisting operator-confirmed aliases is OFF until the alias provenance
+    # semantics are settled: ``aliases.created_from_invoice_id`` is declared
+    # ``ON DELETE SET NULL``, so a learned mapping would outlive the invoice
+    # that taught it with its provenance erased.  Set INVOICE_ALIAS_LEARNING=1
+    # to opt in explicitly.
+    alias_learning: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -176,6 +182,8 @@ class Settings:
             worker_stall_seconds=max(
                 5.0, float(os.getenv("INVOICE_WORKER_STALL_SECONDS", "120"))
             ),
+            alias_learning=os.getenv("INVOICE_ALIAS_LEARNING", "").strip().lower()
+            in {"1", "true", "yes", "on"},
         )
 
 
@@ -328,6 +336,11 @@ class InvoiceService:
         self._wake = threading.Event()
         self._threads: list[threading.Thread] = []
         self._worker_lock = threading.Lock()
+        # Full-catalog rows for unresolved-supplier matching, keyed by a cheap
+        # fingerprint of catalog_items; reloading and re-preparing a large item
+        # master for every invoice is what stalled the worker pool.
+        self._full_catalog_lock = threading.Lock()
+        self._full_catalog_cache: tuple[tuple[Any, ...], list[dict[str, Any]]] | None = None
         self._worker_state: dict[str, Any] = {
             "started_at": utc_now(),
             "last_claim_at": None,
@@ -1290,6 +1303,39 @@ class InvoiceService:
             "warnings": warnings,
         }
 
+    def _full_catalog(self, conn: Any) -> list[dict[str, Any]]:
+        fingerprint = tuple(
+            conn.execute(
+                "SELECT COUNT(*), MAX(updated_at), MAX(rowid) FROM catalog_items"
+            ).fetchone()
+        )
+        with self._full_catalog_lock:
+            cached = self._full_catalog_cache
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
+        rows = conn.execute(
+            "SELECT * FROM catalog_items ORDER BY rms_item_id,catalog_item_id"
+        ).fetchall()
+        catalog = [self._catalog_row(row) for row in rows]
+        with self._full_catalog_lock:
+            self._full_catalog_cache = (fingerprint, catalog)
+        return catalog
+
+    @staticmethod
+    def _catalog_row(row: Any) -> dict[str, Any]:
+        return {
+            "catalog_item_id": row["catalog_item_id"],
+            "rms_item_id": row["rms_item_id"],
+            "parent_item": row["parent_item"],
+            "upc": row["upc"],
+            "description": row["description"],
+            "supplier_id": row["supplier_id"],
+            "supplier_name": row["supplier_name"],
+            "uom": row["uom"],
+            "unit_cost": _number(row["unit_cost"]),
+            "master_po_number": row["master_po_number"],
+        }
+
     def _catalog_for_matching(self, conn: Any, supplier_id: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         if supplier_id:
             catalog_rows = conn.execute(
@@ -1307,24 +1353,10 @@ class InvoiceService:
             # whole catalog had been searched).  The full catalog is offered and
             # matching.match_lines marks every result as a low-confidence
             # full-catalog fallback that can never auto-select a row.
-            catalog_rows = conn.execute(
-                "SELECT * FROM catalog_items ORDER BY rms_item_id,catalog_item_id"
-            ).fetchall()
-        catalog = [
-            {
-                "catalog_item_id": row["catalog_item_id"],
-                "rms_item_id": row["rms_item_id"],
-                "parent_item": row["parent_item"],
-                "upc": row["upc"],
-                "description": row["description"],
-                "supplier_id": row["supplier_id"],
-                "supplier_name": row["supplier_name"],
-                "uom": row["uom"],
-                "unit_cost": _number(row["unit_cost"]),
-                "master_po_number": row["master_po_number"],
-            }
-            for row in catalog_rows
-        ]
+            catalog_rows = None
+        if catalog_rows is None:
+            return self._full_catalog(conn), []
+        catalog = [self._catalog_row(row) for row in catalog_rows]
         if supplier_id:
             alias_rows = conn.execute(
                 "SELECT * FROM aliases WHERE supplier_scope = ?",
@@ -1504,7 +1536,10 @@ class InvoiceService:
                     lines=extracted.get("lines") or [],
                 )
                 supplier_id = resolution["supplier_id"]
-                catalog, aliases = self._catalog_for_matching(conn, supplier_id)
+                if extracted.get("lines"):
+                    catalog, aliases = self._catalog_for_matching(conn, supplier_id)
+                else:
+                    catalog, aliases = [], []
                 defaults = self._target_defaults(conn, supplier_id)
             warnings = list(extracted.get("warnings") or [])
             warnings.extend(resolution["warnings"])
@@ -1745,6 +1780,11 @@ class InvoiceService:
         now: str,
     ) -> list[dict[str, str]]:
         learned: list[dict[str, str]] = []
+        if not self.settings.alias_learning:
+            # Alias persistence is disabled by default (see Settings.alias_learning);
+            # the confirmations still apply to this invoice, they are just not
+            # generalised to future invoices.
+            return learned
         for line in lines:
             if line.get("match_status") != "confirmed" or not line.get("rms_item_id"):
                 continue
@@ -2087,7 +2127,11 @@ class InvoiceService:
                 version=new_version,
                 from_status=row["status"],
                 to_status=new_status,
-                details={"changed_fields": sorted(set(changed_fields)), "aliases_learned": learned},
+                details={
+                    "changed_fields": sorted(set(changed_fields)),
+                    "aliases_learned": learned,
+                    "alias_learning_enabled": self.settings.alias_learning,
+                },
                 created_at=now,
             )
             return self._invoice_from_row(conn, self._get_row(conn, invoice_id), full=True)
@@ -2351,6 +2395,7 @@ class InvoiceService:
                 to_status="ready",
                 details={
                     "aliases_learned": learned,
+                    "alias_learning_enabled": self.settings.alias_learning,
                     "target_cost_review_required": invoice.get(
                         "target_cost_review_required", False
                     ),

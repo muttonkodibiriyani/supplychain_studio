@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import threading
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Any, Iterable, Mapping, Sequence
@@ -169,13 +170,12 @@ def match_lines(
         and _supplier_key(supplier_id) is None
         and supplier_scoping_needed(catalog)
     )
-    prepared_catalog = _prepare_catalog(
+    if not lines:
+        # Nothing to match: do not pay for preparing a (possibly very large)
+        # catalog.  Catalog validation still runs whenever a line is matched.
+        return []
+    prepared_catalog, candidate_index = _prepared_catalog_and_index(
         catalog, supplier_id, include_all_suppliers=fallback_active
-    )
-    candidate_index = (
-        _CandidateIndex(prepared_catalog)
-        if len(prepared_catalog) > PREFILTER_MIN_ROWS
-        else None
     )
     catalog_by_key = {str(item["_catalog_key"]): item for item in prepared_catalog}
     catalog_by_rms: dict[str, list[dict[str, Any]]] = {}
@@ -484,6 +484,40 @@ def _prepare_catalog(
             }
         )
     return prepared
+
+
+# Preparing a full item master (normalising and tokenising every row) costs
+# seconds per call, and the unresolved-supplier fallback would otherwise pay it
+# for every invoice.  The service hands the same catalog list object to every
+# job while the catalog is unchanged, so one prepared copy (plus its prefilter
+# index) is memoised per catalog object.  Prepared rows are never mutated by
+# the matcher, which makes sharing them across calls safe.
+_PREPARED_CACHE_LOCK = threading.Lock()
+_PREPARED_CACHE: dict[tuple[int, int, str | None, bool], tuple[Any, list[dict[str, Any]], Any]] = {}
+
+
+def _prepared_catalog_and_index(
+    catalog: Sequence[Mapping[str, Any]],
+    supplier_id: str | None,
+    *,
+    include_all_suppliers: bool,
+) -> tuple[list[dict[str, Any]], "_CandidateIndex | None"]:
+    cacheable = len(catalog) >= PREFILTER_MIN_ROWS
+    key = (id(catalog), len(catalog), _supplier_key(supplier_id), include_all_suppliers)
+    if cacheable:
+        with _PREPARED_CACHE_LOCK:
+            entry = _PREPARED_CACHE.get(key)
+        # The cached entry keeps the catalog object alive, so an identity match
+        # guarantees the id() was not recycled for a different list.
+        if entry is not None and entry[0] is catalog:
+            return entry[1], entry[2]
+    prepared = _prepare_catalog(catalog, supplier_id, include_all_suppliers=include_all_suppliers)
+    index = _CandidateIndex(prepared) if len(prepared) > PREFILTER_MIN_ROWS else None
+    if cacheable:
+        with _PREPARED_CACHE_LOCK:
+            _PREPARED_CACHE.clear()
+            _PREPARED_CACHE[key] = (catalog, prepared, index)
+    return prepared, index
 
 
 def _prepare_aliases(
