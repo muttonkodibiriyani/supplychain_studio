@@ -783,6 +783,78 @@ It detects them, records the doubt, and then discards it. That is the shape of n
 this record: each layer degrades toward silent acceptance rather than toward review, and the reported
 confidence is highest exactly where the evidence for it was deliberately limited.
 
+### The first defect in this record to be closed under mutation, and two corrections to how it was measured
+
+The three defects named in the section above — the unknown-attribute check that keyed on a reason
+string, the unverified supplier id that reached a silently near-empty catalogue, and the cost
+comparison that printed a figure where the unit was unsettled — have been fixed on a branch and
+reviewed independently. This entry records the outcome and, more importantly, what the evidence for
+it is worth. It revises no verdict above.
+
+**What makes this different from every other fix in this record.** The reviewer who found the
+original defects re-derived the work rather than reading it: their own checkout, their own
+environment, mutants applied to the full combined suite rather than to the two files the
+implementer had used, and a replay against their own corpus that neither the implementer nor the
+coordinating session could reach. Five separate mutations were introduced, each disabling one
+limb of the new behaviour, and every one of them caused at least one named test to fail. The
+review that opened this thread found most of its mutants surviving in silence — a guard that was
+correct but unprotected, so that the next refactor would remove it without a signal. This is the
+first occasion on this project where that could not be done. The distinction matters because a
+fix that no test defends is indistinguishable, six months on, from a fix that was never made.
+
+**The first correction: a guard was measured where it could not fire.** The replay reported that
+no line lost its cost comparison under the new rule. That was true and it was measured over the
+lines the system had already matched automatically — the one population in which the new rule's
+trigger is unreachable, because the far larger set of merely suggested lines carries no mapping
+for the rule to examine. Re-measured over the path the product actually requires, in which an
+operator confirms every suggested line before anything can be exported, the rule engages on
+eleven of the two hundred and seventy-one lines, spread across seven of the twenty documents.
+Those lines lose their printed cost comparison and are flagged for review; approval is not
+blocked. That is a rule with a modest reach, which is the intended result — but "nothing was
+affected" and "eleven lines are affected on the path we ship" are different statements, and only
+the second one describes the delivered system.
+
+**The second correction, which needed correcting twice.** The reviewer concluded that the new
+attribute guard does nothing against the supplied master and becomes meaningful only against some
+future one. That was wrong, and the first attempt to correct it was also wrong, in the same
+direction and for the same reason. The guard has a second limb, evaluated before the attribute
+comparison, which demotes a line when the invoice states no unit and the matched master row
+describes a multi-unit pack. Counting how many rows of the master carry pack wording appears to
+give that limb a rate, and it was reported as one. It does not. The demotion applies only where
+the invoice line and the master row share an identical normalised description, and pack wording
+is derived from that same normalised description, so on that path the two pack sets are always
+equal — verified over every exactly-matching candidate pair in the corpus, with no exceptions.
+A pack-bearing master row is therefore reachable on this path only by a pack-bearing invoice line,
+and the master's own rate never enters the calculation.
+
+The guard's real trigger is narrower and much easier to reason about: **the invoice line itself
+names a pack size, states no unit, and matches a master row exactly.** No line in either corpus
+names a pack size. The absence of demotions is not a low rate rounding to nothing; it is a
+structural property of these particular documents. Two consequences follow, and the second is the
+useful one. The guard does not scale with the number of invoices processed, as a per-row rate
+would imply — it scales with how often a supplier prints pack sizes in line descriptions, which
+is none of the time for the family examined here and is common practice for wholesalers and
+distributors. And it is therefore well aimed rather than rare and arbitrary: it engages exactly
+on multipack lines, which is precisely where per-pack and per-unit pricing are ambiguous and
+where an assumed unit would be expensive to get wrong.
+
+That this correction had to be made twice, by two people who had each spent the day insisting
+that others state the population a number was measured over, is the most useful thing in this
+section. A count can be accurate, reproducible and still answer a different question than the one
+being asked of it.
+
+**Why the verdict does not move.** Both corrections were found by asking what share of the
+population a new rule's trigger actually fires on, and comparing that to the sample it was
+measured in. That question is the same one that, earlier in this record, exposed a proposed safety
+rule keyed on a column holding a single value throughout the master — a rule that would have read
+as a careful safeguard while functioning as an off switch. A guard that fires on everything and a
+guard that fires on nothing fail in opposite directions and look identical in a replay that cannot
+distinguish them. Three closed defects, a completed independent review and a suite that now
+resists mutation are real improvements to the code's trustworthiness. None of them changes what
+the system does for an operator: no document in the corpus reaches an export without manual work,
+and the number that do reach it after an operator has confirmed every suggested line is unchanged.
+The verdict in this record stands.
+
 ## Proposed next steps, in dependency order
 
 > **Historical — retained as the plan of record, not as outstanding work.** Most of this list was
