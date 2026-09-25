@@ -156,9 +156,9 @@ class Settings:
     # Persisting operator-confirmed aliases is OFF until the alias provenance
     # semantics are settled: ``aliases.created_from_invoice_id`` is declared
     # ``ON DELETE SET NULL``, so a learned mapping would outlive the invoice
-    # that taught it with its provenance erased.  Set INVOICE_ALIAS_LEARNING=1
+    # that taught it with its provenance erased.  Set INVOICE_LEARN_ALIASES=1
     # to opt in explicitly.
-    alias_learning: bool = False
+    learn_aliases: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -182,7 +182,7 @@ class Settings:
             worker_stall_seconds=max(
                 5.0, float(os.getenv("INVOICE_WORKER_STALL_SECONDS", "120"))
             ),
-            alias_learning=os.getenv("INVOICE_ALIAS_LEARNING", "").strip().lower()
+            learn_aliases=os.getenv("INVOICE_LEARN_ALIASES", "").strip().lower()
             in {"1", "true", "yes", "on"},
         )
 
@@ -1780,8 +1780,8 @@ class InvoiceService:
         now: str,
     ) -> list[dict[str, str]]:
         learned: list[dict[str, str]] = []
-        if not self.settings.alias_learning:
-            # Alias persistence is disabled by default (see Settings.alias_learning);
+        if not self.settings.learn_aliases:
+            # Alias persistence is disabled by default (see Settings.learn_aliases);
             # the confirmations still apply to this invoice, they are just not
             # generalised to future invoices.
             return learned
@@ -2130,7 +2130,7 @@ class InvoiceService:
                 details={
                     "changed_fields": sorted(set(changed_fields)),
                     "aliases_learned": learned,
-                    "alias_learning_enabled": self.settings.alias_learning,
+                    "learn_aliases_enabled": self.settings.learn_aliases,
                 },
                 created_at=now,
             )
@@ -2395,7 +2395,7 @@ class InvoiceService:
                 to_status="ready",
                 details={
                     "aliases_learned": learned,
-                    "alias_learning_enabled": self.settings.alias_learning,
+                    "learn_aliases_enabled": self.settings.learn_aliases,
                     "target_cost_review_required": invoice.get(
                         "target_cost_review_required", False
                     ),

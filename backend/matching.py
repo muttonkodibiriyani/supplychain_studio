@@ -486,7 +486,7 @@ def _prepare_catalog(
     return prepared
 
 
-# Preparing a full item master (normalising and tokenising every row) costs
+# Preparing a full catalog (normalising and tokenising every row) costs
 # seconds per call, and the unresolved-supplier fallback would otherwise pay it
 # for every invoice.  The service hands the same catalog list object to every
 # job while the catalog is unchanged, so one prepared copy (plus its prefilter

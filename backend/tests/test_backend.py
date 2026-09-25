@@ -23,7 +23,7 @@ def make_service(tmp_path: Path) -> InvoiceService:
 
 def test_explicit_confirmation_learns_supplier_alias_and_approval_is_versioned(tmp_path: Path) -> None:
     service = make_service(tmp_path)
-    service.settings.alias_learning = True  # explicit opt-in; persistence is off by default
+    service.settings.learn_aliases = True  # explicit opt-in; persistence is off by default
     service.seed_demo()
     invoice = service.get_invoice("demo-invoice-002")
 

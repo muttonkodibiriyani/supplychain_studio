@@ -109,7 +109,7 @@ def test_unresolved_supplier_falls_back_to_full_catalog_as_review_only(tmp_path:
 
 def test_alias_persistence_is_off_by_default_and_confirmation_still_applies(tmp_path: Path) -> None:
     service = make_service(tmp_path)
-    assert service.settings.alias_learning is False
+    assert service.settings.learn_aliases is False
     invoice = process(service, "unknown.txt", real_shaped_invoice("Unknown Vendor LLC"))
     line = dict(invoice["lines"][0])
     line.update({"rms_item_id": "RMS-RED", "match_status": "confirmed", "confidence": 100})
@@ -119,13 +119,13 @@ def test_alias_persistence_is_off_by_default_and_confirmation_still_applies(tmp_
     assert corrected["lines"][0]["rms_item_id"] == "RMS-RED"
     assert service.list_aliases()["total"] == 0
     audit = [entry for entry in service.audit(invoice["id"])["items"] if entry["event_type"] == "invoice_edited"]
-    assert audit and audit[0]["details"]["alias_learning_enabled"] is False
+    assert audit and audit[0]["details"]["learn_aliases_enabled"] is False
     assert audit[0]["details"]["aliases_learned"] == []
 
 
 def test_operator_confirmation_with_unresolved_supplier_learns_row_scoped_alias(tmp_path: Path) -> None:
     service = make_service(tmp_path)
-    service.settings.alias_learning = True  # explicit opt-in (INVOICE_ALIAS_LEARNING=1)
+    service.settings.learn_aliases = True  # explicit opt-in (INVOICE_LEARN_ALIASES=1)
     invoice = process(service, "unknown.txt", real_shaped_invoice("Unknown Vendor LLC"))
     line = dict(invoice["lines"][0])
     line.update({"rms_item_id": "RMS-RED", "match_status": "confirmed", "confidence": 100})
@@ -212,3 +212,25 @@ class TestMatchLinesFallback:
         assert result["match_status"] == "auto"
         assert result["rms_item_id"] == "T-1"
         assert {candidate["rms_item_id"] for candidate in result["candidates"]} == {"T-1", "T-2"}
+
+
+def test_aliases_table_stays_empty_after_approving_a_resolved_invoice(tmp_path: Path) -> None:
+    # Bar (f-2): supplier resolution ships with alias persistence disabled by an
+    # explicit named switch (INVOICE_LEARN_ALIASES, default off).  Confirming
+    # and approving a resolved invoice must not write a single alias row.
+    service = make_service(tmp_path)
+    assert service.settings.learn_aliases is False
+    service.seed_demo()
+    invoice = service.get_invoice("demo-invoice-002")
+    assert invoice["supplier_id"]
+    line = dict(invoice["lines"][0])
+    line.update({"rms_item_id": "RMS-2001", "match_status": "confirmed", "confidence": 100})
+    corrected = service.update_invoice(invoice["id"], invoice["version"], {"lines": [line]})
+    assert service.list_aliases()["total"] == 0
+
+    approved = service.approve(corrected["id"], corrected["version"])
+    assert approved["status"] == "ready"
+    assert service.list_aliases()["total"] == 0
+    approval = [e for e in service.audit(approved["id"])["items"] if e["event_type"] == "invoice_approved"]
+    assert approval and approval[0]["details"]["learn_aliases_enabled"] is False
+    assert approval[0]["details"]["aliases_learned"] == []
