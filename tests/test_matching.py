@@ -5,6 +5,7 @@ import json
 import unittest
 from pathlib import Path
 
+from backend import matching as matching_module
 from backend.matching import (
     CatalogValidationError,
     enrich_invoice,
@@ -418,3 +419,82 @@ class MatchingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class CriticalUnknownCapInvariantTests(unittest.TestCase):
+    def test_critical_unknown_cap_stays_below_auto_fuzzy_threshold(self) -> None:
+        # Item (6): the min(score, CRITICAL_UNKNOWN_SCORE_CAP) cap in
+        # _rank_candidates and AUTO_FUZZY_THRESHOLD are partners.  Lines with a
+        # one-sided size / pack / shade sit at exactly the cap; the gap to the
+        # threshold is the only thing that holds them out of the auto tier on
+        # the fuzzy path.  Lowering the threshold to the cap (or raising the
+        # cap to the threshold) would let them through with no other test
+        # failing.
+        cap = matching_module.CRITICAL_UNKNOWN_SCORE_CAP
+        threshold = matching_module.AUTO_FUZZY_THRESHOLD
+        self.assertLess(
+            cap,
+            threshold,
+            f"CRITICAL_UNKNOWN_SCORE_CAP ({cap}) must stay strictly below "
+            f"AUTO_FUZZY_THRESHOLD ({threshold}): a candidate with a one-sided "
+            "size / pack / shade is capped at the former and must never clear "
+            "the latter on the fuzzy path",
+        )
+        catalog = [
+            {
+                "rms_item_id": "RMS-1",
+                "description": "Fictional Hydrating Face Serum Night Repair Formula 30ml",
+                "uom": "EA",
+            }
+        ]
+        held = match_lines(
+            [{"description": "Fictional Hydrating Face Serum Night Repair Formula", "uom": "EA"}],
+            catalog,
+        )[0]
+        self.assertNotEqual(held["match_status"], "auto")
+        self.assertEqual(held["candidates"][0]["score"], cap)
+
+
+class HasBlockingUnknownPredicateTests(unittest.TestCase):
+    """The one kind-keyed predicate shared by the auto boundary and the RMS
+    cost comparison reads the structured unknown KINDS, never the reason
+    labels, so rewording a label can neither enable nor disable the rule."""
+
+    @staticmethod
+    def compat(left_desc, left_uom, right_desc, right_uom):
+        return matching_module._compatibility(
+            matching_module._attributes(left_desc, left_uom),
+            matching_module._attributes(right_desc, right_uom),
+        )
+
+    def test_uom_only_unknown_does_not_block(self) -> None:
+        compat = self.compat("Fictional Sun Cream", None, "Fictional Sun Cream", "EA")
+        self.assertEqual(compat["unknown_kinds"], [matching_module.KIND_UOM])
+        self.assertFalse(matching_module.has_blocking_unknown(compat))
+
+    def test_size_pack_or_shade_unknown_blocks(self) -> None:
+        for left, right, kind in (
+            ("Fictional Lotion", "Fictional Lotion 200ml", matching_module.KIND_SIZE),
+            ("Fictional Juice", "Fictional Juice 12x250ml", matching_module.KIND_PACK),
+            ("Fictional Lipstick", "Fictional Lipstick shade 12", matching_module.KIND_SHADE),
+        ):
+            compat = self.compat(left, None, right, "EA")
+            self.assertIn(kind, compat["unknown_kinds"], (left, right))
+            self.assertTrue(matching_module.has_blocking_unknown(compat), (left, right))
+
+    def test_a_real_uom_conflict_still_blocks(self) -> None:
+        compat = self.compat("Fictional Sun Cream", "CS", "Fictional Sun Cream", "EA")
+        self.assertEqual(compat["conflict_kinds"], [matching_module.KIND_UOM])
+        self.assertEqual(compat["unknown_kinds"], [])
+        self.assertTrue(matching_module.has_blocking_unknown(compat))
+
+    def test_predicate_ignores_the_label_text(self) -> None:
+        # Reword every label: the verdict must not move, because the rule is
+        # keyed on the kinds list, not on the words.
+        blocking = self.compat("Fictional Lotion", None, "Fictional Lotion 200ml", "EA")
+        blocking["unknowns"] = ["UOM something reworded"] * len(blocking["unknowns"])
+        self.assertTrue(matching_module.has_blocking_unknown(blocking))
+        harmless = self.compat("Fictional Sun Cream", None, "Fictional Sun Cream", "EA")
+        harmless["unknowns"] = ["size reworded to look critical"]
+        self.assertFalse(matching_module.has_blocking_unknown(harmless))

@@ -23,6 +23,7 @@ from PIL import Image, ImageDraw
 
 from .db import Database, INVOICE_STATUSES, json_dumps, utc_now
 from .exporter import SCHEMA_NAME, build_target_workbook
+from . import matching
 
 logger = logging.getLogger("invoice_studio.service")
 
@@ -153,6 +154,12 @@ class Settings:
     poll_seconds: float = 0.25
     db_busy_timeout_seconds: float = 30.0
     worker_stall_seconds: float = 120.0
+    # Persisting operator-confirmed aliases is OFF until the alias provenance
+    # semantics are settled: ``aliases.created_from_invoice_id`` is declared
+    # ``ON DELETE SET NULL``, so a learned mapping would outlive the invoice
+    # that taught it with its provenance erased.  Set INVOICE_LEARN_ALIASES=1
+    # to opt in explicitly.
+    learn_aliases: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -176,6 +183,8 @@ class Settings:
             worker_stall_seconds=max(
                 5.0, float(os.getenv("INVOICE_WORKER_STALL_SECONDS", "120"))
             ),
+            learn_aliases=os.getenv("INVOICE_LEARN_ALIASES", "").strip().lower()
+            in {"1", "true", "yes", "on"},
         )
 
 
@@ -233,6 +242,30 @@ def normalize_description(value: str) -> str:
     value = value.casefold()
     value = re.sub(r"[^\w]+", " ", value, flags=re.UNICODE)
     return " ".join(value.split())
+
+
+_SUPPLIER_LEGAL_SUFFIXES = re.compile(
+    r"\b(?:L\.?L\.?C\.?|LTD\.?|LIMITED|INC\.?|CORP(?:ORATION)?\.?|PLC|FZE|FZCO|FZC|FZ-?LLC|"
+    r"WLL|W\.L\.L\.?|GMBH|S\.?A\.?|CO\.?|COMPANY|TRADING|GENERAL|EST\.?|ESTABLISHMENT|"
+    r"INTERNATIONAL|GROUP|HOLDINGS?)\b",
+    re.I,
+)
+_CODED_SUPPLIER_NAME = re.compile(r"^\s*([A-Z]{3,})\s*\d")
+
+
+def _supplier_name_key(value: Any) -> str:
+    """Letters-only key of a printed supplier name without legal suffixes."""
+
+    text = re.sub(r"[^\x00-\x7F]+", " ", str(value or ""))
+    text = _SUPPLIER_LEGAL_SUFFIXES.sub(" ", text)
+    return re.sub(r"[^A-Z]", "", text.upper())
+
+
+def _coded_supplier_prefix(value: Any) -> str | None:
+    """Alphabetic prefix of a coded catalog supplier name such as ``ABC001…``."""
+
+    match = _CODED_SUPPLIER_NAME.match(str(value or "").upper())
+    return match.group(1) if match else None
 
 
 def _identifier_text(value: Any, *, limit: int = 200) -> str | None:
@@ -304,6 +337,11 @@ class InvoiceService:
         self._wake = threading.Event()
         self._threads: list[threading.Thread] = []
         self._worker_lock = threading.Lock()
+        # Full-catalog rows for unresolved-supplier matching, keyed by a cheap
+        # fingerprint of catalog_items; reloading and re-preparing a large item
+        # master for every invoice is what stalled the worker pool.
+        self._full_catalog_lock = threading.Lock()
+        self._full_catalog_cache: tuple[tuple[Any, ...], list[dict[str, Any]]] | None = None
         self._worker_state: dict[str, Any] = {
             "started_at": utc_now(),
             "last_claim_at": None,
@@ -692,6 +730,15 @@ class InvoiceService:
             "rms_parent_item": row["rms_item_id"],
             "rms_upc": row["rms_upc"],
             "rms_unit_cost": _number(row["rms_unit_cost"]),
+            "rms_unit_cost_min": _number(row["rms_unit_cost_min"]),
+            "rms_unit_cost_max": _number(row["rms_unit_cost_max"]),
+            "rms_unit_cost_note": (
+                "master holds multiple prices for this RMS item"
+                if row["rms_unit_cost_min"] is not None
+                else None
+            ),
+            "unit_status": row["unit_status"],
+            "unit_reason": row["unit_reason"],
             "rms_po_number": row["rms_po_number"],
             "target_unit_cost": _number(row["target_unit_cost"]),
             "target_cost_source": row["target_cost_source"],
@@ -1128,7 +1175,226 @@ class InvoiceService:
             )
             return row["id"]
 
+    def _resolve_supplier(
+        self,
+        conn: Any,
+        *,
+        supplier_id: str | None,
+        supplier_name: str | None,
+        lines: Sequence[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve the invoice supplier to a catalog supplier id.
+
+        Order of evidence: an explicit/printed supplier id known to the catalog;
+        a printed supplier name equal to a catalog supplier name; otherwise the
+        letters of the printed name against the alphabetic prefix of coded
+        catalog supplier names (``ABC001...`` style).  When several coded
+        suppliers share that prefix, only DISTINGUISHING evidence decides: each
+        candidate is credited with the exact normalized line descriptions its
+        own rows carry, and the invoice resolves only if one candidate is
+        credited STRICTLY more than every other.  Descriptions stocked by
+        several candidates credit all of them and therefore cannot separate
+        them, so an invoice made up of shared items leaves the supplier
+        unresolved with an explicit warning.  Refusing is the designed outcome,
+        not a failure path: relaxing strictly-greater to greater-or-equal would
+        turn every confusable invoice into a coin flip.
+        """
+
+        from .matching import normalize_description as match_normalize
+
+        directory = conn.execute(
+            """
+            SELECT supplier_id, MAX(supplier_name) AS supplier_name, COUNT(*) AS row_count
+            FROM catalog_items
+            WHERE supplier_id IS NOT NULL AND supplier_id != ''
+            GROUP BY supplier_id
+            """
+        ).fetchall()
+        known = {str(row["supplier_id"]).casefold(): row for row in directory}
+        warnings: list[str] = []
+        supplier_id = _identifier_text(supplier_id)
+        if supplier_id:
+            row = known.get(supplier_id.casefold())
+            if row is not None:
+                return {
+                    "supplier_id": str(row["supplier_id"]),
+                    "method": "supplier_id",
+                    "candidates": [str(row["supplier_id"])],
+                    "warnings": warnings,
+                }
+            if known:
+                warnings.append(
+                    f"Supplier id '{supplier_id}' is not present in the catalog; "
+                    "matching falls back to the full catalog at low confidence."
+                )
+            return {
+                "supplier_id": supplier_id,
+                "method": "supplier_id_unverified",
+                "candidates": [supplier_id],
+                "warnings": warnings,
+            }
+        name = _identifier_text(supplier_name, limit=500)
+        if not name or not known:
+            return {"supplier_id": None, "method": "unresolved", "candidates": [], "warnings": warnings}
+        wanted = match_normalize(name)
+        exact = [
+            row
+            for row in directory
+            if row["supplier_name"] and match_normalize(str(row["supplier_name"])) == wanted
+        ]
+        if len(exact) == 1:
+            return {
+                "supplier_id": str(exact[0]["supplier_id"]),
+                "method": "supplier_name",
+                "candidates": [str(exact[0]["supplier_id"])],
+                "warnings": warnings,
+            }
+        name_key = _supplier_name_key(name)
+        candidates = []
+        if len(name_key) >= 3:
+            for row in directory:
+                prefix = _coded_supplier_prefix(row["supplier_name"])
+                if prefix and name_key.startswith(prefix):
+                    candidates.append(row)
+        if not candidates:
+            warnings.append(
+                f"Supplier '{name}' could not be resolved against the catalog supplier list."
+            )
+            return {"supplier_id": None, "method": "unresolved", "candidates": [], "warnings": warnings}
+        candidate_ids = [str(row["supplier_id"]) for row in candidates]
+        if len(candidates) == 1:
+            warnings.append(
+                f"Supplier '{name}' resolved heuristically to catalog supplier "
+                f"'{candidate_ids[0]}' via the coded supplier name prefix; verify before approval."
+            )
+            return {
+                "supplier_id": candidate_ids[0],
+                "method": "supplier_name_prefix",
+                "candidates": candidate_ids,
+                "warnings": warnings,
+            }
+        wanted_lines = {
+            match_normalize(str(line.get("description") or ""))
+            for line in (lines or [])
+            if line.get("description")
+        }
+        evidence: dict[str, int] = {supplier: 0 for supplier in candidate_ids}
+        if wanted_lines:
+            placeholders = ",".join("?" for _ in candidate_ids)
+            rows = conn.execute(
+                f"SELECT supplier_id, description FROM catalog_items WHERE supplier_id IN ({placeholders})",
+                candidate_ids,
+            ).fetchall()
+            seen: set[tuple[str, str]] = set()
+            for row in rows:
+                normalized = match_normalize(str(row["description"] or ""))
+                key = (str(row["supplier_id"]), normalized)
+                if normalized in wanted_lines and key not in seen:
+                    seen.add(key)
+                    evidence[key[0]] += 1
+        ranked = sorted(candidate_ids, key=lambda supplier: (-evidence[supplier], supplier))
+        best = ranked[0]
+        runner_up = evidence[ranked[1]] if len(ranked) > 1 else 0
+        if evidence[best] > 0 and evidence[best] > runner_up:
+            warnings.append(
+                f"Supplier '{name}' resolved to catalog supplier '{best}' by coded name prefix "
+                f"and {evidence[best]} exact line description(s) among {len(candidate_ids)} candidate "
+                "supplier sites; verify before approval."
+            )
+            return {
+                "supplier_id": best,
+                "method": "supplier_name_prefix_with_line_evidence",
+                "candidates": candidate_ids,
+                "warnings": warnings,
+            }
+        warnings.append(
+            f"Supplier '{name}' matches {len(candidate_ids)} catalog supplier sites by coded name "
+            f"prefix ({', '.join(candidate_ids[:10])}) and the invoice lines do not single one out; "
+            "select the supplier manually."
+        )
+        return {
+            "supplier_id": None,
+            "method": "ambiguous",
+            "candidates": candidate_ids,
+            "warnings": warnings,
+        }
+
+    def _full_catalog(self, conn: Any) -> list[dict[str, Any]]:
+        fingerprint = tuple(
+            conn.execute(
+                "SELECT COUNT(*), MAX(updated_at), MAX(rowid) FROM catalog_items"
+            ).fetchone()
+        )
+        with self._full_catalog_lock:
+            cached = self._full_catalog_cache
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
+        rows = conn.execute(
+            "SELECT * FROM catalog_items ORDER BY rms_item_id,catalog_item_id"
+        ).fetchall()
+        catalog = [self._catalog_row(row) for row in rows]
+        with self._full_catalog_lock:
+            self._full_catalog_cache = (fingerprint, catalog)
+        return catalog
+
+    def _rms_cost_facts(
+        self, conn: Any, selected: Any, supplier_id: str | None
+    ) -> dict[str, Any]:
+        """Cost facts over every eligible row of the selected RMS item.
+
+        Same rule as matching._cost_facts: rows of the same RMS item in the
+        supplier scope (the selected row's own supplier when the invoice has
+        none) contribute their costs; several distinct costs give a range
+        instead of one silently picked row.
+        """
+
+        scope = supplier_id or selected["supplier_id"]
+        rows = conn.execute(
+            """
+            SELECT unit_cost FROM catalog_items WHERE rms_item_id = ?
+              AND (supplier_id IS NULL OR supplier_id = '' OR supplier_id = ?)
+            """,
+            (selected["rms_item_id"], scope or ""),
+        ).fetchall()
+        return matching._cost_facts(
+            self._catalog_row(selected),
+            [{"unit_cost": _number(row["unit_cost"])} for row in rows],
+        )
+
+    @staticmethod
+    def _catalog_row(row: Any) -> dict[str, Any]:
+        return {
+            "catalog_item_id": row["catalog_item_id"],
+            "rms_item_id": row["rms_item_id"],
+            "parent_item": row["parent_item"],
+            "upc": row["upc"],
+            "description": row["description"],
+            "supplier_id": row["supplier_id"],
+            "supplier_name": row["supplier_name"],
+            "uom": row["uom"],
+            "unit_cost": _number(row["unit_cost"]),
+            "master_po_number": row["master_po_number"],
+        }
+
+    def _matching_scope_supplier(self, conn: Any, supplier_id: str | None) -> str | None:
+        """Supplier scope for the matcher: the id only when the catalog knows it.
+
+        An unverified id (printed on the invoice but absent from the catalog)
+        would otherwise take the scoped branch and see 0 supplier rows plus
+        the global rows: the silently narrowed set through a second door.
+        Absent or unverified ids take the same full-catalog fallback as an
+        unresolved supplier (matching.match_lines marks it, never auto).
+        """
+
+        if not supplier_id:
+            return None
+        known = conn.execute(
+            "SELECT 1 FROM catalog_items WHERE supplier_id = ? LIMIT 1", (supplier_id,)
+        ).fetchone()
+        return supplier_id if known else None
+
     def _catalog_for_matching(self, conn: Any, supplier_id: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        supplier_id = self._matching_scope_supplier(conn, supplier_id)
         if supplier_id:
             catalog_rows = conn.execute(
                 """
@@ -1140,29 +1406,15 @@ class InvoiceService:
                 (supplier_id,),
             ).fetchall()
         else:
-            # A missing supplier must never trigger a 114k-row cross-supplier scan.
-            catalog_rows = conn.execute(
-                """
-                SELECT * FROM catalog_items
-                WHERE supplier_id IS NULL OR supplier_id = ''
-                ORDER BY rms_item_id,catalog_item_id
-                """
-            ).fetchall()
-        catalog = [
-            {
-                "catalog_item_id": row["catalog_item_id"],
-                "rms_item_id": row["rms_item_id"],
-                "parent_item": row["parent_item"],
-                "upc": row["upc"],
-                "description": row["description"],
-                "supplier_id": row["supplier_id"],
-                "supplier_name": row["supplier_name"],
-                "uom": row["uom"],
-                "unit_cost": _number(row["unit_cost"]),
-                "master_po_number": row["master_po_number"],
-            }
-            for row in catalog_rows
-        ]
+            # Unresolved supplier: the matcher must not be silently narrowed to
+            # the handful of global rows (that reported "unmatched" as if the
+            # whole catalog had been searched).  The full catalog is offered and
+            # matching.match_lines marks every result as a low-confidence
+            # full-catalog fallback that can never auto-select a row.
+            catalog_rows = None
+        if catalog_rows is None:
+            return self._full_catalog(conn), []
+        catalog = [self._catalog_row(row) for row in catalog_rows]
         if supplier_id:
             alias_rows = conn.execute(
                 "SELECT * FROM aliases WHERE supplier_scope = ?",
@@ -1219,14 +1471,39 @@ class InvoiceService:
                 candidates = []
             invoice_unit_cost = _decimal(source.get("unit_price"))
             rms_unit_cost = _decimal(source.get("rms_unit_cost"))
+            rms_cost_min = _decimal(source.get("rms_unit_cost_min"))
+            rms_cost_max = _decimal(source.get("rms_unit_cost_max"))
+            rms_range = (
+                rms_cost_min is not None
+                and rms_cost_max is not None
+                and rms_cost_max > rms_cost_min
+            )
             rms_usable = rms_unit_cost is not None and rms_unit_cost > Decimal("0.01")
             target_unit_cost = invoice_unit_cost
             target_source = "invoice"
             comparison_currency_available = str(currency or "").upper() == "AED"
             variance = None
-            if not rms_usable:
+            unit_status = source.get("unit_status")
+            # The RMS cost comparison is a HEURISTIC backstop: it never enters
+            # the exported money (target cost is always the invoice cost) and
+            # it is half of the unit guard.  The other half is the unit check
+            # at the auto boundary (matching.unit_check); the two must not be
+            # split, because a wrong unit shows up here as a cost gap.
+            if source.get("rms_item_id") in (None, ""):
+                # Matching failed: the invoice price is unchecked, so the cost
+                # sanity guard must stay ON (it was silently switched off here).
+                comparison_status = "unavailable_no_match"
+                review_required = True
+            elif unit_status in matching.BLOCKING_UNIT_STATUSES or rms_range:
+                # Refuse and label: size / pack / UOM unknown on one side or in
+                # disagreement, or the master holds divergent unit costs for
+                # this RMS item (tied rows).  No row is picked and no number is
+                # shown, because a figure here reads as verification.
+                comparison_status = "unavailable_uom_mismatch"
+                review_required = True
+            elif not rms_usable:
                 comparison_status = "unavailable_rms_cost"
-                review_required = False
+                review_required = True
             elif not comparison_currency_available:
                 comparison_status = "unavailable_currency"
                 review_required = True
@@ -1258,6 +1535,12 @@ class InvoiceService:
                     ),
                     "rms_upc": _normalize_upc(source.get("rms_upc")),
                     "rms_unit_cost": _decimal_text(rms_unit_cost),
+                    "rms_unit_cost_min": _decimal_text(rms_cost_min) if rms_range else None,
+                    "rms_unit_cost_max": _decimal_text(rms_cost_max) if rms_range else None,
+                    "unit_status": (str(unit_status)[:40] if unit_status else None),
+                    "unit_reason": (
+                        str(source.get("unit_reason"))[:500] if source.get("unit_reason") else None
+                    ),
                     "rms_po_number": _valid_order_number(source.get("rms_po_number")),
                     "target_unit_cost": _decimal_text(target_unit_cost),
                     "target_cost_source": target_source,
@@ -1280,8 +1563,9 @@ class InvoiceService:
                  uom,upc,catalog_item_id,rms_item_id,rms_upc,rms_unit_cost,rms_po_number,
                  target_unit_cost,target_cost_source,target_cost_variance,
                  target_cost_comparison_status,target_cost_review_required,
-                 match_status,confidence,candidates_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 match_status,confidence,candidates_json,
+                 rms_unit_cost_min,rms_unit_cost_max,unit_status,unit_reason)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             [
                 (
@@ -1308,6 +1592,10 @@ class InvoiceService:
                     line["match_status"],
                     line["confidence"],
                     json_dumps(line["candidates"]),
+                    line.get("rms_unit_cost_min"),
+                    line.get("rms_unit_cost_max"),
+                    line.get("unit_status"),
+                    line.get("unit_reason"),
                 )
                 for line in lines
             ],
@@ -1328,18 +1616,33 @@ class InvoiceService:
                 max_pages=self.settings.max_pages,
             )
             extracted = extraction.extract_document(source_path, filename, limits=limits)
-            supplier_id = original_supplier_id or extracted.get("supplier_id")
             supplier_name = original_supplier_name or extracted.get("supplier_name")
             with self.db.connection() as conn:
-                catalog, aliases = self._catalog_for_matching(conn, supplier_id)
+                resolution = self._resolve_supplier(
+                    conn,
+                    supplier_id=original_supplier_id or extracted.get("supplier_id"),
+                    supplier_name=supplier_name,
+                    lines=extracted.get("lines") or [],
+                )
+                supplier_id = resolution["supplier_id"]
+                scope_supplier_id = self._matching_scope_supplier(conn, supplier_id)
+                if extracted.get("lines"):
+                    catalog, aliases = self._catalog_for_matching(conn, scope_supplier_id)
+                else:
+                    catalog, aliases = [], []
                 defaults = self._target_defaults(conn, supplier_id)
+            warnings = list(extracted.get("warnings") or [])
+            warnings.extend(resolution["warnings"])
+            extracted["warnings"] = warnings
             enriched = matching.enrich_invoice(
                 extracted,
                 catalog,
                 aliases,
-                supplier_id=supplier_id,
+                supplier_id=scope_supplier_id,
+                scope_resolved=True,
             )
             enriched["supplier_id"] = supplier_id
+            enriched["supplier_resolution_method"] = resolution["method"]
             enriched["supplier_name"] = supplier_name
             enriched["supplier_site"] = (
                 extracted.get("supplier_site") or defaults.get("supplier_site")
@@ -1518,12 +1821,13 @@ class InvoiceService:
                     current_version=row["version"],
                 )
             invoice = self._invoice_from_row(conn, row, full=True)
-            catalog, aliases = self._catalog_for_matching(conn, invoice.get("supplier_id"))
+            scope_supplier_id = self._matching_scope_supplier(conn, invoice.get("supplier_id"))
+            catalog, aliases = self._catalog_for_matching(conn, scope_supplier_id)
             enriched_lines = matching.match_lines(
                 invoice.get("lines") or [],
                 catalog,
                 aliases,
-                invoice.get("supplier_id"),
+                scope_supplier_id,
             )
             policy = self._target_defaults(
                 conn, invoice.get("supplier_id")
@@ -1567,25 +1871,48 @@ class InvoiceService:
         lines: Sequence[Mapping[str, Any]],
         now: str,
     ) -> list[dict[str, str]]:
-        if not supplier_id:
-            return []
         learned: list[dict[str, str]] = []
+        if not self.settings.learn_aliases:
+            # Alias persistence is disabled by default (see Settings.learn_aliases);
+            # the confirmations still apply to this invoice, they are just not
+            # generalised to future invoices.
+            return learned
         for line in lines:
             if line.get("match_status") != "confirmed" or not line.get("rms_item_id"):
                 continue
             catalog_item_id = line.get("catalog_item_id")
             if not catalog_item_id:
-                matches = conn.execute(
-                    """
-                    SELECT catalog_item_id FROM catalog_items
-                    WHERE rms_item_id=? AND (supplier_id IS NULL OR supplier_id=''
-                        OR lower(trim(supplier_id))=lower(trim(?)))
-                    """,
-                    (line["rms_item_id"], supplier_id),
-                ).fetchall()
+                if supplier_id:
+                    matches = conn.execute(
+                        """
+                        SELECT catalog_item_id, supplier_id FROM catalog_items
+                        WHERE rms_item_id=? AND (supplier_id IS NULL OR supplier_id=''
+                            OR lower(trim(supplier_id))=lower(trim(?)))
+                        """,
+                        (line["rms_item_id"], supplier_id),
+                    ).fetchall()
+                else:
+                    matches = conn.execute(
+                        "SELECT catalog_item_id, supplier_id FROM catalog_items WHERE rms_item_id=?",
+                        (line["rms_item_id"],),
+                    ).fetchall()
                 if len(matches) != 1:
                     continue
                 catalog_item_id = matches[0]["catalog_item_id"]
+                row_supplier = matches[0]["supplier_id"]
+            else:
+                catalog_row = conn.execute(
+                    "SELECT supplier_id FROM catalog_items WHERE catalog_item_id=?",
+                    (catalog_item_id,),
+                ).fetchone()
+                row_supplier = catalog_row["supplier_id"] if catalog_row is not None else None
+            # An operator correction is scoped to the invoice supplier; with an
+            # unresolved supplier it is scoped to the confirmed catalog row's
+            # supplier instead of being silently discarded.  A global row with
+            # no supplier on either side cannot be scoped and is skipped.
+            alias_scope = supplier_id or _identifier_text(row_supplier)
+            if not alias_scope:
+                continue
             normalized = normalize_description(str(line.get("description") or ""))
             if not normalized:
                 continue
@@ -1604,7 +1931,7 @@ class InvoiceService:
                     updated_at=excluded.updated_at
                 """,
                 (
-                    supplier_id,
+                    alias_scope,
                     normalized,
                     uom_scope,
                     str(line.get("description") or ""),
@@ -1716,6 +2043,26 @@ class InvoiceService:
                             "SELECT * FROM catalog_items WHERE catalog_item_id=?",
                             (catalog_item_id,),
                         ).fetchone()
+                    elif rms_item_id and not effective_supplier_id:
+                        # Unresolved supplier: an operator may confirm any
+                        # supplier's row explicitly; approval still requires a
+                        # supplier and re-checks the scope.
+                        matches = conn.execute(
+                            "SELECT * FROM catalog_items WHERE rms_item_id=? ORDER BY catalog_item_id",
+                            (rms_item_id,),
+                        ).fetchall()
+                        if len(matches) == 1:
+                            selected = matches[0]
+                        elif len(matches) > 1:
+                            raise ValidationFailure(
+                                [
+                                    {
+                                        "field": f"lines.{index}.catalog_item_id",
+                                        "code": "ambiguous_rms_item",
+                                        "message": "select the exact supplier/item/UPC catalog row",
+                                    }
+                                ]
+                            )
                     elif rms_item_id:
                         matches = conn.execute(
                             """
@@ -1753,9 +2100,8 @@ class InvoiceService:
                             )
                     if selected is not None:
                         item_supplier = selected["supplier_id"]
-                        if item_supplier and (
-                            not effective_supplier_id
-                            or item_supplier.casefold() != str(effective_supplier_id).casefold()
+                        if item_supplier and effective_supplier_id and (
+                            item_supplier.casefold() != str(effective_supplier_id).casefold()
                         ):
                             raise ValidationFailure(
                                 [
@@ -1766,14 +2112,25 @@ class InvoiceService:
                                     }
                                 ]
                             )
+                        unit = matching.unit_check(
+                            source.get("description"),
+                            source.get("uom"),
+                            selected["description"],
+                            selected["uom"],
+                        )
+                        cost = self._rms_cost_facts(conn, selected, effective_supplier_id)
                         source.update(
                             {
                                 "catalog_item_id": selected["catalog_item_id"],
                                 "rms_item_id": selected["rms_item_id"],
                                 "rms_parent_item": selected["parent_item"],
                                 "rms_upc": selected["upc"],
-                                "rms_unit_cost": selected["unit_cost"],
+                                "rms_unit_cost": cost["rms_unit_cost"],
+                                "rms_unit_cost_min": cost["rms_unit_cost_min"],
+                                "rms_unit_cost_max": cost["rms_unit_cost_max"],
                                 "rms_po_number": selected["master_po_number"],
+                                "unit_status": unit["status"],
+                                "unit_reason": unit["reason"],
                             }
                         )
                     elif rms_item_id or catalog_item_id:
@@ -1873,7 +2230,11 @@ class InvoiceService:
                 version=new_version,
                 from_status=row["status"],
                 to_status=new_status,
-                details={"changed_fields": sorted(set(changed_fields)), "aliases_learned": learned},
+                details={
+                    "changed_fields": sorted(set(changed_fields)),
+                    "aliases_learned": learned,
+                    "learn_aliases_enabled": self.settings.learn_aliases,
+                },
                 created_at=now,
             )
             return self._invoice_from_row(conn, self._get_row(conn, invoice_id), full=True)
@@ -2022,6 +2383,19 @@ class InvoiceService:
                         "supplier_item_mismatch",
                         "RMS item belongs to a different supplier scope",
                     )
+                else:
+                    # Unit tier at approval, recomputed from the catalog row:
+                    # the RMS item id is the export's unit carrier, so a
+                    # multi-unit row or a stated disagreement cannot be
+                    # approved with the reason "unit unconfirmed".
+                    unit = matching.unit_check(
+                        line.get("description"),
+                        line.get("uom"),
+                        catalog_item["description"],
+                        catalog_item["uom"],
+                    )
+                    if unit["block"]:
+                        error(f"{prefix}.uom", "unit_unconfirmed", unit["reason"])
             try:
                 target_unit_cost = _decimal(line.get("target_unit_cost"))
             except (InvalidOperation, ValueError, TypeError):
@@ -2137,6 +2511,7 @@ class InvoiceService:
                 to_status="ready",
                 details={
                     "aliases_learned": learned,
+                    "learn_aliases_enabled": self.settings.learn_aliases,
                     "target_cost_review_required": invoice.get(
                         "target_cost_review_required", False
                     ),

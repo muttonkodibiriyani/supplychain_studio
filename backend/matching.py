@@ -10,7 +10,9 @@ pack, shade, and unit evidence.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
+import threading
 import unicodedata
 from difflib import SequenceMatcher
 from typing import Any, Iterable, Mapping, Sequence
@@ -22,8 +24,36 @@ class CatalogValidationError(ValueError):
 
 AUTO_FUZZY_THRESHOLD = 96.0
 AUTO_FUZZY_MARGIN = 8.0
+# Score ceiling for candidates with a one-sided critical attribute; must stay
+# strictly below AUTO_FUZZY_THRESHOLD (see _rank_candidates).
+CRITICAL_UNKNOWN_SCORE_CAP = 92.0
 SUGGEST_THRESHOLD = 70.0
+# Unit kinds for the auto-boundary unit check (see unit_check).  Values are the
+# canonical forms produced by _normalize_uom.
+SINGLE_UNIT_UOMS = frozenset({"EACH"})
+MULTI_UNIT_UOMS = frozenset({"PACK", "BOX", "CASE", "CARTON", "DOZEN"})
+UNIT_UNCONFIRMED = "unit unconfirmed"
+# Attribute kinds as produced by _compatibility.  Rules keyed on "which
+# attribute is unknown" read these, never the reason labels.
+KIND_SIZE = "size"
+KIND_PACK = "pack"
+KIND_SHADE = "shade"
+KIND_UOM = "uom"
+ATTRIBUTE_KINDS = (
+    ("sizes", KIND_SIZE, "size"),
+    ("packs", KIND_PACK, "pack count"),
+    ("shades", KIND_SHADE, "shade"),
+)
 DEFAULT_CANDIDATE_LIMIT = 5
+# Above this many eligible rows a token prefilter narrows the fuzzy scan so an
+# unresolved-supplier fallback over a large full catalog stays bounded.
+PREFILTER_MIN_ROWS = 2000
+PREFILTER_POOL_SIZE = 250
+SUPPLIER_UNRESOLVED_WARNING = (
+    "Supplier unresolved: no catalog supplier could be matched to this invoice, so "
+    "candidates were drawn from the full catalog across all suppliers. Matches are "
+    "low-confidence suggestions only and require review."
+)
 
 _ABBREVIATIONS = {
     "btl": "bottle",
@@ -71,6 +101,9 @@ _UOM_ALIASES = {
     "CS": "CASE",
     "CTN": "CARTON",
     "CARTON": "CARTON",
+    "DOZ": "DOZEN",
+    "DZ": "DOZEN",
+    "DOZEN": "DOZEN",
     "BTL": "BOTTLE",
     "BOTTLE": "BOTTLE",
     "ML": "ML",
@@ -142,10 +175,30 @@ def match_lines(
     catalog: Sequence[Mapping[str, Any]],
     aliases: Sequence[Mapping[str, Any]] | Mapping[str, str] | None = None,
     supplier_id: str | None = None,
+    *,
+    unresolved_supplier_fallback: bool = True,
 ) -> list[dict[str, Any]]:
-    """Enrich lines with a conservative match decision and ranked candidates."""
+    """Enrich lines with a conservative match decision and ranked candidates.
 
-    prepared_catalog = _prepare_catalog(catalog, supplier_id)
+    With a resolved ``supplier_id`` only that supplier's rows and global rows
+    are eligible.  Without one, the catalog is NOT silently narrowed to global
+    rows: when ``unresolved_supplier_fallback`` is enabled every supplier's rows
+    stay eligible, every line carries an explicit "supplier unresolved" warning
+    and no line can reach ``auto`` (at best ``suggested``).
+    """
+
+    fallback_active = bool(
+        unresolved_supplier_fallback
+        and _supplier_key(supplier_id) is None
+        and supplier_scoping_needed(catalog)
+    )
+    if not lines:
+        # Nothing to match: do not pay for preparing a (possibly very large)
+        # catalog.  Catalog validation still runs whenever a line is matched.
+        return []
+    prepared_catalog, candidate_index = _prepared_catalog_and_index(
+        catalog, supplier_id, include_all_suppliers=fallback_active
+    )
     catalog_by_key = {str(item["_catalog_key"]): item for item in prepared_catalog}
     catalog_by_rms: dict[str, list[dict[str, Any]]] = {}
     for item in prepared_catalog:
@@ -165,6 +218,9 @@ def match_lines(
         if "confidence" in line and "extraction_confidence" not in line:
             line["extraction_confidence"] = line["confidence"]
         line["match_warnings"] = list(line.get("match_warnings") or [])
+        if fallback_active:
+            line["match_warnings"].append(SUPPLIER_UNRESOLVED_WARNING)
+            line["match_reason"] = "supplier_unresolved_full_catalog_fallback"
         supplied_catalog_key = line.get("catalog_item_id")
         supplied_id = line.get("rms_item_id")
         selected = None
@@ -177,6 +233,10 @@ def match_lines(
         if supplied_catalog_key not in (None, "") or supplied_id not in (None, ""):
             supplied_key = str(supplied_id or supplied_catalog_key)
             if selected is not None:
+                unit = unit_check(
+                    line.get("description"), line.get("uom"), selected["description"], selected.get("uom")
+                )
+                cost = _cost_facts(selected, catalog_by_rms.get(str(selected["rms_item_id"]), []))
                 line.update(
                     {
                         "catalog_item_id": selected.get("catalog_item_id"),
@@ -184,8 +244,12 @@ def match_lines(
                         "rms_parent_item": selected.get("parent_item")
                         or selected["rms_item_id"],
                         "rms_upc": selected.get("upc"),
-                        "rms_unit_cost": selected.get("unit_cost"),
+                        "rms_unit_cost": cost["rms_unit_cost"],
+                        "rms_unit_cost_min": cost["rms_unit_cost_min"],
+                        "rms_unit_cost_max": cost["rms_unit_cost_max"],
                         "rms_po_number": selected.get("master_po_number"),
+                        "unit_status": unit["status"],
+                        "unit_reason": unit["reason"],
                         "match_status": "confirmed",
                         "confidence": 100.0,
                         "candidates": [_public_candidate({
@@ -227,7 +291,7 @@ def match_lines(
             output.append(line)
             continue
 
-        ranked = _rank_candidates(line, prepared_catalog)
+        ranked = _rank_candidates(line, prepared_catalog, index=candidate_index)
         upc_candidate: dict[str, Any] | None = None
         if upc_state == "matched" and upc_item is not None:
             upc_candidate = next(
@@ -265,6 +329,12 @@ def match_lines(
                 "Exact supplier-scoped UPC and saved alias resolve to different catalog rows; manual review is required."
             )
         ranked.sort(key=lambda item: (-item["score"], str(item["rms_item_id"])))
+        if fallback_active:
+            for candidate in ranked[:DEFAULT_CANDIDATE_LIMIT]:
+                candidate["reason"] = (
+                    f"Supplier unresolved; full-catalog fallback row from supplier "
+                    f"'{candidate.get('supplier_id') or 'global'}'; " + candidate["reason"]
+                )
         public_candidates = [_public_candidate(candidate) for candidate in ranked[:DEFAULT_CANDIDATE_LIMIT]]
 
         selected: dict[str, Any] | None = None
@@ -273,10 +343,11 @@ def match_lines(
         upc_blocks_automatic_selection = (
             upc_state not in {"absent", "matched"} or upc_alias_conflict
         )
+        path = None
         if upc_candidate is not None and not upc_alias_conflict:
-            selected, status, confidence = upc_candidate, "auto", 100.0
+            selected, status, confidence, path = upc_candidate, "auto", 100.0, "upc"
         elif not upc_blocks_automatic_selection and alias_candidate and alias_candidate["_compatible"]:
-            selected, status, confidence = alias_candidate, "auto", 100.0
+            selected, status, confidence, path = alias_candidate, "auto", 100.0, "alias"
         elif ranked:
             top = ranked[0]
             exact_candidates = [
@@ -289,7 +360,10 @@ def match_lines(
                 and len(exact_candidates) == 1
                 and top is exact_candidates[0]
             ):
-                selected, status, confidence = top, "auto", 100.0
+                # Exact means identical normalised strings, so size / pack /
+                # shade cannot be unknown here; a UOM-only unknown is settled
+                # by the unit check at the auto boundary below.
+                selected, status, confidence, path = top, "auto", 100.0, "exact"
             else:
                 second_score = ranked[1]["score"] if len(ranked) > 1 else 0.0
                 margin = top["score"] - second_score
@@ -300,10 +374,45 @@ def match_lines(
                     and top["_compatible"]
                     and not top["_critical_unknown"]
                 ):
-                    selected, status, confidence = top, "auto", top["score"]
+                    selected, status, confidence, path = top, "auto", top["score"], "fuzzy"
                 elif top["score"] >= SUGGEST_THRESHOLD and top["_compatible"]:
                     status = "suggested"
 
+        # Auto boundary: the RMS item id is the unit carrier in the export
+        # (the Details sheet has no UOM column), so the unit question is
+        # settled here.  Every auto selection carries the unit flag; the
+        # kind-keyed demotion (has_blocking_unknown via unit_check) applies
+        # to the EXACT path only, and that boundary is proven, not chosen:
+        # size, pack count and shade are derived from the normalised
+        # description, and an exact candidate has the identical normalised
+        # string, so those kinds can never be "on only one side" here; the
+        # only unknown reachable on this path is UOM, and a UOM conflict is
+        # already excluded by _compatible.  The fuzzy path keeps its own
+        # `not _critical_unknown` gate (every unknown kind, UOM included),
+        # so nothing with an unknown reaches auto through it.  The UPC and
+        # alias paths keep their own evidence checks (_resolve_exact_upc,
+        # _find_alias) and are not demoted here; the alias path is
+        # unreachable while alias learning is off.
+        unit = None
+        if selected is not None and status == "auto":
+            item = catalog_by_key[str(selected["_catalog_key"])]
+            unit = unit_check(description, line.get("uom"), item["description"], item.get("uom"))
+            if unit["demote"] and path == "exact":
+                line["match_warnings"].append(unit["reason"])
+                selected = None
+                status = "suggested"
+                confidence = ranked[0]["score"] if ranked else 0.0
+
+        if fallback_active and status == "auto":
+            # A full-catalog fallback cannot select a row automatically:
+            # description-only matches across suppliers collide.
+            selected = None
+            status = "suggested"
+            confidence = ranked[0]["score"] if ranked else 0.0
+
+        cost = _cost_facts(
+            selected, catalog_by_rms.get(str(selected["rms_item_id"]), []) if selected else []
+        )
         line.update(
             {
                 "catalog_item_id": selected.get("catalog_item_id") if selected else None,
@@ -314,8 +423,12 @@ def match_lines(
                     else None
                 ),
                 "rms_upc": selected.get("upc") if selected else None,
-                "rms_unit_cost": selected.get("unit_cost") if selected else None,
+                "rms_unit_cost": cost["rms_unit_cost"],
+                "rms_unit_cost_min": cost["rms_unit_cost_min"],
+                "rms_unit_cost_max": cost["rms_unit_cost_max"],
                 "rms_po_number": selected.get("master_po_number") if selected else None,
+                "unit_status": unit["status"] if unit else None,
+                "unit_reason": unit["reason"] if unit else None,
                 "match_status": status,
                 "confidence": round(float(confidence), 1),
                 "candidates": public_candidates,
@@ -325,27 +438,221 @@ def match_lines(
     return output
 
 
+# Unit statuses for which the RMS cost comparison must refuse to show a number
+# (InvoiceService._prepare_lines); produced only by unit_check below.
+BLOCKING_UNIT_STATUSES = frozenset({"unverified", "unconfirmed"})
+
+
+def has_blocking_unknown(compatibility: Mapping[str, Sequence[str]]) -> bool:
+    """The ONE kind-keyed rule shared by the auto boundary and the cost site.
+
+    True for any stated disagreement (conflicts of every kind, including a
+    real UOM conflict, still block), and for a SIZE, PACK COUNT or SHADE
+    known on only one side.  False for a UOM-only unknown: the master's UOM
+    column is a constant single unit compared against a line that states
+    none, which carries no information (it would fire on every line).
+
+    Reads ``unknown_kinds`` (the structured kinds), not the reason labels, so
+    rewording a label cannot re-enable or disable the rule.
+    """
+
+    if compatibility["conflicts"]:
+        return True
+    return any(kind != KIND_UOM for kind in compatibility["unknown_kinds"])
+
+
+def unit_check(
+    line_description: Any,
+    line_uom: Any,
+    item_description: Any,
+    item_uom: Any,
+) -> dict[str, Any]:
+    """Decide whether a selected catalog row's unit is settled for a line.
+
+    Keyed on the KIND of the unknown, not on the master UOM alone:
+
+    * a stated disagreement of any kind (UOM, size, pack count, shade) ->
+      ``unconfirmed``: demote and block approval, reason "unit unconfirmed";
+    * the master row is a multi-unit row (case / box / carton / pack / dozen
+      UOM, or an NxSIZE pack in its description) and the line is silent on
+      the unit -> ``unconfirmed``, same reason.  Dead against the current
+      master (its UOM column is a constant single unit) but it is the gate
+      for a master that carries case rows;
+    * size, pack count or shade known on only one side -> ``unverified``:
+      demote to suggested (the words agree but the item cannot be told apart
+      from its sibling), approval is not blocked once an operator confirms;
+    * UOM known on only one side, master single-unit or unstated ->
+      ``assumed``: permitted, the line carries the flag "unit assumed";
+    * both sides agree -> ``confirmed``.
+    """
+
+    line_attributes = _attributes(str(line_description or ""), line_uom)
+    item_attributes = _attributes(str(item_description or ""), item_uom)
+    compatibility = _compatibility(line_attributes, item_attributes)
+    line_unit, item_unit = line_attributes["uom"], item_attributes["uom"]
+    master_multi = item_unit in MULTI_UNIT_UOMS or bool(item_attributes["packs"])
+    if compatibility["conflicts"]:
+        reason = f"{UNIT_UNCONFIRMED}: " + "; ".join(compatibility["conflicts"])
+        return {"status": "unconfirmed", "reason": reason, "demote": True, "block": True}
+    blocking_unknowns = [
+        label
+        for kind, label in zip(compatibility["unknown_kinds"], compatibility["unknowns"])
+        if kind != KIND_UOM
+    ]
+    if line_unit is None and master_multi:
+        reason = (
+            f"{UNIT_UNCONFIRMED}: invoice line states no unit and the RMS item is a "
+            f"multi-unit row ({item_unit if item_unit in MULTI_UNIT_UOMS else 'pack of ' + _format_attribute(item_attributes['packs'])})"
+        )
+        return {"status": "unconfirmed", "reason": reason, "demote": True, "block": True}
+    if has_blocking_unknown(compatibility):
+        reason = "item attribute unverified: " + "; ".join(blocking_unknowns)
+        return {"status": "unverified", "reason": reason, "demote": True, "block": False}
+    if line_unit and item_unit:
+        return {
+            "status": "confirmed",
+            "reason": f"unit confirmed ({line_unit})",
+            "demote": False,
+            "block": False,
+        }
+    if line_unit is None and item_unit is not None and item_unit not in SINGLE_UNIT_UOMS:
+        # A master unit that is neither single nor multi (e.g. a size unit in
+        # the UOM column) cannot be assumed for a line that states none.
+        reason = f"{UNIT_UNCONFIRMED}: invoice line states no unit and the RMS item unit is {item_unit}"
+        return {"status": "unconfirmed", "reason": reason, "demote": True, "block": True}
+    stated = item_unit or line_unit
+    reason = (
+        f"unit assumed: {'invoice line' if line_unit is None else 'RMS item'} states no unit"
+        + (f"; {stated} taken from the {'RMS item' if line_unit is None else 'invoice line'}" if stated else "")
+    )
+    return {"status": "assumed", "reason": reason, "demote": False, "block": False}
+
+
+def _cost_facts(
+    selected: Mapping[str, Any] | None, tied_rows: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Cost facts for a selected RMS item over every eligible row of that id.
+
+    A master can hold several rows (sites) for one RMS item with different
+    unit costs.  The first ranked row's cost must not be picked silently, so
+    with more than one distinct cost the line carries the [min, max] range
+    and no single ``rms_unit_cost``; the service turns the range into a
+    comparison (see InvoiceService._prepare_lines).
+    """
+
+    if selected is None:
+        return {"rms_unit_cost": None, "rms_unit_cost_min": None, "rms_unit_cost_max": None}
+    costs: set[float] = set()
+    for row in tied_rows or [selected]:
+        value = row.get("unit_cost")
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number > 0.01:
+            costs.add(number)
+    if len(costs) > 1:
+        return {
+            "rms_unit_cost": None,
+            "rms_unit_cost_min": min(costs),
+            "rms_unit_cost_max": max(costs),
+        }
+    return {
+        "rms_unit_cost": selected.get("unit_cost"),
+        "rms_unit_cost_min": None,
+        "rms_unit_cost_max": None,
+    }
+
+
 def enrich_invoice(
     invoice: Mapping[str, Any],
     catalog: Sequence[Mapping[str, Any]],
     aliases: Sequence[Mapping[str, Any]] | Mapping[str, str] | None = None,
     supplier_id: str | None = None,
+    *,
+    scope_resolved: bool = False,
 ) -> dict[str, Any]:
-    """Return a copy of an extracted invoice with its lines matched."""
+    """Return a copy of an extracted invoice with its lines matched.
+
+    With ``scope_resolved`` the caller has already decided the matching scope:
+    ``supplier_id`` is authoritative and ``None`` means unresolved, so the id
+    printed on the invoice is NOT used as a scope.  A printed id the catalog
+    does not know would otherwise scope matching to 0 supplier rows plus the
+    global rows, the silently narrowed set through a second door.
+    """
 
     enriched = dict(invoice)
-    effective_supplier = supplier_id or _optional_string(invoice.get("supplier_id"))
+    if scope_resolved:
+        effective_supplier = supplier_id
+    else:
+        effective_supplier = supplier_id or _optional_string(invoice.get("supplier_id"))
     enriched["lines"] = match_lines(
         invoice.get("lines") or [],
         catalog,
         aliases,
         effective_supplier,
     )
+    warnings = list(invoice.get("warnings") or [])
+    if _supplier_key(effective_supplier) is None and supplier_scoping_needed(catalog):
+        enriched["supplier_resolution"] = "unresolved"
+        enriched["match_reason"] = "supplier_unresolved_full_catalog_fallback"
+        if SUPPLIER_UNRESOLVED_WARNING not in warnings:
+            warnings.append(SUPPLIER_UNRESOLVED_WARNING)
+    else:
+        enriched["supplier_resolution"] = "resolved" if effective_supplier else "not_required"
+    enriched["warnings"] = warnings
     return enriched
 
 
+def supplier_scoping_needed(catalog: Sequence[Mapping[str, Any]]) -> bool:
+    """True when the catalog holds supplier-specific rows (scoping matters)."""
+
+    return any(_supplier_key(item.get("supplier_id")) for item in catalog)
+
+
+class _CandidateIndex:
+    """Token prefilter so a large (full-master) scan stays bounded per line.
+
+    Rows sharing rare normalized tokens with the line are scored by inverse
+    document frequency; the top pool plus every exact normalized match is then
+    ranked by the regular similarity scoring.  Deterministic and dependency-free.
+    """
+
+    def __init__(self, catalog: Sequence[Mapping[str, Any]], pool_size: int = PREFILTER_POOL_SIZE) -> None:
+        self.catalog = catalog
+        self.pool_size = pool_size
+        self.by_normalized: dict[str, list[int]] = {}
+        self.postings: dict[str, list[int]] = {}
+        for position, item in enumerate(catalog):
+            normalized = item["_normalized"]
+            self.by_normalized.setdefault(normalized, []).append(position)
+            for token in set(normalized.split()):
+                self.postings.setdefault(token, []).append(position)
+        total = max(1, len(catalog))
+        self.common_limit = max(50, total // 5)
+        self.weights = {
+            token: math.log(total / len(rows)) for token, rows in self.postings.items()
+        }
+
+    def pool(self, normalized: str) -> list[Mapping[str, Any]]:
+        scores: dict[int, float] = {}
+        for token in set(normalized.split()):
+            rows = self.postings.get(token)
+            if not rows or len(rows) > self.common_limit:
+                continue
+            weight = self.weights[token]
+            for position in rows:
+                scores[position] = scores.get(position, 0.0) + weight
+        chosen = set(sorted(scores, key=lambda position: (-scores[position], position))[: self.pool_size])
+        chosen.update(self.by_normalized.get(normalized, ()))
+        return [self.catalog[position] for position in sorted(chosen)]
+
+
 def _prepare_catalog(
-    catalog: Sequence[Mapping[str, Any]], supplier_id: str | None
+    catalog: Sequence[Mapping[str, Any]],
+    supplier_id: str | None,
+    *,
+    include_all_suppliers: bool = False,
 ) -> list[dict[str, Any]]:
     prepared: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -364,8 +671,10 @@ def _prepare_catalog(
         seen.add(item_key)
         item_supplier = _supplier_key(source.get("supplier_id"))
         # Supplier-specific catalog rows cannot leak across suppliers.  Global
-        # rows (supplier_id absent) remain eligible for every supplier.
-        if item_supplier and item_supplier != wanted_supplier:
+        # rows (supplier_id absent) remain eligible for every supplier.  With an
+        # unresolved supplier the caller opts into the explicit full-catalog
+        # fallback instead of silently narrowing to global rows.
+        if item_supplier and item_supplier != wanted_supplier and not include_all_suppliers:
             continue
         prepared.append(
             {
@@ -379,6 +688,40 @@ def _prepare_catalog(
             }
         )
     return prepared
+
+
+# Preparing a full catalog (normalising and tokenising every row) costs
+# seconds per call, and the unresolved-supplier fallback would otherwise pay it
+# for every invoice.  The service hands the same catalog list object to every
+# job while the catalog is unchanged, so one prepared copy (plus its prefilter
+# index) is memoised per catalog object.  Prepared rows are never mutated by
+# the matcher, which makes sharing them across calls safe.
+_PREPARED_CACHE_LOCK = threading.Lock()
+_PREPARED_CACHE: dict[tuple[int, int, str | None, bool], tuple[Any, list[dict[str, Any]], Any]] = {}
+
+
+def _prepared_catalog_and_index(
+    catalog: Sequence[Mapping[str, Any]],
+    supplier_id: str | None,
+    *,
+    include_all_suppliers: bool,
+) -> tuple[list[dict[str, Any]], "_CandidateIndex | None"]:
+    cacheable = len(catalog) >= PREFILTER_MIN_ROWS
+    key = (id(catalog), len(catalog), _supplier_key(supplier_id), include_all_suppliers)
+    if cacheable:
+        with _PREPARED_CACHE_LOCK:
+            entry = _PREPARED_CACHE.get(key)
+        # The cached entry keeps the catalog object alive, so an identity match
+        # guarantees the id() was not recycled for a different list.
+        if entry is not None and entry[0] is catalog:
+            return entry[1], entry[2]
+    prepared = _prepare_catalog(catalog, supplier_id, include_all_suppliers=include_all_suppliers)
+    index = _CandidateIndex(prepared) if len(prepared) > PREFILTER_MIN_ROWS else None
+    if cacheable:
+        with _PREPARED_CACHE_LOCK:
+            _PREPARED_CACHE.clear()
+            _PREPARED_CACHE[key] = (catalog, prepared, index)
+    return prepared, index
 
 
 def _prepare_aliases(
@@ -469,13 +812,16 @@ def _find_alias(
 
 
 def _rank_candidates(
-    line: Mapping[str, Any], catalog: Sequence[Mapping[str, Any]]
+    line: Mapping[str, Any],
+    catalog: Sequence[Mapping[str, Any]],
+    index: _CandidateIndex | None = None,
 ) -> list[dict[str, Any]]:
     description = str(line.get("description") or "").strip()
     normalized = normalize_description(description)
     line_attributes = _attributes(description, line.get("uom"))
     candidates: list[dict[str, Any]] = []
-    for item in catalog:
+    pool = index.pool(normalized) if index is not None else catalog
+    for item in pool:
         compatibility = _compatibility(line_attributes, item["_attributes"])
         exact = normalized == item["_normalized"]
         score = 100.0 if exact else _similarity(normalized, item["_normalized"])
@@ -490,7 +836,12 @@ def _rank_candidates(
         elif compatibility["unknowns"]:
             # Missing critical attributes should remain reviewable even when the
             # words happen to be very similar.
-            score = min(score, 92.0)
+            # Partner constant: AUTO_FUZZY_THRESHOLD (top of this module).  This
+            # cap must stay strictly below it; the gap is the only thing that
+            # keeps a near-identical line with a one-sided size / pack / shade
+            # out of the auto tier on the fuzzy path
+            # (tests/test_matching.py::test_critical_unknown_cap_stays_below_auto_fuzzy_threshold).
+            score = min(score, CRITICAL_UNKNOWN_SCORE_CAP)
         candidates.append(
             {
                 "catalog_item_id": item.get("catalog_item_id"),
@@ -501,6 +852,7 @@ def _rank_candidates(
                 "unit_cost": item.get("unit_cost"),
                 "master_po_number": item.get("master_po_number"),
                 "description": item["description"],
+                "supplier_id": item.get("supplier_id"),
                 "score": round(max(0.0, min(100.0, score)), 1),
                 "reason": "; ".join(reason_parts),
                 "_compatible": not compatibility["conflicts"],
@@ -641,10 +993,20 @@ def _attributes(description: str, uom: Any) -> dict[str, Any]:
 
 
 def _compatibility(left: Mapping[str, Any], right: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Compare two attribute sets.
+
+    ``conflicts`` / ``unknowns`` / ``matches`` are human-readable labels for
+    reasons.  ``conflict_kinds`` and ``unknown_kinds`` are the parallel lists
+    of attribute KINDS (``KIND_SIZE`` ... ``KIND_UOM``); rules that depend on
+    which attribute is unknown must read the kinds, never the label text.
+    """
+
     conflicts: list[str] = []
+    conflict_kinds: list[str] = []
     unknowns: list[str] = []
+    unknown_kinds: list[str] = []
     matches: list[str] = []
-    for key, label in (("sizes", "size"), ("packs", "pack count"), ("shades", "shade")):
+    for key, kind, label in ATTRIBUTE_KINDS:
         left_values = set(left[key])
         right_values = set(right[key])
         if left_values and right_values:
@@ -654,17 +1016,27 @@ def _compatibility(left: Mapping[str, Any], right: Mapping[str, Any]) -> dict[st
                 conflicts.append(
                     f"{label} conflict ({_format_attribute(left_values)} vs {_format_attribute(right_values)})"
                 )
+                conflict_kinds.append(kind)
         elif left_values or right_values:
             unknowns.append(f"{label} appears on only one side")
+            unknown_kinds.append(kind)
     left_uom, right_uom = left.get("uom"), right.get("uom")
     if left_uom and right_uom:
         if left_uom == right_uom:
             matches.append("UOM matches")
         else:
             conflicts.append(f"UOM conflict ({left_uom} vs {right_uom})")
+            conflict_kinds.append(KIND_UOM)
     elif left_uom or right_uom:
         unknowns.append("UOM appears on only one side")
-    return {"conflicts": conflicts, "unknowns": unknowns, "matches": matches}
+        unknown_kinds.append(KIND_UOM)
+    return {
+        "conflicts": conflicts,
+        "conflict_kinds": conflict_kinds,
+        "unknowns": unknowns,
+        "unknown_kinds": unknown_kinds,
+        "matches": matches,
+    }
 
 
 def _similarity(left: str, right: str) -> float:
