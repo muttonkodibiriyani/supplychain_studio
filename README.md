@@ -4,18 +4,29 @@ Run a local invoice workspace for a brand: import its RMS item master, upload su
 
 Source: [muttonkodibiriyani/supplychain_studio](https://github.com/muttonkodibiriyani/supplychain_studio). Sign in to an account with repository access, then choose **Code → Download ZIP**.
 
-## Start on a new Windows computer
+## Start on a new computer: one command
 
-Follow [Windows setup from zero](docs/WINDOWS_SETUP.md) for Windows, WSL 2, Docker Desktop, download, first launch, backups and troubleshooting. You do not need to install Python, Node or an AI API key on Windows when using Docker.
+You do not need Python, Node, Tesseract or an AI API key. Docker Desktop builds everything inside a Linux container.
 
-After Docker Desktop is running and you have extracted the source, open PowerShell in the application folder:
+**Windows** (follow [Windows setup from zero](docs/WINDOWS_SETUP.md) for WSL 2 and Docker Desktop first, then open PowerShell in the extracted application folder):
 
 ```powershell
-Copy-Item .env.example .env
-docker compose --project-name invoice-studio up --build --detach
+.\Start-InvoiceStudio.ps1
 ```
 
-Open **http://localhost:8000**. Keep the same project name on later starts so you reconnect to the same stored invoices and mappings. The optional `Start-InvoiceStudio.ps1` helper checks Docker and starts this workflow.
+**Mac, Apple Silicon or Intel** (follow [Mac setup from zero](docs/MAC_SETUP.md) for Docker Desktop first, then double-click `Start-InvoiceStudio.command`, or in Terminal inside the application folder):
+
+```bash
+./start.sh
+```
+
+Both helpers check Docker, build and start the `invoice-studio` Compose project, wait for the health check and open **http://localhost:8000**. They are thin wrappers around the canonical command, which works on any platform with Docker:
+
+```bash
+docker compose --project-name invoice-studio up --build --detach --wait
+```
+
+Keep the same project name on later starts so you reconnect to the same stored invoices and mappings. Use `--project-name` and `--port` (`-ProjectName`/`-Port` on Windows) to run a second brand side by side.
 
 ## First brand and daily operation
 
@@ -49,7 +60,7 @@ Current release checks are in [RELEASE_VALIDATION.md](docs/RELEASE_VALIDATION.md
 | CSV, XLSX | Structured invoice fields and lines |
 | DOCX, TXT | Text/table extraction |
 
-The supplied Compose configuration permits **64 MiB per invoice file**, with page/frame and decompression limits. The browser sends files individually, so a selection can exceed 1,000 files. Two processing workers are configured by default. Corrupt, encrypted, empty, unsupported and oversized files produce explicit errors. ZIP archives, HEIC, legacy XLS/DOC, HTML and SVG are not invoice inputs.
+The supplied Compose configuration permits **64 MiB per invoice file**, with page/frame and decompression limits. The browser sends files individually, so a selection can exceed 1,000 files. Four extraction workers are configured by default (`INVOICE_WORKERS` in `.env.example`); raise it toward the CPU core count for large scanned batches. Corrupt, encrypted, empty, unsupported and oversized files produce explicit errors. ZIP archives, HEIC, legacy XLS/DOC, HTML and SVG are not invoice inputs.
 
 ## Separate brands and persistent data
 
