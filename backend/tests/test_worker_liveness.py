@@ -139,6 +139,9 @@ def test_uploads_during_large_catalog_import_drain_without_restart(tmp_path: Pat
         importer.join()
         assert "error" not in outcome, outcome
         assert outcome["result"]["imported"] == 80_000  # type: ignore[index]
+        # Calibration only, not a lock-hold guarantee: post-fix the parse runs
+        # outside any lock, so this just confirms the catalog is large enough
+        # that an import outlasts the busy timeout and uploads overlap it.
         assert outcome["elapsed"] > service.settings.db_busy_timeout_seconds, outcome  # type: ignore[operator]
 
         alive = [thread.is_alive() for thread in service._threads]

@@ -2365,79 +2365,81 @@ class InvoiceService:
         # IMMEDIATE across a multi-minute parse blocks every worker's job claim
         # past the busy timeout; the insert itself takes seconds.
         pending: list[tuple[Any, ...]] = []
-        if True:
-            for row_number, source in enumerate(self._catalog_rows(filename, content), start=2):
-                row: dict[str, Any] = {}
-                for key, value in source.items():
-                    target = self._canonical_catalog_field(key)
-                    if target and target not in row:
-                        row[target] = value
-                item_id = _identifier_text(row.get("rms_item_id"))
-                description = _identifier_text(row.get("description"), limit=2000)
-                if not item_id and not description and not any(source.values()):
-                    skipped += 1
-                    continue
-                if not item_id or not description:
-                    skipped += 1
-                    if len(warnings) < 100:
-                        warnings.append(
-                            f"row {row_number}: parent/RMS item and description are required"
-                        )
-                    continue
-                supplier_id = _identifier_text(row.get("supplier_id"))
-                supplier_name = _identifier_text(row.get("supplier_name"), limit=500)
-                upc = _normalize_upc(row.get("upc"))
-                uom = _identifier_text(row.get("uom"), limit=100)
-                try:
-                    unit_cost = _decimal_text(row.get("unit_cost"))
-                    if unit_cost is not None and Decimal(unit_cost) < 0:
-                        raise InvalidOperation
-                except (InvalidOperation, ValueError, TypeError):
-                    skipped += 1
-                    if len(warnings) < 100:
-                        warnings.append(f"row {row_number}: invalid unit_cost")
-                    continue
-                raw_order = _identifier_text(row.get("master_po_number"))
-                master_po_number = _valid_order_number(raw_order)
-                if raw_order and not master_po_number and len(warnings) < 100:
+        # Deliberately NOT inside `with self.db.transaction(immediate=True)`:
+        # re-wrapping this loop in the write lock reinstates the worker-pool
+        # death fixed in PR #3 (test_uploads_during_large_catalog_import_drain_without_restart).
+        for row_number, source in enumerate(self._catalog_rows(filename, content), start=2):
+            row: dict[str, Any] = {}
+            for key, value in source.items():
+                target = self._canonical_catalog_field(key)
+                if target and target not in row:
+                    row[target] = value
+            item_id = _identifier_text(row.get("rms_item_id"))
+            description = _identifier_text(row.get("description"), limit=2000)
+            if not item_id and not description and not any(source.values()):
+                skipped += 1
+                continue
+            if not item_id or not description:
+                skipped += 1
+                if len(warnings) < 100:
                     warnings.append(
-                        f"row {row_number}: ignored non-order value in explicit order field"
+                        f"row {row_number}: parent/RMS item and description are required"
                     )
-                identity = (
-                    (supplier_id or "").casefold(),
+                continue
+            supplier_id = _identifier_text(row.get("supplier_id"))
+            supplier_name = _identifier_text(row.get("supplier_name"), limit=500)
+            upc = _normalize_upc(row.get("upc"))
+            uom = _identifier_text(row.get("uom"), limit=100)
+            try:
+                unit_cost = _decimal_text(row.get("unit_cost"))
+                if unit_cost is not None and Decimal(unit_cost) < 0:
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError, TypeError):
+                skipped += 1
+                if len(warnings) < 100:
+                    warnings.append(f"row {row_number}: invalid unit_cost")
+                continue
+            raw_order = _identifier_text(row.get("master_po_number"))
+            master_po_number = _valid_order_number(raw_order)
+            if raw_order and not master_po_number and len(warnings) < 100:
+                warnings.append(
+                    f"row {row_number}: ignored non-order value in explicit order field"
+                )
+            identity = (
+                (supplier_id or "").casefold(),
+                item_id,
+                upc or "",
+                (uom or "").casefold(),
+            )
+            occurrence = occurrences.get(identity, 0) + 1
+            occurrences[identity] = occurrence
+            catalog_item_id = _catalog_item_key(
+                supplier_id=supplier_id,
+                rms_item_id=item_id,
+                upc=upc,
+                uom=uom,
+                occurrence=occurrence,
+            )
+            pending.append(
+                (
+                    catalog_item_id,
                     item_id,
-                    upc or "",
-                    (uom or "").casefold(),
+                    item_id,
+                    upc,
+                    description,
+                    normalize_description(description),
+                    supplier_id,
+                    supplier_name,
+                    uom,
+                    unit_cost,
+                    master_po_number,
+                    row_number,
+                    filename,
+                    now,
+                    now,
                 )
-                occurrence = occurrences.get(identity, 0) + 1
-                occurrences[identity] = occurrence
-                catalog_item_id = _catalog_item_key(
-                    supplier_id=supplier_id,
-                    rms_item_id=item_id,
-                    upc=upc,
-                    uom=uom,
-                    occurrence=occurrence,
-                )
-                pending.append(
-                    (
-                        catalog_item_id,
-                        item_id,
-                        item_id,
-                        upc,
-                        description,
-                        normalize_description(description),
-                        supplier_id,
-                        supplier_name,
-                        uom,
-                        unit_cost,
-                        master_po_number,
-                        row_number,
-                        filename,
-                        now,
-                        now,
-                    )
-                )
-                imported += 1
+            )
+            imported += 1
         # Commit in chunks so no single write transaction approaches the busy
         # timeout; workers and uploads interleave between chunks. Every row was
         # validated above, so a mid-import failure can only be a storage error.
