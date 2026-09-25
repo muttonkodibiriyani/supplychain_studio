@@ -454,3 +454,47 @@ class CriticalUnknownCapInvariantTests(unittest.TestCase):
         )[0]
         self.assertNotEqual(held["match_status"], "auto")
         self.assertEqual(held["candidates"][0]["score"], cap)
+
+
+class HasBlockingUnknownPredicateTests(unittest.TestCase):
+    """The one kind-keyed predicate shared by the auto boundary and the RMS
+    cost comparison reads the structured unknown KINDS, never the reason
+    labels, so rewording a label can neither enable nor disable the rule."""
+
+    @staticmethod
+    def compat(left_desc, left_uom, right_desc, right_uom):
+        return matching_module._compatibility(
+            matching_module._attributes(left_desc, left_uom),
+            matching_module._attributes(right_desc, right_uom),
+        )
+
+    def test_uom_only_unknown_does_not_block(self) -> None:
+        compat = self.compat("Fictional Sun Cream", None, "Fictional Sun Cream", "EA")
+        self.assertEqual(compat["unknown_kinds"], [matching_module.KIND_UOM])
+        self.assertFalse(matching_module.has_blocking_unknown(compat))
+
+    def test_size_pack_or_shade_unknown_blocks(self) -> None:
+        for left, right, kind in (
+            ("Fictional Lotion", "Fictional Lotion 200ml", matching_module.KIND_SIZE),
+            ("Fictional Juice", "Fictional Juice 12x250ml", matching_module.KIND_PACK),
+            ("Fictional Lipstick", "Fictional Lipstick shade 12", matching_module.KIND_SHADE),
+        ):
+            compat = self.compat(left, None, right, "EA")
+            self.assertIn(kind, compat["unknown_kinds"], (left, right))
+            self.assertTrue(matching_module.has_blocking_unknown(compat), (left, right))
+
+    def test_a_real_uom_conflict_still_blocks(self) -> None:
+        compat = self.compat("Fictional Sun Cream", "CS", "Fictional Sun Cream", "EA")
+        self.assertEqual(compat["conflict_kinds"], [matching_module.KIND_UOM])
+        self.assertEqual(compat["unknown_kinds"], [])
+        self.assertTrue(matching_module.has_blocking_unknown(compat))
+
+    def test_predicate_ignores_the_label_text(self) -> None:
+        # Reword every label: the verdict must not move, because the rule is
+        # keyed on the kinds list, not on the words.
+        blocking = self.compat("Fictional Lotion", None, "Fictional Lotion 200ml", "EA")
+        blocking["unknowns"] = ["UOM something reworded"] * len(blocking["unknowns"])
+        self.assertTrue(matching_module.has_blocking_unknown(blocking))
+        harmless = self.compat("Fictional Sun Cream", None, "Fictional Sun Cream", "EA")
+        harmless["unknowns"] = ["size reworded to look critical"]
+        self.assertFalse(matching_module.has_blocking_unknown(harmless))

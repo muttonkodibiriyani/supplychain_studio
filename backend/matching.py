@@ -33,6 +33,17 @@ SUGGEST_THRESHOLD = 70.0
 SINGLE_UNIT_UOMS = frozenset({"EACH", "BOTTLE"})
 MULTI_UNIT_UOMS = frozenset({"PACK", "BOX", "CASE", "CARTON", "DOZEN"})
 UNIT_UNCONFIRMED = "unit unconfirmed"
+# Attribute kinds as produced by _compatibility.  Rules keyed on "which
+# attribute is unknown" read these, never the reason labels.
+KIND_SIZE = "size"
+KIND_PACK = "pack"
+KIND_SHADE = "shade"
+KIND_UOM = "uom"
+ATTRIBUTE_KINDS = (
+    ("sizes", KIND_SIZE, "size"),
+    ("packs", KIND_PACK, "pack count"),
+    ("shades", KIND_SHADE, "shade"),
+)
 DEFAULT_CANDIDATE_LIMIT = 5
 # Above this many eligible rows a token prefilter narrows the fuzzy scan so an
 # unresolved-supplier fallback over a large full catalog stays bounded.
@@ -370,15 +381,23 @@ def match_lines(
         # Auto boundary: the RMS item id is the unit carrier in the export
         # (the Details sheet has no UOM column), so the unit question is
         # settled here.  Every auto selection carries the unit flag; the
-        # kind-keyed demotion applies to the description paths (exact, fuzzy).
-        # The UPC and alias paths keep their own evidence checks
-        # (_resolve_exact_upc, _find_alias) and are not demoted here; the
-        # alias path is unreachable while alias learning is off.
+        # kind-keyed demotion (has_blocking_unknown via unit_check) applies
+        # to the EXACT path only, and that boundary is proven, not chosen:
+        # size, pack count and shade are derived from the normalised
+        # description, and an exact candidate has the identical normalised
+        # string, so those kinds can never be "on only one side" here; the
+        # only unknown reachable on this path is UOM, and a UOM conflict is
+        # already excluded by _compatible.  The fuzzy path keeps its own
+        # `not _critical_unknown` gate (every unknown kind, UOM included),
+        # so nothing with an unknown reaches auto through it.  The UPC and
+        # alias paths keep their own evidence checks (_resolve_exact_upc,
+        # _find_alias) and are not demoted here; the alias path is
+        # unreachable while alias learning is off.
         unit = None
         if selected is not None and status == "auto":
             item = catalog_by_key[str(selected["_catalog_key"])]
             unit = unit_check(description, line.get("uom"), item["description"], item.get("uom"))
-            if unit["demote"] and path in {"exact", "fuzzy"}:
+            if unit["demote"] and path == "exact":
                 line["match_warnings"].append(unit["reason"])
                 selected = None
                 status = "suggested"
@@ -427,15 +446,19 @@ BLOCKING_UNIT_STATUSES = frozenset({"unverified", "unconfirmed"})
 def has_blocking_unknown(compatibility: Mapping[str, Sequence[str]]) -> bool:
     """The ONE kind-keyed rule shared by the auto boundary and the cost site.
 
-    True for any stated disagreement, and for a SIZE, PACK COUNT or SHADE
+    True for any stated disagreement (conflicts of every kind, including a
+    real UOM conflict, still block), and for a SIZE, PACK COUNT or SHADE
     known on only one side.  False for a UOM-only unknown: the master's UOM
     column is a constant single unit compared against a line that states
     none, which carries no information (it would fire on every line).
+
+    Reads ``unknown_kinds`` (the structured kinds), not the reason labels, so
+    rewording a label cannot re-enable or disable the rule.
     """
 
     if compatibility["conflicts"]:
         return True
-    return any(not unknown.startswith("UOM") for unknown in compatibility["unknowns"])
+    return any(kind != KIND_UOM for kind in compatibility["unknown_kinds"])
 
 
 def unit_check(
@@ -471,18 +494,19 @@ def unit_check(
     if compatibility["conflicts"]:
         reason = f"{UNIT_UNCONFIRMED}: " + "; ".join(compatibility["conflicts"])
         return {"status": "unconfirmed", "reason": reason, "demote": True, "block": True}
-    non_uom_unknowns = [
-        unknown for unknown in compatibility["unknowns"] if not unknown.startswith("UOM")
+    blocking_unknowns = [
+        label
+        for kind, label in zip(compatibility["unknown_kinds"], compatibility["unknowns"])
+        if kind != KIND_UOM
     ]
-    assert bool(non_uom_unknowns) == has_blocking_unknown(compatibility)
     if line_unit is None and master_multi:
         reason = (
             f"{UNIT_UNCONFIRMED}: invoice line states no unit and the RMS item is a "
             f"multi-unit row ({item_unit if item_unit in MULTI_UNIT_UOMS else 'pack of ' + _format_attribute(item_attributes['packs'])})"
         )
         return {"status": "unconfirmed", "reason": reason, "demote": True, "block": True}
-    if non_uom_unknowns:
-        reason = "item attribute unverified: " + "; ".join(non_uom_unknowns)
+    if has_blocking_unknown(compatibility):
+        reason = "item attribute unverified: " + "; ".join(blocking_unknowns)
         return {"status": "unverified", "reason": reason, "demote": True, "block": False}
     if line_unit and item_unit:
         return {
@@ -969,10 +993,20 @@ def _attributes(description: str, uom: Any) -> dict[str, Any]:
 
 
 def _compatibility(left: Mapping[str, Any], right: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Compare two attribute sets.
+
+    ``conflicts`` / ``unknowns`` / ``matches`` are human-readable labels for
+    reasons.  ``conflict_kinds`` and ``unknown_kinds`` are the parallel lists
+    of attribute KINDS (``KIND_SIZE`` ... ``KIND_UOM``); rules that depend on
+    which attribute is unknown must read the kinds, never the label text.
+    """
+
     conflicts: list[str] = []
+    conflict_kinds: list[str] = []
     unknowns: list[str] = []
+    unknown_kinds: list[str] = []
     matches: list[str] = []
-    for key, label in (("sizes", "size"), ("packs", "pack count"), ("shades", "shade")):
+    for key, kind, label in ATTRIBUTE_KINDS:
         left_values = set(left[key])
         right_values = set(right[key])
         if left_values and right_values:
@@ -982,17 +1016,27 @@ def _compatibility(left: Mapping[str, Any], right: Mapping[str, Any]) -> dict[st
                 conflicts.append(
                     f"{label} conflict ({_format_attribute(left_values)} vs {_format_attribute(right_values)})"
                 )
+                conflict_kinds.append(kind)
         elif left_values or right_values:
             unknowns.append(f"{label} appears on only one side")
+            unknown_kinds.append(kind)
     left_uom, right_uom = left.get("uom"), right.get("uom")
     if left_uom and right_uom:
         if left_uom == right_uom:
             matches.append("UOM matches")
         else:
             conflicts.append(f"UOM conflict ({left_uom} vs {right_uom})")
+            conflict_kinds.append(KIND_UOM)
     elif left_uom or right_uom:
         unknowns.append("UOM appears on only one side")
-    return {"conflicts": conflicts, "unknowns": unknowns, "matches": matches}
+        unknown_kinds.append(KIND_UOM)
+    return {
+        "conflicts": conflicts,
+        "conflict_kinds": conflict_kinds,
+        "unknowns": unknowns,
+        "unknown_kinds": unknown_kinds,
+        "matches": matches,
+    }
 
 
 def _similarity(left: str, right: str) -> float:
