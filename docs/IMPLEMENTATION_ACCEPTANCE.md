@@ -1084,3 +1084,118 @@ This record is frozen against the build named at the top. Its verdicts are not r
 post-freeze findings section above was appended after the freeze and records defects discovered
 later, without re-running any criterion. Nothing in it should be read as approval to describe the delivery as complete, or as an
 accuracy claim about invoices beyond those actually examined.
+
+## Post-freeze findings, third round: Metric 1 becomes two numbers, and the remaining zero is not in the matcher
+
+Everything in this section is measured at a named commit on a named corpus. Where a figure
+describes the system's behaviour on our own sample it appears here; where it would describe the
+size, shape or cost structure of the supplied master it stays out of this file by the rule recorded
+in the round above.
+
+### Metric 1 was one number doing three jobs
+
+Metric 1 has read zero all through this program, stated as "invoices exportable after automatic
+approval with no operator action". That single number was absorbing three unrelated refusals: a line
+with no candidate at all inside the resolved supplier's scope, a header field the frozen extraction
+parser never produced, and a cost comparison the export gate refuses. Those have three different
+owners and three different fixes, and collapsing them into one figure means every genuine fix looks
+like it did nothing.
+
+From here the record carries two numbers, each always stated with its corpus, its denominator and
+its commit:
+
+- **Metric 1a** — exportable with **zero** operator action.
+- **Metric 1b** — exportable after **one invoice-level acknowledgement** and **no per-line edit**.
+
+Metric 1b is not a lowered bar substituted for a failing one. The delivery was asked to solve every
+invoice and to *flag the ones with missing information for recheck*; an acknowledgement is that
+recheck, so 1b measures the thing the delivery was actually asked for. Metric 1a stays on the board
+because the wall-time promise at a thousand documents depends on operator action being zero, and
+because a metric that has read zero all night is not retired by renaming it.
+
+**Metric 1a has a hard ceiling of 6 of the 20 real uploads under any matcher change**, measured on a
+rematch of all twenty through the service against a database copy. Fourteen of the twenty carry at
+least one line with no candidate in scope at all: those lines never reach the suggestion floor, so no
+ranking or tie-breaking change can touch them. Their only routes are an operator mapping the line
+once so an alias is learned, which is Metric 2's path, or master coverage. The true ceiling under the
+freeze may be lower than 6, because it has still to be intersected with the invoices whose header
+fields the frozen parser did produce.
+
+### What the matcher work moves, and what it does not
+
+Measured by replaying the stored lines of the same twenty uploads, baseline `b765f36`, arms produced
+by disabling one mechanism at a time:
+
+| arm | auto | suggested | unmatched |
+| --- | --- | --- | --- |
+| baseline | 21 | 250 | 86 |
+| critical-unknown cap lifted alone | 42 | 229 | 86 |
+| duplicate-row collapse alone | 136 | 135 | 86 |
+| both | 162 | 109 | 86 |
+
+The unmatched column does not move in any arm, which is the same 86 no-candidate lines seen from the
+other direction. The transition is entirely `suggested` to `auto`: 141 lines, with nothing moving the
+other way. This confirms the prediction registered before the experiment — lifting the score cap
+alone changes almost nothing, and the mover is the collapse of several eligible catalog rows of one
+RMS item that were tying at the top and zeroing the margin. It also confirms the prediction's
+corollary, which matters more: **the matcher's share of the refusal moves and the export count does
+not.** Metric 1a is 0 of 20 on the baseline and 0 of 20 with both mechanisms in.
+
+A change of this shape moves 141 lines from operator-reviewed to machine-decided, which is the
+population where a ranking error stops being a suggestion somebody rejects and becomes an export
+nobody looked at. Trading a measured refusal for an unmeasured acceptance is not progress even when
+the arrow points the right way, so the automatic decisions falling outside the independently checked
+subset are verified item by item before that work merges, and any one of them wrong is a blocker
+rather than a caveat.
+
+### The remaining refusal is a cost comparison whose cause is not yet attributed
+
+With every matcher mechanism enabled, the export gate still refuses all twenty. Two invoices now
+have every line automatically matched and are refused for a different reason: the gate also requires
+each line's price to sit within an absolute per-unit tolerance of the master's cost for the matched
+item, and those lines do not. Across the corpus the comparison puts 59 of 357 lines outside that
+tolerance and 103 inside it.
+
+The item identities are not in doubt for the lines concerned — they are exact-name matches that were
+independently checked — so the discrepancy is between the master's cost column and the invoice's
+price basis, and the tolerance value is not the question until the cause is known. Three candidate
+mechanisms were registered in advance, each with a signature that distinguishes it from the others:
+a pack or case basis, a quantity or column misread by the frozen extraction parser, and a scale or
+currency factor. **One of the three is our own defect**, and it is the one the evidence already
+favours: the extraction test that fails on `main` fails precisely because the frozen parser reads a
+size token in a description as a quantity. The discriminating measurement is being run before any
+question about the master's cost basis is put to anyone, for the general reason that a question you
+can answer yourself in minutes should not be escalated at all, and certainly not when one of its
+possible answers is that the defect is ours.
+
+No tolerance value fixes any of the three mechanisms. Retuning the threshold would only stop the
+gate reporting them.
+
+### Two controls landed
+
+The publication path is now guarded at `9eed4a7`. Documentation is packaged from an explicit
+allowlist rather than a directory walk, so a document is excluded until it is named; measurement
+records of customer data and of our own process no longer ship at all; and the content check covers
+identifier and capability forms — sharing links, account and user identifiers, absolute home
+directory paths on all three platforms — alongside the credential patterns it already carried. The
+check runs inside the build over exactly the file list the archive is written from, so it is
+build-time and fail-closed rather than a test that only runs when someone remembers to run it; the
+archive is additionally decoded and re-scanned, because the archive is base64-encoded inside its
+manifest and a scan of the source tree returns clean whether or not the published artifact is clean.
+That last point is the general lesson: every privacy check in this program had been reading the tree,
+and the published thing is not the tree.
+
+Verified independently by building the package from the tree that still contained the offending link,
+decoding the manifest, confirming the receipt digest against the decoded bytes, and finding no
+pattern hit inside the archive. Two narrow gaps in the new patterns are recorded as hardening rather
+than holes: a placeholder exemption terminated by a word boundary also exempts a real name that
+merely begins with the placeholder, and UNC paths are not covered.
+
+The demo-seed endpoint is gated at `72c4c04`. It wrote fictional catalog rows and invoices whose
+lines were stored as matched, with full confidence, without the matcher running — from an
+unauthenticated endpoint that nothing in the application or the documentation ever called. It is now
+off unless explicitly enabled, refuses inside the same transaction as its own write when the database
+already holds non-demo rows, flags its rows in the statistics endpoint so a seeded database cannot be
+read as a measurement, and the corpus evaluator refuses an input set containing seeded sources
+outright. One gap remains filed: the statistics endpoint reports the flag and the interface does not
+yet read it.
