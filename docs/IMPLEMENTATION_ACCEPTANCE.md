@@ -643,6 +643,146 @@ burden. It is not. The catalogue schema was read in full, across both of its ite
 no tax field under that or any other name. The per-supplier rule remains the only source, and the
 setup burden described for Gate 4 stands as stated.
 
+### Later evidence still: two structural gaps in the supplied master, and the first independent check of supplier resolution
+
+Appended after the sections above, from read-only inspection of the supplied master and of the
+documents' own stored text. No criterion was re-run and no verdict moves. As before, findings are
+stated as mechanisms because the measurements behind them are commercial.
+
+**The master's unit-of-measure column carries no information.** Every row in the supplied item master
+holds the same single unit value. This is not an importer default — the import path was searched for a
+fallback write and contains none; the column arrives that way from the source file. The consequence is
+not cosmetic. The matcher raises an "attribute appears on only one side" flag when a unit is present on
+one side and absent on the other, and because the invoice side never carries a unit at all, that flag
+fires on every line in the system. It reads like a discriminating signal and is a constant.
+
+Two separate safety rules were drafted during this engagement keyed on that flag. Had either shipped,
+one would have disabled the automatic-match tier outright and the other would have suppressed the
+cost-variance figure on every line — in both cases to guard against an ambiguity affecting a handful of
+lines. Both were caught before merge, and neither was caught by reading the rule: they were caught by
+asking what proportion of rows the predicate actually fires on. That question should be a standing
+requirement for any rule keyed on this column. The deeper consequence is that this deployment cannot
+check a pack-versus-single question against its master at all, because the master does not record the
+answer. Rules written against the column are therefore either dead code or off switches, and the
+distinction between the two is worth stating explicitly wherever one is retained for future data.
+
+**The master carries no human-readable supplier name.** Supplier rows hold a coded name only. There is
+no field on which an invoice's printed supplier name can be joined to a master supplier directly. That
+is why the resolver matches on an alphabetic prefix of the coded name, and why the check described next
+had to be performed the same way.
+
+**Supplier resolution has now been checked against the documents themselves, for the first time.**
+Until this check, the evidence that the resolver chose the right supplier was circular: the supplier is
+chosen partly by which supplier's catalogue rows best match the invoice's line descriptions, and the
+quality of the outcome was then reported in terms of how many lines matched. The check breaks that
+loop — the supplier name printed in each document's own stored text was read and compared against the
+supplier the resolver selected, without reference to any matching result.
+
+On every invoice where the resolver made a choice, the choice agrees with the name printed on the
+document, at the level of the supplier family. On the invoices where it declined to choose, it declined
+rather than guessing. The resolver is, to its credit, honest about itself: it emits a warning naming
+the heuristic on every path it takes, and it refuses to resolve when its evidence does not single out
+one candidate strictly. The circularity was in how its output was reported upward, not in the function.
+
+Three qualifications, each of which matters more than the result:
+
+- **The agreement reaches the supplier family, not the supplier site.** The master holds several sibling
+  suppliers sharing the coded prefix that the printed name reduces to, and the document does not name
+  which one. That finer choice is still made by the circular step and remains unverified in principle.
+  It is inert on this corpus because the siblings are near-empty stubs set against one substantial price
+  list, and because the few items they share carry no cost divergence — both checked, not assumed.
+- **The check exercised one supplier family, and that family was uncontested.** Every invoice in the
+  examined corpus resolves to the same family, so this is one success replicated, not many independent
+  ones. The master contains a substantial number of prefix groups in which the same mechanism faces a
+  genuine contest between two or more well-populated suppliers, and across suppliers sharing a prefix
+  there is a large population of shared items whose recorded costs diverge materially. That shape was
+  subsequently tested by construction — see immediately below — with a result that is reassuring about
+  the dangerous failure mode and unflattering about throughput.
+- **The prefix comparison is a "starts with" test** against a name key from which legal suffixes have
+  been stripped. A printed trading name that merely begins with another supplier's prefix would pull in
+  that supplier's siblings on a false premise. The master side of this is bounded; the printed side is
+  not.
+
+**The contested case was then tested by construction, and the resolver refuses rather than errs.** A
+synthetic invoice was built for each well-populated sibling in every contested prefix group, with the
+printed supplier name set to the shared prefix so that the resolver took the same path the real
+invoices took, and with the line descriptions drawn from that sibling's own catalogue rows so that the
+correct answer is known by construction. Each sibling was tried twice: once with lines sampled from all
+of its rows, and once — the case designed specifically to defeat the tie-break — with lines sampled
+only from rows it *shares* with its siblings. Across every trial, the resolver never once selected a
+sibling other than the correct one. Where it could not distinguish, it returned no supplier.
+
+The reason is in the code rather than in the sample. The tie-break requires the leading candidate's
+evidence to be strictly greater than the runner-up's. A description stocked by several siblings
+contributes evidence to all of them, so on a deliberately confusable invoice the counts tie and the
+condition fails. Only rows exclusive to one sibling can open a margin, and when they do they point at
+that sibling by definition. The mechanism is therefore not "choose the best-matching supplier" — which
+is how its own docstring reads — but "choose the only supplier with distinguishing evidence, otherwise
+refuse". The implementation is stricter than its documentation, which is the right direction for the
+discrepancy to run, and the docstring should be corrected to match rather than the other way round.
+
+**The cost of that strictness is throughput, and it is not small.** On contested groups roughly half of
+the typical synthetic invoices resolved to no supplier at all, against none of the real invoices from
+the uncontested family. Unresolved documents fall back to whole-catalogue matching, which a change on
+the pending branch correctly prevents from ever reaching automatic acceptance. The practical
+consequence is that for suppliers in a contested group, the automatic tier largely disappears and the
+operator confirms more lines by hand. Any improvement figure quoted from the examined corpus is
+measured on the uncontested case and should not be presented as representative of the contested one.
+
+**What this test does and does not establish, stated as strictly as the test itself.** The ground truth
+used is which sibling's catalogue the descriptions were drawn from — the same *kind* of evidence the
+resolver consumes. What is therefore proven is that the tie-break is self-consistent and safe: given
+lines genuinely belonging to one sibling it returns that sibling or nothing, never a different one.
+That is a real and non-trivial property, since the mechanism could easily have drifted toward whichever
+sibling holds more rows, and it rules out the failure mode that would silently corrupt data. What is
+*not* proven is that the resolver identifies the real-world issuing entity on a contested group; that
+would require a genuine invoice from such a supplier with the printed name checked against the page,
+and no such document exists in either corpus. The status moved from "untested" to "tested for the
+failure mode that would corrupt data, which does not occur; untested for real-world entity identity on
+a contested group". Both halves travel together or neither should be quoted.
+
+The defensible statement is that supplier resolution was independently checked against the documents
+for the first time and passed on the cases available. It is evidence that the approach works. It is not
+evidence that it is reliable, and it must not be described as verified.
+
+**A related defect the check hardened.** Where a document prints a supplier identifier that the master
+does not contain, the application warns and then proceeds to scope matching to that absent supplier,
+yielding a near-empty candidate set and, predictably, no matches. This was previously treated as a
+malformed-input edge case. The check showed the identifier concerned is genuinely printed on the
+document — so this is the normal path for any supplier the master has not been updated for, including a
+new supplier or one whose identifier changed at the most recent periodic re-import. Those are precisely
+the documents an operator most needs help with, and the system answers them with a silent, nearly empty
+catalogue rather than with a declared failure.
+
+**Character corruption in the master originates upstream of this application.** A minority of master
+rows carry mis-decoded accented characters, in a signature consistent with text encoded once and then
+decoded as a different single-byte encoding. The corruption is present in the source file as received:
+it was confirmed by reading raw cells of the supplied workbook independently, from two separate copies,
+rather than inferred from the imported rows. **The import is faithful.** The distinction matters for
+what the deployment is told about its own data, and it determines the fix: a conservative repair at
+import together with a warning naming the upstream export, not a correction of this application's
+reading of the file.
+
+**An undocumented coupling between two constants is the only thing holding a group of lines out of
+automatic acceptance.** The matcher caps the score of a candidate whose attributes are incompletely
+known, with the stated intent of keeping such a line reviewable, and separately requires a score above a
+fixed threshold before accepting a fuzzy match automatically. The cap sits a few points below the
+threshold, and that gap alone prevents a group of incompletely-known lines from being accepted without
+review. Neither constant references the other, and no test asserts the relationship. A routine tuning
+change to either would widen automatic acceptance silently, with nothing failing. The two are being
+tied together by an invariant test rather than by a comment, on the reasoning that a comment informs a
+careful reader while a test stops a careless one.
+
+**The contradiction underneath all of this, recorded because it is the clearest instance of the pattern
+this record keeps finding.** On the path where a line matches exactly one catalogue candidate, the
+application accepts the match automatically and reports full confidence — including for lines whose
+scores it has just capped precisely because it judged their attributes incompletely known. The comment
+at the cap states the intent to keep those lines reviewable; the decision taken a few lines later
+overrides that intent and reports certainty instead. The system is not failing to detect these cases.
+It detects them, records the doubt, and then discards it. That is the shape of nearly every defect in
+this record: each layer degrades toward silent acceptance rather than toward review, and the reported
+confidence is highest exactly where the evidence for it was deliberately limited.
+
 ## Proposed next steps, in dependency order
 
 > **Historical — retained as the plan of record, not as outstanding work.** Most of this list was
