@@ -985,10 +985,35 @@ rule that a saturated host can only *confirm* the lock reading and never refute 
 saturation removes the cores the process arm would need. Until that returns, the
 explanation is a hypothesis and is recorded as one.
 
-The practical consequence stands regardless of which explanation wins: no worker count
-reaches 1,000 text-layer invoices inside the target window on the current code, so the
-target is not a tuning question. Scanned invoices are a separate class and are not affected
-by this finding — that path releases the lock in native code and does scale with workers.
+### The volume target is met for text-layer invoices, and it buys nothing
+
+Both runs put 1,000 text-layer documents through the system in **just under nineteen
+minutes** of wall time, with no failed document, no backpressure rejection, no container
+restart, and every health check passing. On the stated volume target, that is inside the
+window at either worker count.
+
+It is worth being exact about what that does and does not establish, because the number
+invites a promise this record cannot make.
+
+- It is one class. Text-layer PDFs and spreadsheets only. Scanned invoices go through
+  optical recognition, take far longer per document, and are the class where a batch
+  limit is a real operational question. That measurement is separate and is not complete.
+- It is not a throughput rate for the user. The corpus was 129 distinct documents repeated
+  to reach 1,000, on a shared host under other load, so it does not predict a rate on a
+  thousand genuinely distinct invoices on the operator's own machine.
+- **Every one of the 1,000 landed in `needs_review`. Nothing was exportable without an
+  operator touching it.** The run finished inside the window and produced no accepted
+  workbook.
+
+So the binding constraint on this program is not the batch size and not the worker count.
+Both runs show the pipeline moving documents fast enough; what neither shows is documents
+coming out the other end decided. That is the matcher, and it is the section above.
+
+A consequence for how the volume limit should be set: there is no batch size that raises
+accuracy, because accuracy is a per-document property and batch size is a throughput one.
+The measurements bracket this directly — twenty real invoices produce zero exportable
+without operator action, and a thousand produce zero. Shrinking the batch would change how
+long a run takes and how deep the queue gets. It would not change what comes out.
 
 ## Proposed next steps, in dependency order
 
