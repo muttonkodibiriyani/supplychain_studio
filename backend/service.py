@@ -26,6 +26,8 @@ from .exporter import SCHEMA_NAME, build_target_workbook
 
 logger = logging.getLogger("invoice_studio.service")
 
+CATALOG_COMMIT_ROWS = 1000
+
 
 DOCUMENT_EXTENSIONS = {
     ".pdf",
@@ -489,7 +491,13 @@ class InvoiceService:
         return sorted(extension.lstrip(".") for extension in DOCUMENT_EXTENSIONS)
 
     def start(self) -> int:
-        recovered = self.db.recover_interrupted_jobs()
+        try:
+            recovered = self.db.recover_interrupted_jobs()
+        except Exception as error:
+            # Recovery must never stop the workers from being created; the
+            # rows stay 'processing' until the next start, but the pool runs.
+            self._record_worker_error("recover", error)
+            recovered = 0
         if self.settings.workers <= 0:
             return recovered
         self._stop.clear()
@@ -1046,6 +1054,20 @@ class InvoiceService:
 
     def _claim_job(self) -> str | None:
         now = utc_now()
+        # Poll with a plain read first. Taking BEGIN IMMEDIATE just to look at
+        # an empty queue makes every idle worker a writer competing with
+        # imports and uploads for the single SQLite write lock.
+        with self.db.connection() as conn:
+            candidate = conn.execute(
+                """
+                SELECT 1 FROM invoices
+                WHERE status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                LIMIT 1
+                """,
+                (now,),
+            ).fetchone()
+        if candidate is None:
+            return None
         with self.db.transaction(immediate=True) as conn:
             row = conn.execute(
                 """
@@ -2384,9 +2406,15 @@ class InvoiceService:
                     )
                 )
                 imported += 1
-        with self.db.transaction(immediate=True) as conn:
-            for start in range(0, len(pending), 1000):
-                conn.executemany(insert_sql, pending[start : start + 1000])
+        # Commit in chunks so no single write transaction approaches the busy
+        # timeout; workers and uploads interleave between chunks. Every row was
+        # validated above, so a mid-import failure can only be a storage error.
+        for start in range(0, len(pending), CATALOG_COMMIT_ROWS):
+            with self.db.transaction(immediate=True) as conn:
+                conn.executemany(insert_sql, pending[start : start + CATALOG_COMMIT_ROWS])
+            # Let a waiting upload or worker take the lock between chunks;
+            # SQLite's busy handler does not queue writers fairly.
+            time.sleep(0.01)
         self._wake.set()
         return {"imported": imported, "skipped": skipped, "warnings": warnings}
 
