@@ -1,0 +1,3 @@
+invoice_number,invoice_date,supplier_id,supplier_name,supplier_site,po_number,currency,description,quantity,uom,unit_price,line_total,subtotal,tax_total,total
+SAMPLE-001,2026-09-24,SUP-1042,Aster Beauty Trading,UAE-01,PO-600142,AED,Lumiere Hydrating Serum 30ml,10,EA,78.00,780.00,1420.00,71.00,1491.00
+SAMPLE-001,2026-09-24,SUP-1042,Aster Beauty Trading,UAE-01,PO-600142,AED,Lumiere Daily Moisturiser 50ml,10,EA,64.00,640.00,1420.00,71.00,1491.00

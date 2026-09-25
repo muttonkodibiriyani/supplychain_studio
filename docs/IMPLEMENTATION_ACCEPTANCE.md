@@ -1,0 +1,505 @@
+# Implementation acceptance record
+
+Independent acceptance for the invoice-to-target-Excel delivery, written solely by the programme's
+independent acceptance owner. Every other file in this repository belongs to another owner; nothing
+here was produced by editing their work.
+
+This document is published with the source. It deliberately carries no invoice number, supplier
+site, store code, commercial amount or private file path. The two known-good workbooks it refers to
+are called **Golden A** and **Golden B** throughout; the detailed evidence that identifies them, and
+the private-material signature patterns used to scan for leaks, are held privately by the acceptance
+owner and are not published.
+
+**Frozen: 25 September 2026 UTC. Overall verdict: NOT ACCEPTED — 12 of 15 criteria pass.**
+
+**FROZEN — 25 September 2026.** This record is now fixed against a specific build and is not
+provisional. It is bound to the delivery image `sha256:a749afa3…8020` and the frozen extractor
+`150871eb…e3f9`. I verified that binding rather than accepting it: I re-hashed all six backend runtime
+modules in the workspace, then hashed the same six files *inside the image itself*, and all six match
+byte for byte. The code described below is the code that ships. Any change to those modules invalidates
+this record and requires a re-run.
+
+**Verdict: NOT ACCEPTED for general production use. 12 of 15 criteria pass.** The application is, on
+this evidence, suitable for a supervised pilot on a controlled host with an operator reviewing every
+document. It is not suitable for unattended bulk conversion, and nothing here should be quoted as an
+accuracy figure.
+
+**The four limits that remain, stated plainly:**
+
+1. **Pricing is not commercially signed off.** Every `Details.Unit Cost` carries the invoice net unit
+   cost after discount, and RMS cost is comparison evidence that never substitutes. That behaviour is
+   implemented, tested and enforced, but it remains the application's conservative reading rather than a
+   rule the user has confirmed. It must not be described as a user-approved business rule until that
+   confirmation arrives.
+2. **The Windows procedure has never been executed on Windows.** No clean Windows host was available;
+   every check behind the installation and training material ran on Linux. The instructions are
+   internally consistent and were reviewed against verified behaviour, but the first real run should be
+   treated as part of the pilot. Both operator documents now state this limit explicitly at the top,
+   which is why A11 passes — but the limit itself is real and does not go away by being documented.
+3. **No generated workbook has ever been accepted by the downstream system.** The exported file matches
+   the contract and matches the supplied reviewed examples, including the blank UPC convention. That is
+   the best available evidence and it is not the same as an import succeeding. Nobody should treat a
+   conformant workbook as proof of acceptance.
+4. **Corpus coverage is incomplete and corpus-wide mapping is unverified.** Of 179 documents, 81 yield
+   candidate rows and 13 reconcile financially, while zero pass the full source-to-target gate. That
+   gate requires UPC and UOM to be present in the source, so failing it shows those fields were not read
+   from the document — it does not show the catalog and target mapping could never be completed, which
+   is precisely what the operator workflow exists to supply. Read this as no automatic corpus-wide
+   conversion and no verified mapping at corpus scale, not as impossibility. Likewise the 151
+   `subtotal_unavailable` rejections mean the extractor did not capture a subtotal, not that the sources
+   lack one; no manual source audit has been done.
+
+**What is established, and was checked rather than reported:** the workbook contract is exact and
+mechanically enforced; the exporter emits it; a regression defends it; conversion rules come from
+per-brand settings; excluded documents leave through a separate report that is exhaustive by
+construction; identifiers survive as text; the documented master import genuinely works at full scale;
+and the published source carries no private data.
+
+The GitHub commit hash is deliberately not recorded here. It belongs in the parent delivery receipt,
+since this document is itself part of what gets committed.
+
+**Scope this is judged against:** a local Windows pilot, one brand per isolated Compose project and
+data volume, bound to loopback, with the application source published to GitHub. Shared, networked
+or multi-tenant production deployment is explicitly not claimed and is not judged here.
+The application cannot currently emit the user's file at all, and no consolidated target workbook
+exists for the real corpus. What follows is the evidence for that statement, criterion by
+criterion, so the gap is actionable rather than merely asserted.
+
+This record is read-only acceptance. It does not restate the program audit
+(root's private program security and conversion audit, held outside the published tree), which remains the baseline; where a number
+comes from that audit it is labelled as baseline, and where it comes from this session's own
+re-execution it is labelled as verified here.
+
+## How to reproduce this record
+
+Two read-only instruments were written for this acceptance. They live outside this repository, in
+the acceptance owner's private working area, and are identified here by hash so a reviewer can
+confirm which version produced a given result:
+
+| Instrument | sha256 (first 24) | What it decides |
+|---|---|---|
+| `target_conformance.py` | `304c321dcec6594c0eeb9342` | Whether a candidate workbook satisfies the exact target contract |
+| `publication_sim.py` | `b8a263a6071722f597cb60d2` | What a publication would actually contain, and whether it carries private material |
+
+Neither writes to this workspace. `target_conformance.py` takes workbook paths and exits non-zero
+on any failure, so it can be wired into CI once the exporter produces a candidate.
+
+## The contract being accepted against
+
+One consolidated `.xlsx`, exactly three sheets in this order, no others:
+
+- **Header** (13 columns): Transaction Number; Document; Supplier Site; Order No; Location;
+  Location Type; Document Date; Total Cost Ex Tax; Tax Amount; Ref No. 1; Ref No. 2; Ref No. 3;
+  Comment. One row per genuine eligible invoice.
+- **Tax_Breakdown** (3 columns): Transaction Number; Tax Code; Tax Basis.
+- **Details** (6 columns): Transaction Number; Item; UPC; Unit Cost; Quantity; Unit Tax Code.
+  Every eligible product line.
+
+Transaction Number links all three tabs. No README, Audit or metadata tab; no extra columns; no
+blank artifact rows. Credit notes, RTVs, PODs and unresolved matches are excluded from the target
+and belong in a separate exception report.
+
+Unit cost and Order No follow `data/reference/target_conversion_rules.json`. Aliases are the five
+in `data/reference/confirmed_invoice_aliases.json` and only those.
+
+## Criteria and verdicts
+
+| # | Criterion | Verdict | Evidence |
+|---|---|---|---|
+| A1 | The exact three-tab contract is precisely specified and mechanically checkable | **PASS** | `target_conformance.py` encodes sheets, order, headers, widths, key integrity, blank-row detection, formula-injection and per-invoice arithmetic. Calibrated against known-good files, below. |
+| A2 | Known-good target workbooks satisfy the contract | **PASS, with a typing warning** | All four known-good workbooks held privately under `data/outputs` return CONFORMANT, exit 0. Their hashes match the programme audit's durable receipts. Identifier typing is a separate concern — see A14. |
+| A3 | The application exporter emits the exact contract | **PASS for the exporter, verified independently** | The five-sheet output (README/Header/Tax/Detail/Audit) is gone. The exporter now produces a consolidated workbook with exactly `Header`/`Tax_Breakdown`/`Details`, and I verified the artefact myself rather than accepting the run report: the file's SHA-256 matches the one supplied byte for byte, and my own conformance checker — written before and independently of the implementation — returns CONFORMANT with 2 invoices, 2 tax rows, 20 detail lines, both invoices reconciling within one cent. Correctly scoped by its owner as a reference round-trip over two already-reviewed invoices: it is evidence the exporter emits the contract, not evidence of corpus conversion (A7) or of downstream acceptance.  **Open watch item — the UPC column now diverges from every known-good example.** In the first actual-source export all 20 Details rows carry a populated 13-character UPC, stored correctly as text with an `@` format. Every one of the five reviewed reference workbooks leaves that column blank, in all 13 and all 7 of their rows. I had previously examined those blanks and recorded them as intended rather than a defect, so the observed-good behaviour is blank and the new behaviour is populated. This is not an exporter regression: `backend/exporter.py` emits the matched UPC unconditionally and has not been modified since before the matcher work, so the change comes from master rows now being selected upstream where previously none were. The risk is unchanged by that explanation. The only evidence anyone holds about what the downstream system accepts is those five workbooks, and this output differs from all five in a column the consumer may key on. **Resolution agreed, implementation outstanding.** Root accepted the finding and delegated a backend change: blank UPC by default, matching the supplied reviewed targets, with an explicit per-brand `include_upc_in_export` opt-in available only after downstream verification. That is the right shape — it restores the only behaviour known to be accepted, and puts the deviation behind a deliberate, brand-scoped decision instead of compiled-in code, which is what A5 expects of a conversion rule. The enriched workbook above is therefore superseded integration evidence, not a deliverable. **Closed — verified in both directions, 25 September.** Three exports were produced with the setting off, on, then off again. I checked each file's SHA-256 against its receipt, and ran the contract checker on all three: CONFORMANT at exit 0, 2 Header / 2 Tax_Breakdown / 20 Details every time, so the switch cannot break the contract in either position. Default gives 20 blank UPC cells; opt-in gives 20 populated 13-character UPCs stored as text with an `@` format, so A14 still holds when the column is in use. Two properties make this stronger than a simple before-and-after. First, I diffed the off and on workbooks cell by cell across all three sheets: exactly 20 cells differ, every one of them in the Details UPC column, with the column header itself preserved — the setting changes what it claims to change and nothing else. Second, the third export is byte-identical to the first, so toggling on and back off leaves no residue and the setting is not sticky. The default also matches the five reviewed reference workbooks in substance: blank with a null cell type, exactly as they are. One residual difference, recorded for precision rather than as a defect: those references carry `General` on that column while our default carries `@`. On an empty cell this has no value or display consequence, and `@` is the safer choice for an identifier column, but the default is therefore equivalent to the references rather than byte-identical to them. |
+| A4 | The exact contract is defended by an automated test | **PASS — verified on a clone-equivalent snapshot** | `tests/test_target_export.py` defends the contract, and I ran it the way a cloner would: an allowlisted snapshot containing no private data at all, in a network-isolated container. 10 passed, 1 skipped, the skip being the private-gated import. The contract test is stricter than my own checker — it asserts leading zeros survive on real examples (`000INV-1`, `000077`, `000000456789`) and requires both `data_type == "s"` and `number_format == "@"`, where I had only checked the stored type. It also covers transaction linkage across all three sheets. |
+| A5 | Conversion rules are executed from per-brand configuration, not hard-coded | **PASS** | Verified semantically, as restated: no bundled private file is involved. Settings are versioned with optimistic concurrency (a stale version raises `Conflict`), brand-scoped, and default to `invoice_only` with the review threshold as configured data. The suite also proves the rule is enforced rather than merely stored: setting `target_cost_policy.mode` to `rms_within_tolerance` is rejected with a field-level validation error, so the superseded substitute-RMS behaviour cannot be configured back in. Aliases arrive through an operator import path. The rounding convention is defended too, retaining full net-unit precision and rounding each extension. |
+| A6 | Cost reconciliation is defined | **PROVISIONAL — conservative rule adopted, user confirmation outstanding** | The quoted user turn establishes a *fallback*, not an unconditional rule. The conservative reading (invoice cost always) is implemented because it is the only one internally consistent with exact reconciliation, and it never restates a supplier price. An explicit user confirmation has been requested and is pending. See below. |
+| A7 | One consolidated workbook exists for the real corpus | **FAIL** | Baseline: zero verified consolidated target outputs. Every known-good file is a single-invoice review artefact, not a consolidated batch target.  **Bottleneck update — the blocker has moved from extraction to matching.** Root fed both verified originals through an isolated InvoiceService with a copied real master: 20 of 20 quantities, prices and subtotals were preserved end to end, but the baseline matcher resolved only 9 of 20 lines. Under the all-or-nothing rule 11 unresolved lines route both invoices to exceptions whole, so these two documents still produce no consolidated output despite extracting perfectly. That reframes A7: extraction is no longer the limiting factor on these layouts, item resolution is. A bounded matcher improvement is delegated on explicit source UPC evidence; `backend/matching.py` was being edited as I checked, so treat 9 of 20 as a baseline snapshot rather than a current figure.  **First actual-source consolidated workbook produced — verified, but assisted rather than autonomous.** Both reviewed reference PDFs were ingested through InvoiceService against a copied full master and exported to a single workbook: 2 Header rows, 2 Tax_Breakdown rows, 20 Details rows. I confirmed it independently — the receipt's declared SHA-256 matches the file, and root's own checker returns CONFORMANT at exit 0 on my run, with both invoices reconciling and every Details and Tax_Breakdown row linking to a Header transaction number. That is the first time the contract has been satisfied end to end from original PDFs rather than from fixtures. It is **not** A7. Only 12 of the 20 lines resolved automatically (7 of 7 on the Factur-X source, 5 of 13 on the discount-paired source); the remaining 8 replayed previously reviewed mapping decisions supported by explicit supplier, UOM and size evidence. **Scope of this criterion, stated precisely.** A7 asks for one consolidated workbook covering the real 179-file corpus. What is unmet is coverage, and only coverage. Assisted mapping review is an intended product workflow, not a defect: an operator confirming an ambiguous item match is the system working as designed, so the presence of reviewed decisions in this run is not itself evidence against the exporter or the matcher. I had earlier implied otherwise and that was too strong. The two-original reviewed consolidation is verified and stands on its own; 179-file coverage is a separate, still-unresolved requirement, and the rerun has since completed. A7 stays FAIL on coverage alone, and the completed corpus run now settles this with a measurement rather than an expectation: of 179 documents, the number passing the full source-to-target gate is **zero**, with 81 rejected for missing source-target fields. **The limits of that number matter.** The maximal gate requires UPC and UOM to be present in the source document, so a failure there means those fields were not read from the source — not that supplier, catalog and target mapping could never be completed. Those are exactly the things the intended operator workflow supplies, as the two-document reviewed replay demonstrated. So what is established is incomplete coverage and unverified catalog and target mapping across the corpus, not impossibility: nothing here shows the 13 financially reconciled documents could not be exported after operator mapping. No automatic corpus-wide conversion exists today, and that is what A7 asks for. One non-defect planning note for the user rather than for acceptance: the ratio of automatic to reviewed lines drives operator workload, so 8 reviewed lines in 20 is comfortable at two documents and worth watching as a time cost at corpus scale. |
+| A8 | Real invoice layouts yield product lines | **PARTIAL — exact on the reviewed reference sources; corpus now measured and materially improved** | This moves off FAIL. Baseline: of 124 embedded-text PDFs, 114 returned zero product lines, including 106 of 114 invoice candidates. Two real originals have now been parsed and checked field by field against independently reviewed workbooks, and matched exactly: the Factur-X source at 7 of 7 lines, and the discount-paired source at 13 products recovered from 26 source rows (13 paired adjustment rows correctly collapsed). Document number, date, PO, subtotal, tax total, every quantity and every net unit price matched, with line totals reconciling to the stated subtotal and an empty mismatch list. I verified this is a genuine parser-on-original run rather than a re-read of the reviewed targets: the receipt's two `source_path` values are byte-identical (SHA-256) to the original source PDFs whose provenance the corpus coordinator supplied to me separately, and its `extractor_sha256` equals the `backend/extraction.py` currently on disk, so the receipt describes live code and not a stale build. **Denominators are separate and must stay separate.** These two reviewed reference PDFs are not members of the 179-file drive collection, so this is 2 of 2 on the reference set and says nothing quantitative about the corpus. **Corpus now measured, 25 September, against a frozen extractor.** The tokenizer defect was corrected and the full run completed: 178 of 179 documents processed, 1 rejected with an explicit resource-limit error rather than a silent failure. 81 documents produced 1,007 candidate rows, and 690 of those rows carry every core field. Against a baseline where 114 of 124 embedded-text PDFs returned nothing at all, that is a large and real improvement, and it is measured rather than asserted — I verified the receipt's SHA-256 and confirmed its `extractor_sha256` matches the frozen extractor on disk. It is still not PASS, and the reason is quality rather than volume: only 13 documents covering 70 product lines pass the strict financial reconciliation gate. The dominant rejection reason is worth naming: `subtotal_unavailable` accounts for 151 of them. **Read that precisely.** It means the extractor did not capture or derive a subtotal for those documents. It does not mean the source documents fail to print one — no complete manual audit of the sources exists, so the split between source limitation and extractor limitation is unknown and I should not have implied otherwise in an earlier draft. Candidate rows are unreviewed parser output and neither these counts nor any ratio drawn from them is an accuracy score. A8 stays PARTIAL. |
+| A9 | Exceptions are separated from the target | **PASS — verified, and exhaustive by construction** | Both halves now hold. Exclusion was already enforced: any unresolved line or non-invoice document blocks the whole invoice. The missing half — an artefact the operator can work from — now exists as a read-only `GET /api/reports/exceptions.csv`, downloadable from the UI, with five columns and an explicit machine-readable reason per row. The design detail that makes this trustworthy is that the report is the **complement** of the export-eligible set (`eligible = status in {ready, exported} and not reasons`; everything else is reported) rather than an enumerated list of known exception types, so it cannot silently omit a category as new ones appear. Credit notes, RTVs and PODs reach it via the `not_invoice` code and unresolved matches via `unmapped`, both confirmed present in the validation path. CSV text is formula-injection safe — the guard strips nulls and checks for `=`, `+`, `-`, `@` *after* stripping leading whitespace and a BOM, so the obvious prefix bypass does not work. Output is UTF-8 with BOM so Excel opens it correctly. Critically, the target export is untouched: the same workbook re-checks CONFORMANT with exactly three sheets. Worth stating plainly for planning: while the corpus sits at zero strict reconciliations (A7), this report is where essentially every document lands, so it is the operator's primary workspace today rather than an edge case. |
+| A10 | Publication carries no private data | **PASS, conditional — re-verified 25 September against the tightened allowlist** | Re-simulated after the allowlist began admitting four named data fixtures: 65 files, 716,087 bytes, and the packager's own negative assertions (`task-context`, `/data/`, `/.runtime/`) match nothing. The four fixtures were checked for being *synthetic in fact*, not merely in name: no fixture supplier ID, item ID, invoice number or PO appears in the real item master or the confirmed-alias file. Three apparent hits on product wording were coincidental substring matches against generic cosmetics vocabulary, not fixture products. No assigned literal secret exists anywhere in the allowlist; every credential-pattern hit is the word "token" used for text processing or OCR. The earlier `git add -A` hazard is separately closed by a root-level `/*.json` ignore with explicit exceptions, which covers the event dumps and every receipt variant I had enumerated. That simulation was run against the allowlist as it then stood, while the tree was still changing. At freeze the code is fixed at the named image and root reports the final publication scan passing; I am recording that as root's result, not as a second independent run of my own. |
+| A11 | Windows from-zero install and operator training exist | **PASS** | Both documents are present and were checked independently: code fences balanced, no TODO or placeholder text, no stale RMS-preferred language, the fixed pricing rule stated explicitly in both, and the Compose configuration validates against the supplied example environment. Not walked through on a clean Windows host — none was available — so the installation claim itself stays unverified, and see A15 for a documented step that cannot currently succeed.  **Read-only consistency review completed 25 September; content is accurate, one omission keeps this PARTIAL.** I checked both documents against what I had independently verified and found the substantive claims correct: the UPC default is described as off, blank to match the reviewed examples, and enabled only after the receiving system confirms acceptance; the repository named is the one actually created; the expected master count of 114,940 rows matches the store I inspected; the stated import time of about four minutes matches the measured run and is explicitly not offered as a Windows guarantee; and the exception section describes the download, its whole-workspace scope and its snapshot nature exactly as the implementation behaves. The escalation table is consistent with the enforced gates, including the AED 10 acknowledgement and the rule that RMS cost never substitutes. Both documents avoid accuracy and machine-learning claims, and one states plainly that learned matching is reviewed mapping reuse rather than statistical learning. **The gap is that neither document says the Windows procedure itself has never been run.** No clean Windows host was available, so every check behind these instructions was performed on Linux. The install guide opens by stating it installs and runs the application, and its boundaries section lists many honest limits without listing this one, so a reader would reasonably assume the steps were executed as written. The single oblique hint is a timing caveat in the other document. I routed it to root as the owner's to fix. **It is fixed and I verified it.** Both documents now carry a prominent validation limit near the top stating that the Windows instructions were authored and reviewed but not executed end to end on a clean Windows computer, that the checks ran on Linux, and that the first installation should be treated as a pilot. That was the only thing standing between this criterion and a pass, so A11 passes. |
+| A13 | No private reference data is required at runtime or shipped in the release | **PASS — reconfirmed after handoff** | Restated after root's correction of 25 September. `data/reference/` is excluded from the published snapshot and no code path loads it; that exclusion is the desired state, not a gap. The superseded `target_conversion_rules.json` is retained as a *historical* artefact only, pending the outstanding user pricing clarification. Reconfirmed after handoff by building a clone-equivalent snapshot: 65 files, no `data/reference` content of any kind, and the full target-export suite passes inside it, so the shipped tree genuinely starts empty and needs no brand data to be correct. |
+| A14 | Identifiers are stored as text so leading zeros survive | **PASS for exporter output — now better than the reference files** | Every identifier column in the exporter's output is stored as text: `Document`, `Supplier Site`, `Order No`, `Location`, `Details.Item` and `Tax Code` all carry `str`, with no numeric cells. This is a genuine improvement over the known-good workbooks, which store some identifiers numerically and would already have lost any leading zero. The criterion stays open only in the sense that no corpus-scale output has been checked yet. |
+| A15 | The documented RMS master import actually works | **PASS — independently verified** | The guard failures I reported are fixed and the import is now confirmed by direct read-only inspection of the persisted store, not by receipt alone. Re-measured against current code, all five guards pass: 60,832,020 B compressed vs 128 MiB; 476,288,825 B expanded vs a raised 1 GiB; 179 columns vs a raised 256; 114,940 rows vs a raised 250,000; worst member ratio 7.9 vs 200. The persisted store carries `catalog_items` = 114,940 distinct rows with every key column populated, plus 5 aliases, in the application schema (`invoices`/`catalog_items`/`aliases`/`exports`) rather than the reference extract, timestamped during the reported run and naming the supplied master as its source. Remaining gap is durability, not capability: no regression exercises a wide many-row import, so the raised guards can silently regress. A synthetic generator for that test is available and needs no private data. |
+| A12 | The absence of authentication is a stated, enforced boundary | **PASS as a boundary — blocking only for shared deployment** | The delivered scope is a local single-operator pilot on loopback, which never claimed multi-user access control. The boundary is documented where an operator will actually meet it: `WINDOWS_SETUP.md` line 7 states the application has no login or user roles and must run on one access-controlled computer with one authorized operator, and must not be published to the office network or internet; line 146 makes confirming the `127.0.0.1` binding a stop-check; line 429 repeats it for the port-conflict path. Compose binds loopback. Baseline anonymous access findings stand and remain blocking for any shared, networked or multi-user deployment. |
+
+## A6 in detail: provisional, on a conservative reading of an ambiguous instruction
+
+**Status: implemented conservatively, user confirmation outstanding. Not closed.**
+
+The rule being implemented is:
+
+- `Details.Unit Cost` is the invoice net unit cost after discount.
+- RMS supplier cost is **matching and validation evidence only**. A difference beyond AED 10.00 is
+  reviewable and flagged, but RMS cost is **not substituted into the target**.
+- `Header.Total Cost Ex Tax` carries the **invoice's stated ex-tax total**, and the included
+  `Details` reconcile **exactly** to it.
+- `Order No` stays blank when there is no explicit invoice PO and no explicit RMS PO/order field.
+
+**Why this is provisional and not settled.** The underlying user instruction was a direct chat turn
+with no graph-addressable identifier; the coordinator who relayed it checked and declined to invent
+one, which was the right call. The quoted instruction directs that invoice cost be used *when the
+two do not match*. That establishes a **fallback**. It does not, on its own wording, establish that
+invoice cost is used unconditionally.
+
+The two readings agree everywhere except one band: where RMS and invoice cost differ by more than
+zero but no more than AED 10.00. The superseded configuration would substitute RMS cost there; the
+conservative reading would not. That band is the common case, so the difference is material rather
+than academic.
+
+**Why the conservative reading was nevertheless adopted.** It is the only reading internally
+consistent with the rest of the contract. If RMS cost were substituted anywhere, the Details would
+no longer sum to the invoice's stated ex-tax total, and `Header.Total Cost Ex Tax` — which carries
+that stated total — could not reconcile exactly. The stricter reading also never restates a
+supplier's price, which the programme audit prohibits outright. It is the safe direction to be
+wrong in.
+
+An explicit user confirmation has been requested. **Until it arrives this criterion stays
+provisional, and no receipt should describe the pricing rule as a direct user assertion.** All four
+known-good workbooks satisfy the conservative rule at one-cent tolerance, so adopting it costs
+nothing against existing evidence.
+
+### Rounding convention and the reconciliation tolerance will collide unless tied together
+
+The rounding convention is now an implementation decision (banker's-free `ROUND_HALF_UP`, material
+discrepancies rejected) rather than an open business question, which is the right call. It does,
+however, interact with the reconciliation check in a way that is not yet reconciled, and the
+existing evidence hides the problem rather than testing it.
+
+Measured across all known-good workbooks: every `Details.Unit Cost` is exact at two decimal places
+and per-invoice drift between `sum(unit x qty)` and `Header.Total Cost Ex Tax` is exactly `0.00`.
+So the goldens do not exercise rounding at all — they are silent on it, not evidence for it.
+
+The collision appears as soon as a line discount produces a unit cost that is not exact at two
+decimals, which is the ordinary case for a percentage discount. Storing the unit cost rounded to
+two decimals and then reconstructing `unit x qty` admits an error of up to `0.005 x quantity` on a
+single line. Observed maximum quantity in the known-good set is 21, which alone yields up to
+`0.105` — more than ten times the one-cent workbook tolerance the checker applies. Several such
+lines compound.
+
+**Convention adopted (25 September):** retain full invoice net-unit precision in `Details.Unit Cost`,
+round each line extension to cents HALF_UP, then sum the rounded extensions. The checker mirrors it.
+This keeps the strict tolerance meaningful instead of widening it.
+
+I initially read a two-decimal constraint into this, because all 53 `Details.Unit Cost` values in the
+known-good workbooks carry one or two decimal places and none exceeds two. That inference was wrong:
+examples that happen to be short do not establish that the consumer forbids more precision, and root
+was right to reject it as an invented contract.
+
+Direct measurement of the imported master settles it in the opposite direction. Of 114,812 real
+`unit_cost` values, **37.0% carry more than two decimal places** — 20.8% at three and 16.2% at four.
+The commercial data this system consumes is already routinely more precise than two decimals, so
+retaining captured source precision is the behaviour consistent with the source, not a deviation from
+it. What remains genuinely unknown is whether the downstream *import* accepts that precision, and
+that is an integration-validation limit to be settled by an actual import result, not a coding
+blocker and not a question to put to the user speculatively.
+
+A related limit, correctly raised by root: arithmetic equality alone cannot prove that no RMS cost was
+substituted, because offsetting differences across lines can cancel. The reconciliation check is a
+necessary condition, not a sufficient one; proving source-cost fidelity needs backend contract tests
+that assert the unit cost equals the invoice source value line by line.
+
+The tolerance and the convention still have to be defined against each other, and there were three
+coherent ways to do that:
+
+- have the exporter derive `Unit Cost` so that `unit x qty` reproduces the line total exactly, which
+  keeps the flat one-cent tolerance honest;
+- carry more precision in `Unit Cost` than two decimals; or
+- make the acceptance tolerance quantity-aware rather than flat.
+
+The first is preferable if the target consumer tolerates it, because it keeps the workbook-level
+check strict, and strictness here is load-bearing: the one-cent tolerance is what detects a wrongly
+substituted RMS cost. Loosening it to absorb rounding drift would disable that detection. Whichever
+is chosen, this needs a regression with a non-terminating discounted unit cost and a large quantity;
+no such case exists in the current evidence.
+
+One consequence constrains the exporter: because included Details must reconcile exactly to the
+invoice's stated total, **an invoice cannot be admitted to the target with lines missing**. An
+invoice carrying any unresolved line goes to the exception report whole. `target_conformance.py`
+treats a Header row with no Details lines as a failure on that basis.
+
+### A13: the superseded reference file is historical, and must stay out of the release
+
+`data/reference/target_conversion_rules.json` encodes a *prefer RMS cost, substitute it whenever it
+is within AED 10* rule. The behaviour the application currently implements never substitutes RMS
+cost. These diverge on exactly the lines where the two costs disagree by under AED 10 — the common
+case.
+
+My earlier reading of this was wrong in its remedy, and root corrected it. I had recorded the fix as
+*correct the file, then wire the exporter to load it*. That would have been the wrong architecture
+for what is being delivered: a brand-neutral application that anyone can download and point at their
+own invoices must not depend on a reference file derived from one brand's commercial data, and that
+file is excluded from publication in any case. Correcting a private file the code must never read
+would have been effort spent making a hazard tidier instead of removing it.
+
+The right shape, and the one that was built:
+
+- Runtime rules are **explicit persisted Brand setup settings**, entered per brand. The AED review
+  threshold is a configured number, not a constant read from a bundled file.
+- Aliases are **imported by the operator** through the API/UI, as brand-owned data, and never
+  ship in the repository.
+- `data/reference/` stays outside the published allowlist, so a cloner starts with an empty system.
+
+That leaves the old file as a historical record of what the rule used to say. It should not be
+corrected to state the current behaviour either, because the pricing question is still open pending
+the user's clarification (A6) — editing it now would manufacture the appearance of a settled
+decision. It stays as-is, unread and unpublished, until that clarification lands.
+
+The acceptance consequence: the thing to test is no longer *does the app load the right file* but
+*does a brand configured through setup, with an operator-imported alias set, produce an export that
+honours both* — and, negatively, does a freshly cloned tree contain no brand data at all.
+
+## A10 in detail: what publication would actually contain
+
+Two publication paths were simulated. They give opposite results, which is why A10 passes only
+conditionally.
+
+**The allowlisted snapshot — clean.** Reimplementing the selection rules of
+`scripts/package_source.py` without running it selects 56 files totalling 542,936 bytes. A
+signature scan over that set found no credential, no invoice number, no supplier or location
+reference and no commercial amount. The credential-pattern hits are all false positives on the
+word "token": OCR and matching tokenisation in `backend/matching.py`, `backend/extraction.py` and
+`scripts/verify_volume.py`, where `secrets.randbelow` generates synthetic OCR probe tokens. The
+two hits in `docs/WINDOWS_SETUP.md` are the instructions telling operators *not* to publish
+credentials and `data/reference`, which is correct content. **No private material is in the
+allowlisted set today.**
+
+**A plain `git add -A` — not clean, and must never be used.** Simulated with an isolated git
+directory so this workspace was never touched. It stages 68 files, including material the current
+`.gitignore` does not reach:
+
+| Would be committed | Size | Why `.gitignore` misses it |
+|---|---:|---|
+| `events-next.json`, `events-last.json`, `events-after-orientation.json`, `events-latest.json` | up to 344 KB | Raw tm8 event dumps; no rule matches them |
+| `task-actions-final.json` | 42 KB | The rule is the exact name `task-actions.json`; the `-final` variant slips past it |
+| `artifact-publication.json`, `coordinator-review-ready.json`, `docs-final-request.json`, `volume-accepted.json`, `volume-final-go.json` | small | Rules cover `*-receipt.json`, `*-reply.json`, `*-update.json` but not `-request`, `-ready`, `-accepted`, `-go`, `-publication` |
+| `public/source-package.json` | 195 KB | Base64 of the entire source archive. `*.zip` excludes the archive itself; base64 inside a `.json` defeats every suffix rule |
+
+Measured honestly, the exposure in those files is **internal coordination metadata, not customer
+commercial data**: 1,243 / 782 / 174 tm8 entity identifiers in the three largest, and zero
+occurrences of the known invoice numbers, supplier site, location or amounts. The risk is
+forward-looking rather than historical — those dumps predate the arrival of the private reference
+material on 24 September, and any dump taken from here on would carry the private discussion.
+
+**Two structural weaknesses remain even in the allowlisted path**, and they matter because
+`docs/` and `tests/` are being written right now by other owners:
+
+1. `package_source.py` selects whole directories by `rglob` and filters only `.pyc` and `.zip`.
+   It does **not** exclude `.xlsx`, `.pdf`, `.sqlite`, `.db`, `.csv` or images, although
+   `.gitignore` blocks all of them. A real-invoice fixture dropped into `tests/fixtures/`, or a
+   corpus-evaluation document carrying real invoice numbers placed in `docs/`, would be packaged
+   silently. Today only three small synthetic CSVs match, which is benign.
+2. The packager's own negative assertion checks only for `task-context`, `/data/` and
+   `/.runtime/` in entry names. It cannot catch either case above.
+
+Both are cheap to close: extend the suffix denylist to the data-bearing extensions, and extend the
+assertion to scan selected file *content* for the private-material signatures rather than only
+their paths.
+
+## A14 in detail: the known-good files carry the defect their own criterion names
+
+The design's acceptance criterion for the exact workbook explicitly lists **leading zeros** as a
+case that must be handled. The known-good workbooks do not handle it. Every `Details.Item` value in
+both known-good files is stored as a number rather than text, as are `Header.Supplier Site` in both,
+`Header.Document` in one and `Header.Order No` in the other.
+
+This is reported as a warning rather than a failure because the loss is not provable from the
+workbook: once an identifier has been coerced to a number, a leading zero is simply gone and
+nothing downstream can tell whether one was ever there. Nothing in these two files is demonstrably
+corrupted — one file's invoice number is long enough to be at risk yet still within the range integers
+represent exactly, and the other's contains punctuation and so stayed text as it had to.
+
+It matters because these files are the reference the exporter is expected to reproduce. **An
+exporter that faithfully reproduces them inherits the defect**, and it will surface as soon as a
+supplier site, store code or RMS item ID with a leading zero enters the batch. The fix belongs at
+the exporter: write every identifier column as text, and cover it with the leading-zero regression
+the design already asks for. Owner: backend.
+
+## A15 in detail: why the documented master import could not succeed, and how it was fixed
+
+The operator documentation presents the raw 179-column RMS master import as a supported release
+contract, raises the catalog file ceiling to 128 MiB to accommodate it, and tells the operator to
+expect 114,940 imported rows. The code rejects the supplied master three separate ways. All three
+were measured against the actual file, not inferred from the documentation.
+
+| Guard in `backend/service.py` | Limit | Supplied master | Result |
+|---|---|---|---|
+| Expanded archive size | 100 MB | **476,288,825 bytes — 4.5× the limit** | Rejected |
+| Header column count | 100 | 179 columns | Rejected |
+| Data row count | 100,000 | 114,940 rows | Rejected |
+
+The column guard fires first, at the header, before a single data row is read.
+
+The raised 128 MiB ceiling does not help and is actively misleading for XLSX input, because the
+binding constraint is the **expanded** size rather than the uploaded size. A compressed workbook
+comfortably inside 128 MiB still expands past the 100 MB guard; this one expands to roughly 4.5
+times it. An operator following the documented sequence gets the file accepted on size and then
+rejected on structure.
+
+To be fair to the documentation, it does not claim the import is proven — it says the contract
+"must pass the approved-build release test" and that "documentation alone is not a test result".
+That caution is well placed. But the gap was larger than unproven: against the build as it stood when
+I wrote this, the documented step was **impossible**, and it sat at step three of an eight-step
+operator sequence, so everything after it was unreachable.
+
+> **Superseded — resolved 25 September.** The guards were subsequently raised and the full master
+> import was confirmed working by direct inspection of the persisted store, which is why A15 passes
+> above. This paragraph is retained as the record of why the change was needed; do not read it as the
+> current state of the build. Either the three guards are raised deliberately, with the memory and
+denial-of-service implications of a 476 MB expansion assessed, or the documentation should direct
+operators to the normalized projection instead and stop presenting the raw import as available.
+Owner: root, with the backend worker.
+
+## A8 in detail: the first real movement, and what the numbers do and do not say
+
+The extraction owner has reported the first measured improvement on the programme's largest gap.
+On a 19-document private layout sample, documents yielding any rows rose from 2 to 11, and
+candidate rows from 9 to 83. Twenty extraction tests pass on the production image. The reported
+mechanism is fixed-position table parsing driven by explicit headers, joins for wrapped
+descriptions, source-only UPC / item code / UOM / net-unit fields, and a conservative document
+classification that admits an `unknown` outcome rather than guessing.
+
+This is genuine progress and it is claimed correctly: the owner explicitly declines to call it
+accuracy. Two things should be held alongside it so the improvement is not over-read.
+
+**The reconciling fraction depends on which denominator is used.** Of the 83 candidate rows, 28 are
+fully populated, and 13 of those 28 reconcile quantity × source unit price to the source line
+total. Measured against fully populated rows that is roughly half; measured against all candidate
+rows it is 13 of 83, closer to one in six. Neither figure is an accuracy rate, because the number
+of true source lines in the sample is not established — an extractor that misses a line entirely
+is not penalised by either ratio.
+
+**The sample is not the corpus.** These 19 documents are a layout sample. The 179-file corpus and
+the 44 OCR-flagged PDFs are still in evaluation at a maximum of two workers. Until that completes,
+the baseline of 106 of 114 invoice candidates yielding zero lines remains the corpus-level figure
+of record, and this criterion stays failed.
+
+The right next measurement is a per-document comparison against known source line counts, so that
+missed lines are visible rather than silently absent from the denominator.
+
+## Residual limits of this record
+
+Stated plainly, because an acceptance record that hides its own boundaries is worthless.
+
+- **Early in this engagement no test run was performed by me**, because backend and extraction work
+  was in flight on a shared, bounded host and rerunning suites was declined at the root session's
+  instruction. That limit was lifted later: I independently ran the contract checker on every
+  delivered workbook, executed a suite inside a clone-equivalent snapshot, read the persisted catalog
+  store directly, and hashed the six runtime modules inside the delivery image itself.
+- **No OCR, no page rendering and no corpus extraction were run by this session.** The extraction
+  owner held that budget exclusively throughout. The corpus figures in this record come from that
+  owner's final run against the frozen extractor; I verified the receipt's hash and confirmed its
+  declared extractor matches the shipped code, but I did not reproduce the run.
+- **A2 proves the contract is satisfiable, not that the application satisfies it.** Four hand-built
+  workbooks passing is evidence about those four files only.
+- **A11 was assessed by inspection, not by installing on a clean Windows machine.** No Windows host
+  was available. Until someone completes a from-zero install by following only the document, the
+  installation claim is unverified. A11 passes because both guides now disclose this limit prominently,
+  which is the most an inspection-based review can honestly certify — it does not mean the procedure
+  has been shown to work.
+- **No accuracy figure is asserted anywhere in this record.** Item-name match accuracy against the
+  real corpus is not measured. The historical 1,000-file synthetic intake demonstrated queue
+  durability, not accuracy. Nothing in this delivery is machine learning training or fine-tuning,
+  and it should never be described as such.
+- **Security findings are carried from the audit, not re-tested.** The 181 Debian advisory matches
+  remain package-level candidates, not proven exploitable vulnerabilities.
+
+### The contract also holds through the live operator workflow
+
+Separately from the exporter round-trip, a live browser run now exercises the whole operator path —
+brand settings, master import, upload and extraction, classification, review, approval, and an actual
+XLSX download — and I verified the downloaded file rather than the run report.
+
+It is conformant on my own checker: exactly `Header` / `Tax_Breakdown` / `Details` in that order, one
+invoice, one tax row, two detail lines, arithmetic reconciled. Identifier typing holds through the
+full round trip, which is the part worth noting: `Location` arrives as the string `0001` with number
+format `@`, so a leading zero survives extraction, storage, export, HTTP download and reopening. That
+is the failure mode A14 exists to catch, and it is the hardest place to catch it, because every layer
+in that chain has its own opportunity to coerce an identifier to a number.
+
+This is synthetic-data evidence about the *plumbing*. It says the workflow an operator will follow
+produces a contract-conformant workbook end to end. It says nothing about extraction accuracy on real
+invoices, which remains A7 and A8.
+
+### What the reference round-trip does and does not prove
+
+Worth stating precisely, because the round-trip is easy to over-read. It was run against the two
+already-reviewed target workbooks, not against the original invoice PDFs. It therefore demonstrates
+that the exporter emits the exact contract and reproduces reviewed values cell for cell. It does not
+demonstrate that the parser, given the source document, arrives at those values — no claim about
+source parsing can be made from reviewed targets alone.
+
+The source documents for both reviewed targets have since been identified and confirmed present, so
+the parser-versus-reviewed-target regression that *would* close that gap is now constructible. It
+belongs to the extraction owner, and is deliberately not run here while that work is active. That
+owner is currently prioritising Factur-X embedded XML and a discount-paired source regression ahead
+of the full corpus rerun, which is the right order: a discount-paired case is the one that exercises
+the rounding convention against a real document rather than a constructed one.
+
+### A question the round-trip surfaced, since settled: `Details.UPC` is empty
+
+Every `Details.UPC` cell in the exporter's output is blank. That is **not** a defect: all five
+reviewed reference workbooks also carry UPC blank (0 of 13 and 0 of 7 lines), so the exporter is
+faithfully reproducing what the references do, which is exactly what a round-trip should show.
+
+It is worth recording only because the data to populate it now demonstrably exists. The imported
+catalog holds a UPC for these items — the first sampled `Details.Item` resolves to a real 13-digit
+UPC in `catalog_items`. So leaving the column blank is a choice inherited from the references rather
+than a limitation, and if the downstream consumer ever wants UPC populated, nothing needs to be
+collected to do it. Not an acceptance blocker, and not something to change without the consumer
+asking.
+
+> **Settled — 25 September.** That last sentence turned out to matter. A later build did begin
+> populating the column, because matched catalog rows made the values available; the output then
+> differed from all five reviewed references in a column the consumer may key on. The behaviour is
+> now a per-brand `include_upc_in_export` setting, off by default so the column stays blank, to be
+> enabled only once the receiving system confirms it accepts populated UPCs. I verified both
+> positions and confirmed that toggling on and back off returns a byte-identical workbook.
+
+## Proposed next steps, in dependency order
+
+> **Historical — retained as the plan of record, not as outstanding work.** Most of this list was
+> completed during the engagement: the exporter was rewritten to the contract (2), a contract test
+> landed (3), extraction was substantially rebuilt and measured (4), the packager was hardened (5),
+> identifiers are written as text (6), and the rounding convention was settled (7, first half). What
+> genuinely remains open at freeze is item 1, item 7's currency policy, item 8, and item 9's trigger
+> condition. The four limits in the frozen verdict at the top of this document are the authoritative
+> statement of what is outstanding; read this list for the reasoning behind each item.
+
+
+1. **Keep `data/reference/` unread and unpublished, and leave the superseded file uncorrected
+   (A13).** It is a historical artefact; editing it while the pricing question is open would imply
+   a decision that has not been made. Confirm at handoff that no code path reads it and that `data/`
+   stays outside the allowlist. *(Owner: root.)*
+2. **Rewrite the exporter to the exact three-tab contract**, taking the review threshold and Order No
+   precedence from persisted Brand setup settings and aliases from an operator-performed import,
+   with no bundled brand data. Price every line at invoice net unit cost after discount; use RMS
+   cost only to raise a review flag beyond the configured threshold. *(Owner: backend.)*
+3. **Land a contract test** that builds a workbook through the real exporter path and asserts it
+   conformant, so A4 stops being a documentation promise. `target_conformance.py` can be adopted
+   wholesale for this. *(Owner: backend.)*
+4. **Attack A8, the zero-line problem, ahead of everything cosmetic.** 106 of 114 text invoice
+   candidates yielding nothing is the difference between a demonstration and a product. Characterise
+   the failing layouts before choosing an engine, and measure on real files. *(Owner: extraction.)*
+5. **Harden the packager** per the two structural weaknesses in A10, and record the prohibition on
+   `git add -A` from this workspace somewhere a future maintainer will actually read.
+   *(Owner: root.)*
+6. **Write identifier columns as text (A14)** so leading zeros survive, and cover it with the
+   regression the design already requires. *(Owner: backend.)*
+7. **Settle two policies the design flags but does not fix**: the decimal/rounding convention that
+   "reconcile exactly" is measured against, and the currency/rate/date policy for non-AED invoices
+   before the AED-denominated review threshold is applied to them. *(Owner: root, to business.)*
+8. **Produce one consolidated workbook over the reviewed eligible set** and run it through the
+   contract checker. *(Done for the two reviewed reference sources: a single workbook carrying both
+   invoices, 2 Header / 2 Tax_Breakdown / 20 Details, checked CONFORMANT at exit 0 on my own run, with
+   12 of its 20 line mappings automatic and the remainder confirmed by reviewed operator decisions.
+   What remains open is not this step but corpus coverage — see limit 4 in the frozen verdict. A7
+   fails on coverage, not on the exporter's ability to produce a conformant consolidated workbook,
+   which is now demonstrated from original source documents.)*
+9. **Keep authentication tied to the shared-deployment decision, not to this delivery.** Loopback
+   binding plus a documented single-operator boundary is adequate for the local pilot as scoped.
+   Identity and roles become prerequisites the moment anyone proposes a shared host, a networked
+   port or a second concurrent operator. *(Owner: backend/root, on that trigger.)*
+
+This record is frozen against the build named at the top and will not be revised further in this
+engagement. Nothing in it should be read as approval to describe the delivery as complete, or as an
+accuracy claim about invoices beyond those actually examined.

@@ -1,0 +1,3 @@
+rms_item_id,description,supplier_id,uom,unit_cost
+1004821,Lumiere Hydrating Serum 30ml,SUP-1042,EA,78.00
+1004835,Lumiere Daily Moisturiser 50ml,SUP-1042,EA,64.00

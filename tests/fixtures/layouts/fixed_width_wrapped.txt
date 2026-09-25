@@ -1,0 +1,14 @@
+TAX INVOICE
+Supplier: Example Supplier One
+Invoice No: EXAMPLE-1001
+Invoice Date: 25 September 2026
+Currency: AED
+
+UPC            Item Code   Description                              UOM    Qty    Net Unit Price    Net Amount
+012345678901   SYN-001     Botanical Face Cleanser                  EA     2      25.00             50.00
+                           Refill pouch, fragrance free
+009876543210   SYN-002     Mineral Lip Tint                         PCS    3      12.50             37.50
+
+Subtotal AED 87.50
+VAT Total AED 4.38
+Grand Total AED 91.88

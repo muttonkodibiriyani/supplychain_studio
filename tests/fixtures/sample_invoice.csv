@@ -1,0 +1,3 @@
+invoice_number,invoice_date,supplier_name,supplier_id,supplier_site,po_number,currency,description,quantity,uom,unit_price,line_total,tax_rate,subtotal,tax_total,total
+DB-2026-1042,2026-09-24,Desert Beauty Trading LLC,SUP-1007,DUBAI-01,PO-880021,AED,Hydrating Cleanser 50ml,2,EA,25.00,50.00,5,65.00,3.25,68.25
+DB-2026-1042,2026-09-24,Desert Beauty Trading LLC,SUP-1007,DUBAI-01,PO-880021,AED,Velvet Lip Color Shade 10,1,EA,15.00,15.00,5,65.00,3.25,68.25

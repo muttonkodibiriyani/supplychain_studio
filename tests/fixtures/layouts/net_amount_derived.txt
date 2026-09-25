@@ -1,0 +1,9 @@
+TAX INVOICE
+Invoice No: SYN-NET-01
+Currency: AED
+
+Description                         Qty  UOM  Gross Price  Net Amount
+Precision Botanical Serum             3  EA          4.50       10.00
+
+VAT Total AED 0.50
+Grand Total AED 10.50

@@ -1,0 +1,6 @@
+DELIVERY NOTE
+Delivery Note No: EXAMPLE-DN-1
+Date: 25 September 2026
+
+Description                         Qty   UOM
+Synthetic delivered carton          4     CASE

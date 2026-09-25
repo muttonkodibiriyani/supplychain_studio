@@ -1,0 +1,23 @@
+[
+  {
+    "rms_item_id": "RMS-50100",
+    "description": "Hydrating Cleanser 50 ml",
+    "supplier_id": "SUP-1007",
+    "uom": "EA",
+    "unit_cost": 25.0
+  },
+  {
+    "rms_item_id": "RMS-70210",
+    "description": "Velvet Lip Colour Shade 10",
+    "supplier_id": "SUP-1007",
+    "uom": "EA",
+    "unit_cost": 15.0
+  },
+  {
+    "rms_item_id": "RMS-50101",
+    "description": "Hydrating Cleanser 100 ml",
+    "supplier_id": "SUP-1007",
+    "uom": "EA",
+    "unit_cost": 39.0
+  }
+]

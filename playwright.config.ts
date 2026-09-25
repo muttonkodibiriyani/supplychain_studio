@@ -1,0 +1,2 @@
+import {defineConfig} from '@playwright/test';
+export default defineConfig({testDir:'./tests/ui',timeout:60000,fullyParallel:false,workers:1,reporter:'list',use:{headless:true,viewport:{width:1440,height:1050},launchOptions:process.env.BROWSER_EXECUTABLE?{executablePath:process.env.BROWSER_EXECUTABLE,args:['--no-sandbox','--disable-dev-shm-usage',...(process.env.BROWSER_SINGLE_PROCESS?['--single-process','--no-zygote','--disable-gpu','--disable-software-rasterizer']:[])]}:{}},outputDir:'test-results'});

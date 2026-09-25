@@ -1,0 +1,16 @@
+INVOICE
+Supplier: Desert Beauty Trading LLC
+Supplier ID: SUP-1007
+Supplier Site: DUBAI-01
+Invoice No: DB-2026-1042
+Invoice Date: 24 September 2026
+PO Number: PO-880021
+Currency: AED
+
+Description                         Qty  UOM  Unit Price  Line Total  VAT
+Hydrating Cleanser 50ml             2    EA   25.00       50.00       5%
+Velvet Lip Color Shade 10           1    EA   15.00       15.00       5%
+
+Subtotal AED 65.00
+VAT Total AED 3.25
+Grand Total AED 68.25
