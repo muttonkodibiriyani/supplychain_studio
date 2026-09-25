@@ -140,6 +140,14 @@ class UploadRejected(ServiceError):
     pass
 
 
+# Every row POST /api/demo writes is recognisable by one of these prefixes.
+# Seeded lines carry match_status 'auto' and confidence 100 as literals, so a
+# database holding them must never be read as a measurement of the matcher.
+DEMO_CATALOG_PREFIX = "demo:"
+DEMO_INVOICE_PREFIX = "demo-"
+DEMO_SOURCE_PREFIX = "FICTIONAL-demo-invoice-"
+
+
 class DemoSeedRefused(ServiceError):
     """Raised when demo seeding would write fictional rows next to real data."""
 
@@ -904,7 +912,7 @@ class InvoiceService:
                 "offset": offset,
             }
 
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> dict[str, Any]:
         with self.db.connection() as conn:
             status_counts = {
                 row["status"]: row["count"]
@@ -928,6 +936,23 @@ class InvoiceService:
             result["total_lines"] = line_counts["total_lines"]
             result["catalog_items"] = conn.execute("SELECT COUNT(*) FROM catalog_items").fetchone()[0]
             result["alias_count"] = conn.execute("SELECT COUNT(*) FROM aliases").fetchone()[0]
+            # Demo rows are flagged, not hidden: matched_lines above counts the
+            # seeded 'auto' literals, so any rate read from a flagged database
+            # is inflated by fiat and must not be reported as a measurement.
+            result["demo_catalog_items"] = conn.execute(
+                "SELECT COUNT(*) FROM catalog_items WHERE catalog_item_id LIKE ?",
+                (f"{DEMO_CATALOG_PREFIX}%",),
+            ).fetchone()[0]
+            result["demo_invoices"] = conn.execute(
+                "SELECT COUNT(*) FROM invoices WHERE id LIKE ?", (f"{DEMO_INVOICE_PREFIX}%",)
+            ).fetchone()[0]
+            result["demo_lines"] = conn.execute(
+                "SELECT COUNT(*) FROM invoice_lines WHERE invoice_id LIKE ?",
+                (f"{DEMO_INVOICE_PREFIX}%",),
+            ).fetchone()[0]
+            result["contains_demo_data"] = bool(
+                result["demo_catalog_items"] or result["demo_invoices"]
+            )
             return result
 
     def _validate_document_name(self, filename: str) -> str:
@@ -3262,10 +3287,12 @@ class InvoiceService:
             # else would put fictional, matcher-bypassing lines into a real
             # workspace and inflate every match-rate figure read from it.
             non_demo_catalog_rows = conn.execute(
-                "SELECT COUNT(*) FROM catalog_items WHERE catalog_item_id NOT LIKE 'demo:%'"
+                "SELECT COUNT(*) FROM catalog_items WHERE catalog_item_id NOT LIKE ?",
+                (f"{DEMO_CATALOG_PREFIX}%",),
             ).fetchone()[0]
             non_demo_invoices = conn.execute(
-                "SELECT COUNT(*) FROM invoices WHERE id NOT LIKE 'demo-%'"
+                "SELECT COUNT(*) FROM invoices WHERE id NOT LIKE ?",
+                (f"{DEMO_INVOICE_PREFIX}%",),
             ).fetchone()[0]
             if non_demo_catalog_rows or non_demo_invoices:
                 raise DemoSeedRefused(
@@ -3273,7 +3300,7 @@ class InvoiceService:
                     non_demo_invoices=non_demo_invoices,
                 )
             for item in catalog:
-                catalog_item_id = f"demo:{item[0]}"
+                catalog_item_id = f"{DEMO_CATALOG_PREFIX}{item[0]}"
                 conn.execute(
                     """
                     INSERT INTO catalog_items

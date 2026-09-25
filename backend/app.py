@@ -165,7 +165,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/stats")
-    def stats() -> dict[str, int]:
+    def stats() -> dict[str, Any]:
         return service.stats()
 
     @app.get("/api/settings")

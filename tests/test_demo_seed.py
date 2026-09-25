@@ -114,3 +114,48 @@ def test_seed_is_refused_over_a_non_demo_invoice_and_names_the_counts(tmp_path: 
         assert detail["non_demo_invoices"] == 1
         assert "1 non-demo invoices" in detail["message"]
         assert row_counts(service) == before
+
+
+def test_stats_flag_demo_rows_so_a_seeded_database_is_not_read_as_a_measurement(tmp_path: Path) -> None:
+    service = InvoiceService(make_settings(tmp_path, enable_demo_seed=True))
+    clean = service.stats()
+    assert clean["contains_demo_data"] is False
+    assert (clean["demo_catalog_items"], clean["demo_invoices"], clean["demo_lines"]) == (0, 0, 0)
+
+    service.seed_demo()
+    seeded = service.stats()
+    assert seeded["contains_demo_data"] is True
+    assert seeded["demo_catalog_items"] == seeded["catalog_items"] > 0
+    assert seeded["demo_invoices"] == seeded["total"] > 0
+    assert seeded["demo_lines"] == seeded["total_lines"] > 0
+    # The seeded literals are exactly what inflates the rate; the flag is what
+    # tells a reader that matched_lines here measured nothing.
+    assert seeded["matched_lines"] > 0
+
+
+def _load_evaluate_corpus_module():
+    import importlib.util
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "evaluate_corpus.py"
+    spec = importlib.util.spec_from_file_location("evaluate_corpus_under_test", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_corpus_evaluator_refuses_an_input_root_holding_demo_sources(tmp_path: Path) -> None:
+    from backend.service import DEMO_SOURCE_PREFIX
+
+    evaluate_corpus = _load_evaluate_corpus_module()
+    assert evaluate_corpus.DEMO_SOURCE_PREFIX == DEMO_SOURCE_PREFIX
+    root = tmp_path / "sources"
+    root.mkdir()
+    (root / "real-invoice.txt").write_bytes(b"Supplier name: Fictional Real\nTotal 1.00\n")
+    assert len(evaluate_corpus._load_records(root, None)) == 1
+
+    (root / f"{DEMO_SOURCE_PREFIX}001.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    with pytest.raises(SystemExit) as refused:
+        evaluate_corpus._load_records(root, None)
+    assert "demo" in str(refused.value)
+    assert refused.value.code not in (None, 0)

@@ -36,6 +36,11 @@ from backend.extraction import (  # noqa: E402
 
 
 SCHEMA_VERSION = "invoice-corpus-evaluation.v1"
+# Source files written by POST /api/demo (backend.service.DEMO_SOURCE_PREFIX).
+# Seeded demo data is fictional and its lines are stored as matched without
+# running the matcher, so a corpus holding it is refused as a measurement
+# source rather than silently counted.
+DEMO_SOURCE_PREFIX = "FICTIONAL-demo-invoice-"
 CORE_LINE_FIELDS = ("description", "quantity", "unit_price", "line_total")
 SOURCE_TARGET_FIELDS = (
     "description",
@@ -125,6 +130,16 @@ def _load_records(input_root: Path, status_csv: Path | None) -> list[dict[str, A
                         "audit_heuristic_lines": 0,
                     }
                 )
+
+    demo_records = [
+        record for record in records if Path(record["relative"]).name.startswith(DEMO_SOURCE_PREFIX)
+    ]
+    if demo_records:
+        raise SystemExit(
+            f"Refusing to evaluate: {len(demo_records)} demo-seeded source file(s) "
+            f"(prefix {DEMO_SOURCE_PREFIX!r}) are inside the input root. Seeded demo "
+            "data is fictional and must not enter a measurement."
+        )
 
     for record in records:
         path = Path(record["path"])

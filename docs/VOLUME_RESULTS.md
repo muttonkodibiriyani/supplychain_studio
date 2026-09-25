@@ -142,10 +142,10 @@ stored `queued` backlog itself has a fixed maximum.
 
 ### PO number to location master — added 2026-09-25
 
-The user-supplied PO/GRN report workbook was downloaded read-only from its
-shared location and checked without converting or modifying the original
-file. It is an Office XLSX rather than a native Google Sheet: 36,152,923 bytes,
-SHA-256 `d8f68cd24253ae6ce7d11b45221398c8df65775ae073b6c1a721f04f8b34c49c`.
+The user-supplied workbook `25.09.2026 PO GRN REPORT.xlsx` was downloaded
+read-only and checked without converting or modifying the original file. It is
+an Office XLSX rather than a native Google Sheet: 36,152,923 bytes, SHA-256
+`d8f68cd24253ae6ce7d11b45221398c8df65775ae073b6c1a721f04f8b34c49c`.
 
 The exact standalone verifier command was:
 
