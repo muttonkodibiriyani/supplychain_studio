@@ -25,7 +25,7 @@ CATALOG_CSV = (
 
 def make_settings(tmp_path: Path, *, enable_demo_seed: bool) -> Settings:
     return Settings(
-        database_path=tmp_path / "invoice.sqlite3",
+        database_path=tmp_path / "demo-seed.db",
         source_dir=tmp_path / "sources",
         export_dir=tmp_path / "exports",
         workers=0,
