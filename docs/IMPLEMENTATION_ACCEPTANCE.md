@@ -330,7 +330,7 @@ were measured against the actual file, not inferred from the documentation.
 
 | Guard in `backend/service.py` | Limit | Supplied master | Result |
 |---|---|---|---|
-| Expanded archive size | 100 MB | **4.5× the limit** | Rejected |
+| Expanded archive size | 100 MB | above the limit | Rejected |
 | Header column count | 100 | 179 columns | Rejected |
 | Data row count | 100,000 | above the limit | Rejected |
 
@@ -338,8 +338,7 @@ The column guard fires first, at the header, before a single data row is read.
 
 The raised 128 MiB ceiling does not help and is actively misleading for XLSX input, because the
 binding constraint is the **expanded** size rather than the uploaded size. A compressed workbook
-comfortably inside 128 MiB still expands past the 100 MB guard; this one expands to roughly 4.5
-times it. An operator following the documented sequence gets the file accepted on size and then
+comfortably inside 128 MiB still expands past the 100 MB guard, and the supplied one does. An operator following the documented sequence gets the file accepted on size and then
 rejected on structure.
 
 To be fair to the documentation, it does not claim the import is proven — it says the contract
@@ -561,8 +560,8 @@ an unanswerable lookup into a confirmation. That is new scope and a user decisio
 This is the most consequential finding and it reopens reasoning that had been filed as settled policy.
 The comparison is enabled on the basis of the *invoice's* currency alone, which is sound only if
 recorded costs are always denominated in one currency. In the supplied master they are not: supplier
-records carry a currency marker, several currencies are present, and roughly seventy per cent of rows
-are not AED-denominated. Identical items priced under suppliers of different currencies differ by an
+records carry a currency marker, several currencies are present, and most rows are not
+AED-denominated (the share is withheld here because it describes the master's content). Identical items priced under suppliers of different currencies differ by an
 order of magnitude consistent with exchange rates rather than by any plausible margin, and aggregate
 cost magnitudes per currency agree with that reading. Two consequences follow, in opposite directions.
 The comparison is *refused* where it is valid — same-currency invoice and master rows are directly
