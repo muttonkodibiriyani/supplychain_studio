@@ -286,7 +286,7 @@ The first build needs internet and may require the organization's proxy configur
 
 ### Slow processing of scanned invoices
 
-OCR is CPU-bound. Docker Desktop for Mac limits CPUs and memory in **Settings > Resources**; give it at least 4 CPUs and 6 GB for the default `INVOICE_WORKERS=4`, more for higher worker counts. See [VOLUME_RESULTS.md](VOLUME_RESULTS.md) for the recommended worker count per core.
+OCR is CPU-bound. Docker Desktop for Mac limits CPUs and memory in **Settings > Resources**; the default `INVOICE_WORKERS=auto` starts one extraction worker per CPU that Docker Desktop exposes, so the CPU setting directly sets the worker count. Give it at least 4 CPUs and 6 GB; more CPUs mean more scanned invoices OCR'd in parallel. See [VOLUME_RESULTS.md](VOLUME_RESULTS.md) for the recommended worker count per core.
 
 ### Data appears missing after moving to a newer ZIP
 

@@ -38,8 +38,12 @@ def _bounded_workers(raw: str) -> int:
     when the request was cut, so a mis-set value is visible in the logs.
     """
 
-    requested = max(0, int(raw))
     cores = os.cpu_count() or 1
+    text = (raw or "").strip().casefold()
+    # "auto" (the shipped default) is one worker per core: OCR is CPU-bound
+    # and Tesseract runs single-threaded per worker, so the core count is
+    # the point past which 1,000-invoice batches stop getting faster.
+    requested = cores if text in {"", "auto"} else max(0, int(text))
     limit = max(1, cores * MAX_WORKERS_PER_CORE)
     if requested > limit:
         logger.warning(
@@ -161,7 +165,7 @@ class Settings:
             database_path=Path(os.getenv("INVOICE_DB_PATH", data_dir / "invoices.sqlite3")),
             source_dir=Path(os.getenv("INVOICE_SOURCE_DIR", data_dir / "sources")),
             export_dir=Path(os.getenv("INVOICE_EXPORT_DIR", data_dir / "exports")),
-            workers=_bounded_workers(os.getenv("INVOICE_WORKERS", "4")),
+            workers=_bounded_workers(os.getenv("INVOICE_WORKERS", "auto")),
             max_file_bytes=int(os.getenv("INVOICE_MAX_FILE_BYTES", str(25 * 1024 * 1024))),
             max_catalog_file_bytes=int(
                 os.getenv("INVOICE_MAX_CATALOG_FILE_BYTES", str(128 * 1024 * 1024))

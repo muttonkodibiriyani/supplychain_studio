@@ -62,7 +62,7 @@ Current release checks are in [RELEASE_VALIDATION.md](docs/RELEASE_VALIDATION.md
 | CSV, XLSX | Structured invoice fields and lines |
 | DOCX, TXT | Text/table extraction |
 
-The supplied Compose configuration permits **64 MiB per invoice file**, with page/frame and decompression limits. The browser sends files individually, so a selection can exceed 1,000 files. Four extraction workers are configured by default (`INVOICE_WORKERS` in `.env.example`); raise it toward the CPU core count for large scanned batches. Corrupt, encrypted, empty, unsupported and oversized files produce explicit errors. ZIP archives, HEIC, legacy XLS/DOC, HTML and SVG are not invoice inputs.
+The supplied Compose configuration permits **64 MiB per invoice file**, with page/frame and decompression limits. The browser sends files individually, so a selection can exceed 1,000 files. One extraction worker per CPU core is configured by default (`INVOICE_WORKERS=auto`); set a number in `.env` to override. Scanned invoices need OCR at roughly 20-30 seconds each per worker, so a 1,000-invoice batch needs the core count to finish in the target window. Corrupt, encrypted, empty, unsupported and oversized files produce explicit errors. ZIP archives, HEIC, legacy XLS/DOC, HTML and SVG are not invoice inputs.
 
 ## Separate brands and persistent data
 
