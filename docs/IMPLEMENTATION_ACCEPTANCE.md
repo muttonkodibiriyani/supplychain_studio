@@ -74,6 +74,35 @@ This record is read-only acceptance. It does not restate the program audit
 comes from that audit it is labelled as baseline, and where it comes from this session's own
 re-execution it is labelled as verified here.
 
+## Rules this record is written under
+
+These were learned by getting things wrong in this record, and they are placed before the findings
+because they are more portable than any finding below and because a reader needs them to weigh what
+follows.
+
+1. **Label every figure with the commit and the frame it was measured in.** Two claims in this record
+   were retracted because a baseline was captured at a different commit than the candidate and neither
+   was labelled. A neutrality or movement claim prints both revisions beside it or it is void.
+2. **When a stage produces a number for the first time, re-read what this record already says about that
+   stage's inputs — before recording the number.** First execution is the moment a latent input defect
+   becomes visible, not the moment it stops mattering. A finding is not retired by being superseded in
+   attention. One claim here was refuted by a section of this same document, written earlier by the same
+   author, that nobody re-read when the measurement it governed arrived.
+3. **Call the system's own comparison function; never reimplement it.** A looser equality rule
+   manufactures matches the production code does not see, and the count comes back confidently wrong in
+   whichever direction the hypothesis wanted.
+4. **A count published with a caveat travels as a count; the caveat does not travel with it.** When a
+   number needs a caveat to be honest, publish the reason and no numerator.
+5. **Say which population a measurement covers.** A property measured on the lines a change left behind
+   is not a property of the lines it moved.
+6. **A gate that all inputs can satisfy by failing politely, and a gate whose condition can never be
+   met, are the same defect wearing opposite clothes.** Both produce a wrong outcome with nobody doing
+   anything.
+7. **State whether a claim is corroborated, by how many independent instruments, and whether any are
+   still in flight.** Withdrawing a claim on a single instrument has the same single-instrument shape as
+   publishing one; it is the better bet only because removing a claim costs a delay when it is wrong,
+   where adding one costs a wrong plan.
+
 ## How to reproduce this record
 
 Two read-only instruments were written for this acceptance. They live outside this repository, in
@@ -2034,3 +2063,53 @@ Two standing rules follow, and they apply to this document first:
   becomes visible, not the moment it stops mattering.
 - A finding is not retired by being superseded in attention. The incommensurability note had not been
   withdrawn, contradicted or resolved. It was simply older than the excitement.
+
+### The status of the two withdrawals, stated rather than assumed
+
+Rule 7 above applies to the withdrawals themselves, and a reviewer pressed the point before these lines
+were written: withdrawing on one instrument has the same single-instrument shape as publishing on one.
+The asymmetry that makes withdrawal the right call anyway is that removing a claim costs a delay when it
+is wrong, where leaving it standing costs a wrong plan built on top of it. So the withdrawals stand, and
+their evidentiary status is recorded exactly:
+
+- **The duplicate-row diagnosis: withdrawn on one instrument. A second, independent one is in flight.**
+  That instrument was designed to use the matcher's own normalisation and catalog preparation before the
+  withdrawal existed, so it is a test of the withdrawal rather than a confirmation of it.
+- **The vocabulary-gap explanation that replaces it is NOT YET CORROBORATED.** It rests on the same
+  single instrument as the withdrawal. It is the better reading of the evidence available, and it is not
+  established. No plan may be built on it yet.
+- **The currency-basis finding: one instrument, and the reviewer who audits this record holds no view on
+  it** and has said so rather than nodding it through. Its strength is not the count but the
+  discriminator: two groups exchanging places under a single scale factor, split cleanly by item family.
+
+### Which population, and a prediction filed against this record
+
+The withdrawal above concerns the lines a change left behind — the ones still awaiting review after it
+landed. It says nothing about the lines the change **moved** to automatic, and it must not be read as
+saying anything about them. Those are two different populations and only the first was measured.
+
+A reviewer has filed a prediction on the second, before their numbers were available, and it is recorded
+here before the answer is known. The reasoning: a duplicate-collapse rule folds only rows sharing one
+item identifier, so if the residual lines have no exact normalised row at all, the collapse is unlikely
+to be what moved the automatic count — and the movement would instead belong to the two other mechanisms
+that shipped in the same commit, a lift of a scoring cap and a change of ranking key. If that holds, then
+this record's "two harnesses, one number, neither built from the other" corroboration was measuring a
+different mechanism from the one it was cited for, and that sentence falls with it.
+
+**The inference is well-formed and it crosses the population boundary just named**, which is why the test
+rather than the argument decides it: a four-cell run, collapse on and off against the cap lift on and
+off. Properties of the residual are suggestive about the movers and not probative, and a single number
+cannot attribute a three-part change no matter how many instruments reproduce it. The converse is filed
+too: if switching the collapse off materially lowers the automatic count, the duplicate mechanism is
+doing real work and the withdrawal above is at least partly premature.
+
+### A dependency in the export figure, flagged before it is discovered
+
+The export run confirmed suggested lines to their top-ranked candidate, standing in for a reviewer. Top
+rank is produced by the ranking key — one of the three mechanisms under dispute above. So if any
+confirmation in that run went to a line the matcher would not have ranked first before the ranking
+change, the 5-of-20 export figure inherits the disputed mechanism, and the figure is contingent on the
+dispute resolving rather than independent of it.
+
+This has not been checked. It is recorded now, unchecked, because the point of writing it down before the
+answer is that nobody later gets to discover it and call it a surprise.
