@@ -12,7 +12,7 @@ PACKAGE_JSON = ROOT / "public" / "source-package.json"
 FILES = ["README.md", "package.json", "package-lock.json", "tsconfig.json", "vite.config.ts",
          "playwright.config.ts", "index.html", "requirements.txt", "requirements.lock.txt",
          "Dockerfile", "compose.yaml", ".gitignore", ".dockerignore", ".env.preview",
-         ".env.example", "Start-InvoiceStudio.ps1"]
+         ".env.example", "Start-InvoiceStudio.ps1", "Start-InvoiceStudio.command", "start.sh"]
 DIRECTORIES = ["src", "backend", "tests", "scripts", "public/templates"]
 # docs/ is NOT packaged wholesale. Only documents a recipient installs or operates
 # from are shipped; measurement records of customer data and of our own process
@@ -88,7 +88,8 @@ def main() -> None:
         required = {f"invoice-studio/{name}" for name in [
             "public/THIRD_PARTY_NOTICES.txt", "backend/app.py", "backend/extraction.py",
             "src/App.tsx", "compose.yaml", "requirements.lock.txt", "docs/MAC_SETUP.md",
-            "docs/WINDOWS_SETUP.md",
+            "docs/WINDOWS_SETUP.md", "start.sh", "Start-InvoiceStudio.command",
+            "Start-InvoiceStudio.ps1",
         ]}
         if not required.issubset(names):
             raise SystemExit(f"Package missing required entries: {required - names}")

@@ -1,23 +1,143 @@
-# Local pilot release validation
+# Release validation: v1.0.0-rc1
 
-25 September 2026
+26 September 2026
 
-The downloadable application supports brand-specific master import, invoice capture, assisted item review, approval, a separate exception CSV, and consolidated Excel output. This record covers the tested local pilot, not universal invoice automation or receiving-system acceptance.
+Validated tree: `main` at `4bd33cc` plus the source-package fix in commit `3fda219` (`scripts/package_source.py` now ships `start.sh` and `Start-InvoiceStudio.command`; no application code changed). The packaged release is built from that tree by `python scripts/package_source.py`. This record is not shipped inside the package; it describes the package.
 
-## Verified release checks
+The downloadable application supports brand-specific master import, invoice capture, assisted item review, approval, a separate exception CSV, and consolidated Excel output. This record covers what was run on this tree with the public fixtures in `tests/fixtures`; it is not a universal accuracy claim and no real-corpus figure was produced in this run.
 
-- A clean source-only snapshot built successfully with the supplied Dockerfile. The image's six runtime modules matched the workspace files used for acceptance.
-- The Python suite ran inside that image against the clean snapshot: **84 passed, 1 skipped in 33.21 seconds**. The skipped test requires private master data; native OCR tests ran. One upstream Starlette deprecation warning remains.
-- Browser workflows passed **3 of 3 in 7.4 seconds**, including the live brand setup, master import, invoice upload, exception download, manual approval and XLSX download, plus sample and mobile workflows.
-- The downloaded live XLSX passed the exact three-sheet contract checker.
-- A separate private acceptance imported the supplied master with zero skips or warnings and validated reviewed aliases. Public tests cover a sparse 185-column workbook and 100,005-row catalog without private inputs.
-- Two original reference PDFs produced 20 lines with quantities and invoice net costs matching reviewed references. Twelve item mappings resolved automatically; eight replayed previously reviewed decisions. The assisted consolidated output contains 2 Header, 2 Tax_Breakdown and 20 Details rows.
-- UPC export defaults to blank. A false/true/false policy check changed exactly the 20 UPC cells, preserved the other workbook values, and restored the original bytes after disabling it again. Enabled UPC values are Excel text.
+Host for every check below: Linux x86_64, 8 CPUs, Docker Engine 29.7.2 with BuildKit 0.32.2 and binfmt for `linux/arm64`. The host was shared with other running containers; 1-minute load average was between 40 and 63 during the runs, so the durations are upper bounds, not throughput figures.
+
+## 1. Source package
+
+```
+$ python scripts/package_source.py
+Packaged 75 files: invoice-studio-source.zip (269,014 bytes)
+$ sha256sum invoice-studio-source.zip
+60c153aafe89f58f33555611d4dc1f74ac8139e9f54fc4543341cb6e8eaf4a8f  invoice-studio-source.zip
+```
+
+Checked in the archive listing: `start.sh` and `Start-InvoiceStudio.command` present with mode `-rwxr-xr-x`; `Start-InvoiceStudio.ps1` present; no entry matching `.sqlite`, `.db`, `.venv`, `/data/`, `.pdf`, `.xlsx`, `.runtime` or `task-context` (count 0); docs limited to the six shipped guides. The packager's identifier/capability scan passed on every packaged file.
+
+Before the fix, the same cold start failed from the unzipped folder:
+
+```
+$ ./start.sh --project-name invoice-launch-check --port 8061 --no-browser
+/bin/bash: line 1: ./start.sh: No such file or directory
+exit=127
+```
+
+## 2. Cold start from the zip (amd64, fresh Compose project)
+
+```
+$ sha256sum -c SHA256SUMS
+invoice-studio-source.zip: OK
+$ unzip -q invoice-studio-source.zip && cd invoice-studio
+$ ./start.sh --project-name invoice-launch-check --port 8061 --no-browser
+...
+ Container invoice-launch-check-invoice-review-1 Healthy
+Workspace: invoice-launch-check
+Open http://localhost:8061
+NAME                                    ... STATUS                   PORTS
+invoice-launch-check-invoice-review-1   ... Up 6 seconds (healthy)   127.0.0.1:8061->8000/tcp
+real 0m19.466s
+exit=0
+```
+
+The 19-second wall time is with Docker's layer cache warm from earlier builds of the same Dockerfile on this host (11 cached steps); a first build on a new machine downloads base images and packages and takes several minutes, as the start script says.
+
+API walkthrough against `http://127.0.0.1:8061`, all inputs public fixtures:
+
+| Step | Command | Result |
+| --- | --- | --- |
+| Health | `GET /api/health` | `status: ok`, `ocr_available: true`, `workers.configured: 4`, `workers.alive: 4` |
+| Brand settings | `PUT /api/settings` (location `0001`, type `S`, supplier rules for the two fixture suppliers with tax code `VAT5`) | HTTP 200, version 2 |
+| Item master | `POST /api/catalog/import` with `tests/fixtures/sample_catalog.json` transcribed to the CSV import columns | `imported: 3, skipped: 0, warnings: []` |
+| Upload | `POST /api/invoices/upload` with all 11 files under `tests/fixtures` (`sample_invoice.csv`, `sample_invoice.txt`, 9 files in `layouts/`) | 11 accepted, 0 duplicates, 0 rejected |
+| Drain | poll `GET /api/invoices` | queue empty after 2.1 s; 11 of 11 in `needs_review`; health after drain `status: ok`, `error_count: 0`, `respawns: 0` |
+| Approve (first pass) | `POST /api/invoices/{id}/approve` on all 11 | 11 × HTTP 422 with validation codes. The 9 layout fixtures report missing required fields, unmapped lines or a non-invoice document type, which is their purpose as extraction fixtures. The two sample invoices reject each other with `duplicate_supplier_invoice`: they are the same fictional invoice in CSV and text form. |
+| Duplicate resolution | `PUT /api/invoices/{txt id}` suffixing the invoice number with `-DUPLICATE-COPY` and a comment | HTTP 200 |
+| Approve | `POST /api/invoices/{csv id}/approve` | HTTP 200, `status: ready`; both lines auto-matched (`match_status: auto`, `target_cost_comparison_status: within_tolerance`) |
+| Export | `POST /api/exports` with the approved id | HTTP 200, 6,322-byte workbook, sha256 `96561fa8a0cd24ca5baaf6f09c100ae69d2a75fe0770273d1339ad27581878bf` |
+| Exceptions | `GET /api/reports/exceptions.csv` | HTTP 200, 11 data lines (one per unapproved or duplicate-marked upload) |
+| Stats | `GET /api/stats` | `total: 11, needs_review: 10, exported: 1, failed: 0, matched_lines: 4, total_lines: 17, catalog_items: 3` |
+
+Document classes in this run: text and CSV only (no PDF, no image, so no OCR path exercised). Upload count 11 equals distinct-document count 11 (two of them are the same invoice in two formats). Workers: 4 configured, 4 alive. Terminal state: 10 `needs_review`, 1 `exported`, 0 `failed`.
+
+Workbook contract check:
+
+```
+$ python scripts/check_target_workbook.py target.xlsx
+=== Workbook 1
+  note  1 invoice(s), 1 tax row(s), 2 detail line(s); 1 invoice(s) reconcile within 0.01
+  ==> CONFORMANT
+exit=0
+```
+
+Teardown:
+
+```
+$ docker compose --project-name invoice-launch-check down -v
+ Container invoice-launch-check-invoice-review-1 Removed
+ Volume invoice-launch-check_invoice-data Removed
+ Network invoice-launch-check_default Removed
+exit=0
+```
+
+## 3. Python suite inside the built image
+
+The image copies `backend/` only; `tests/` and `scripts/` are not in it, so `docker run --rm <image> python -m pytest backend/tests tests` exits 4 with `file or directory not found: tests`. The suite was therefore run on the image's interpreter and dependencies against a copy of the unzipped source:
+
+```
+$ docker run --rm -v $PWD:/src:ro invoice-launch-check-invoice-review \
+    sh -c 'cp -r /src /tmp/src && cd /tmp/src && python -m pytest -p no:cacheprovider backend/tests tests'
+FAILED backend/tests/test_backend.py::test_real_text_extraction_and_catalog_matching_flow_to_review
+1 failed, 156 passed, 1 skipped, 1 warning in 52.73s
+exit=1
+
+$ docker run --rm -v $PWD:/src:ro invoice-launch-check-invoice-review \
+    sh -c 'cp -r /src /tmp/src && cd /tmp/src && python -m pytest -p no:cacheprovider tests'
+140 passed, 1 skipped, 1 warning in 27.41s
+exit=0
+```
+
+The second command does not collect `backend/tests`, which is why it is green; the first command is the release check. The skipped test requires a private master and is skipped by design. The warning is the upstream Starlette test-client deprecation.
+
+**Known open defect (not fixed in this release):** `backend/tests/test_backend.py::test_real_text_extraction_and_catalog_matching_flow_to_review` is red on every tree including `main`. Ticket wording: line parser reads a size token as quantity. The test stays in the suite unchanged.
+
+## 4. arm64 image build under emulation
+
+```
+$ docker buildx build --platform linux/arm64 -t invoice-studio:arm64-check .
+#22 naming to docker.io/library/invoice-studio:arm64-check done
+real 6m10.974s
+exit=0
+$ docker image inspect invoice-studio:arm64-check --format '{{.Architecture}} {{.Os}}'
+arm64 linux
+$ docker run --rm --platform linux/arm64 invoice-studio:arm64-check python -c "import platform; print(platform.machine())"
+aarch64
+```
+
+This is a build check under QEMU emulation on an x86_64 host. It shows the Dockerfile and locked dependencies resolve for `linux/arm64`; it does not show the application running on a Mac.
+
+## 5. Windows helper parse check
+
+```
+$ docker run --rm -v $PWD/Start-InvoiceStudio.ps1:/s/Start-InvoiceStudio.ps1:ro mcr.microsoft.com/powershell \
+    pwsh -NoProfile -Command '[System.Management.Automation.Language.Parser]::ParseFile(...)'
+7.4.2
+parse errors: 0
+tokens: 297; param block present: True; parameters: ProjectName, Port, NoBuild, NoBrowser
+PSScriptAnalyzer: not available in the image; skipped (no network installs)
+exit=0
+```
+
+Installation and the helper's behaviour on a clean Windows computer remain unverified here; `docs/WINDOWS_SETUP.md` keeps the direct Compose commands as the canonical procedure.
 
 ## Scope limits
 
-The separate [179-file corpus evaluation](REAL_CORPUS_EVALUATION.md) completed 178 documents with one explicit extraction-limit failure. It produced candidate rows in 81 documents; 13 invoice candidates passed strict financial extraction checks. Those checks do not establish catalog matching or export readiness. OCR coverage remains limited, and unfamiliar layouts still need source comparison and correction.
+The separate [179-file corpus evaluation](REAL_CORPUS_EVALUATION.md) completed 178 documents with one explicit extraction-limit failure. It produced candidate rows in 81 documents; 13 invoice candidates passed strict financial extraction checks. Those checks do not establish catalog matching or export readiness. OCR coverage remains limited (`INVOICE_MAX_PAGES` is 50 in `compose.yaml`), and unfamiliar layouts still need source comparison and correction. Nothing in this run measures accuracy on real supplier documents.
 
 The current invoice-only pricing policy is conservative application behavior pending commercial signoff. RMS costs are comparison evidence and never silently replace invoice prices. No downstream import has been performed. The Windows instructions were reviewed and the container was tested on Linux; installation on a clean Windows computer remains unverified. Shared network deployment requires controls beyond the current loopback, single-operator pilot.
 
-See [implementation acceptance](IMPLEMENTATION_ACCEPTANCE.md) for the independent, bounded verdict, [Windows setup](WINDOWS_SETUP.md) for installation, and [operator training](OPERATOR_TRAINING.md) for daily use. Final repository commit and distribution hashes are recorded in the delivery receipt rather than embedded in the source they identify.
+See [implementation acceptance](IMPLEMENTATION_ACCEPTANCE.md) for the independent, bounded verdict, [Mac setup](MAC_SETUP.md) and [Windows setup](WINDOWS_SETUP.md) for installation, and [operator training](OPERATOR_TRAINING.md) for daily use. The release tag and distribution checksum are published on the GitHub release page rather than embedded in the source they identify.
