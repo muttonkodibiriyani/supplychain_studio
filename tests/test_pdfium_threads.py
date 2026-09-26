@@ -88,3 +88,61 @@ class ConcurrentRasterisationTests(unittest.TestCase):
         self.assertGreaterEqual(len(completed), 8 * self.ROUNDS, completed)
         self.assertTrue(all(count == 2 for count in completed), completed)
         self.assertEqual(dict(errors), {}, "concurrent PDFium use failed")
+
+
+class OcrBudgetMessageTests(unittest.TestCase):
+    """The per-page OCR timeout is ``min(per-page limit, remaining document
+    budget)``.  When the document budget clips it, a Tesseract timeout used to
+    read "OCR page exceeded its 0 second limit" (or "1 second limit"); the
+    number that ran out is the document budget and the message must say so."""
+
+    def _timeout_message(self, timeout: float, limits: ExtractionLimits) -> str:
+        from PIL import Image
+        import subprocess
+
+        image = Image.new("RGB", (40, 30), "white")
+        try:
+            with patch.object(
+                extraction.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(cmd="tesseract", timeout=timeout),
+            ):
+                with self.assertRaises(extraction.ExtractionLimitError) as raised:
+                    extraction._run_tesseract(
+                        image,
+                        timeout,
+                        limits.max_pixels_per_page,
+                        timeout_message=extraction._ocr_budget_message(timeout, limits),
+                    )
+        finally:
+            image.close()
+        return str(raised.exception)
+
+    def test_document_budget_clipping_the_page_is_reported_as_the_document_limit(self) -> None:
+        limits = ExtractionLimits(ocr_timeout_seconds_per_page=45.0, ocr_timeout_seconds_total=180.0)
+        for remaining in (0.2, 1.0, 44.9):
+            message = self._timeout_message(min(45.0, remaining), limits)
+            self.assertEqual(message, "OCR exceeded the 180 second document limit.", remaining)
+
+    def test_full_page_budget_is_still_reported_per_page(self) -> None:
+        limits = ExtractionLimits(ocr_timeout_seconds_per_page=45.0, ocr_timeout_seconds_total=180.0)
+        self.assertEqual(
+            self._timeout_message(45.0, limits), "OCR page exceeded its 45 second limit."
+        )
+
+    def test_default_message_without_a_budget_label_is_unchanged(self) -> None:
+        from PIL import Image
+        import subprocess
+
+        image = Image.new("RGB", (40, 30), "white")
+        try:
+            with patch.object(
+                extraction.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(cmd="tesseract", timeout=5),
+            ):
+                with self.assertRaises(extraction.ExtractionLimitError) as raised:
+                    extraction._run_tesseract(image, 5, 2_000_000)
+        finally:
+            image.close()
+        self.assertEqual(str(raised.exception), "OCR page exceeded its 5 second limit.")

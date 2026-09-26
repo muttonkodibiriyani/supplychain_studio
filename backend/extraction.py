@@ -725,6 +725,7 @@ def _ocr_pdf_pages(
                 # copy so nothing outside the lock touches PDFium memory.
                 image = bitmap.to_pil().copy()
             page_budget = min(limits.ocr_timeout_seconds_per_page, remaining)
+            budget_message = _ocr_budget_message(page_budget, limits)
             # Preserve the former OCR path and its full timeout first.  The
             # enhancement passes may use only time that remains; a slow
             # enhancement can never turn a formerly readable page into a
@@ -736,6 +737,7 @@ def _ocr_pdf_pages(
                 psm=6,
                 autocontrast=False,
                 dpi=round(72 * render_scale),
+                timeout_message=budget_message,
             )
             enhanced_text, enhanced_confidence = baseline_text, baseline_confidence
             page_remaining = page_budget - (time.monotonic() - page_started)
@@ -749,6 +751,7 @@ def _ocr_pdf_pages(
                         psm=4,
                         autocontrast=True,
                         dpi=round(72 * render_scale),
+                        timeout_message=budget_message,
                     )
                     enhancement_completed = True
                 except ExtractionLimitError:
@@ -770,6 +773,7 @@ def _ocr_pdf_pages(
                         psm=11,
                         autocontrast=True,
                         dpi=round(72 * render_scale),
+                        timeout_message=budget_message,
                     )
                 except ExtractionLimitError:
                     sparse_text = ""
@@ -868,12 +872,14 @@ def _extract_image(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
                     raise ExtractionLimitError(
                         f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit."
                     )
+                page_budget = min(limits.ocr_timeout_seconds_per_page, remaining)
                 text, confidence = _run_tesseract(
                     frame,
-                    min(limits.ocr_timeout_seconds_per_page, remaining),
+                    page_budget,
                     limits.max_pixels_per_page,
                     psm=4,
                     autocontrast=True,
+                    timeout_message=_ocr_budget_message(page_budget, limits),
                 )
                 page_evidence.append(
                     {
@@ -912,6 +918,21 @@ def _extract_image(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
     }
 
 
+def _ocr_budget_message(page_budget: float, limits: ExtractionLimits) -> str:
+    """Name the budget an OCR pass ran under.
+
+    A page runs under ``min(per-page limit, remaining document budget)``.  When
+    the document budget clips the page, the number that ran out is the
+    document limit; reporting the clipped remainder ("exceeded its 0 second
+    limit") is the 180 second document budget wearing another face.
+    """
+    if page_budget < limits.ocr_timeout_seconds_per_page:
+        return (
+            f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit."
+        )
+    return f"OCR page exceeded its {limits.ocr_timeout_seconds_per_page:.0f} second limit."
+
+
 def _run_tesseract(
     image: Any,
     timeout: float,
@@ -920,6 +941,7 @@ def _run_tesseract(
     psm: int = 6,
     autocontrast: bool = False,
     dpi: int | None = None,
+    timeout_message: str | None = None,
 ) -> tuple[str, float | None]:
     from PIL import ImageOps
 
@@ -971,7 +993,9 @@ def _run_tesseract(
                 timeout=max(1.0, timeout),
             )
         except subprocess.TimeoutExpired as exc:
-            raise ExtractionLimitError(f"OCR page exceeded its {timeout:.0f} second limit.") from exc
+            raise ExtractionLimitError(
+                timeout_message or f"OCR page exceeded its {timeout:.0f} second limit."
+            ) from exc
         if completed.returncode != 0:
             detail = (completed.stderr or "unknown Tesseract error").strip().replace("\n", " ")[:500]
             raise DocumentExtractionError(f"Tesseract OCR failed: {detail}")
