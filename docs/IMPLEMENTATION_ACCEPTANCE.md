@@ -1647,3 +1647,40 @@ already ready or exported, and export has never executed. Its zero therefore can
 is touchless" from "nothing has been approved yet". Until the gate of record runs, it is reported as not
 evaluable with that reason, or against a denominator restricted to invoices that reached approval, and
 the same test applies to the cycle-time metric at n=0.
+
+## The OCR class reads no line items from most documents it accepts
+
+The yield criterion was added on suspicion and answered on its first use. On the OCR class, on the
+locked lineage, at eight workers: of 50 distinct documents, 36 yield **zero product lines** — 34 of the
+48 that reach a review state, plus the 2 that fail. The 100 product lines come from 14 documents, and one
+document supplies 34 of them. The per-document distribution is min 0, median 0, mean 2.08, max 34.
+
+Every zero-yield document carries a lines-required reason, so none is silent and none is dropped, which
+is the flag-for-recheck behaviour the requester specified. But flagged is not converted. Under the
+criteria as first written, 34 documents from which nothing was read would have counted as converted,
+because they reached a terminal state with an explicit reason and the criteria asked for nothing more.
+This is the same defect class as everything else in this record — a mechanism that cannot do its job
+returning a normal-looking result — arriving this time in the acceptance criteria themselves rather than
+in the code.
+
+**What is not yet known, and it decides both the owner and the difficulty.** Two readings fit the
+evidence and they have opposite consequences, so both are registered before the measurement rather than
+argued after it. If the OCR text is substantial and header fields are present, then optical recognition
+works and the line-table parser cannot read OCR-class layout: a bounded extraction defect, and the
+highest-value fix available. If the OCR text is near-empty, then recognition itself produces nothing, and
+a document that could not be read is being reported as a document that was read and found empty — a
+second defect, in the reporting, on top of the first. Those are different statements to the person
+holding the invoice. Supplier names being recovered on 2 of 50 documents makes the second reading the
+one to expect.
+
+**A timing figure that must not travel alone.** Fifty documents reached terminal state 354 seconds after
+the first upload, at a mean load well above the rule. That is not fifty invoices converted in six
+minutes. Two thirds of those documents produced no line items, so the run largely performed the cheap
+part of the work and skipped the expensive part; the figure is a **lower** bound on a real conversion of
+fifty documents, not an estimate of one. Wall time is reported beside yield in this record, never alone.
+
+**Consequence for what may be claimed.** Conversion is class-dependent and no blended figure across the
+two classes is admissible, because averaging a working path with a non-working one describes neither. For
+text-layer PDFs the system extracts and matches line items. For scans and photographs it currently reads
+no line items from most documents and flags them for manual entry. Any per-document success rate in this
+programme carries its class or it carries nothing.
