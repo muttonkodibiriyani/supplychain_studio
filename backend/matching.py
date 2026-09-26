@@ -260,13 +260,7 @@ def match_lines(
                         "rms_po_number": selected.get("master_po_number"),
                         "unit_status": unit["status"],
                         "unit_reason": unit["reason"],
-                        "match_status": "confirmed",
-                        "confidence": 100.0,
-                        "candidates": [_public_candidate({
-                            **selected,
-                            "score": 100.0,
-                            "reason": "Supplied catalog row validated against the eligible supplier catalog.",
-                        })],
+                        **_revalidation_decision(line, selected),
                     }
                 )
                 output.append(line)
@@ -1231,6 +1225,51 @@ def _cost_currency_of(row: Mapping[str, Any] | None) -> str | None:
     if value in (None, ""):
         value = row.get("rms_cost_currency")
     return value if value not in (None, "") else None
+
+
+def _revalidation_decision(line: Mapping[str, Any], selected: Mapping[str, Any]) -> dict[str, Any]:
+    """Decide the status of a line whose supplied catalog row was found again.
+
+    Revalidating a row is not a decision about who chose it.  A line that
+    arrives as ``auto`` is a machine selection (for example a stored auto line
+    sent back through ``rematch``): it stays ``auto`` and keeps its original
+    ``confidence`` byte for byte, with its stored candidates when it has any.
+    Only a line that arrives as a human decision (``confirmed``, written by an
+    edit the audit trail records) or as a bare supplied identifier with no
+    status (an integration asserting the row) is confirmed at 100.0.
+    """
+
+    if str(line.get("match_status") or "") == "auto":
+        preserved = line.get("confidence")
+        stored = line.get("candidates")
+        if isinstance(stored, list) and stored:
+            candidates = [dict(candidate) for candidate in stored]
+        else:
+            candidates = [
+                _public_candidate(
+                    {
+                        **selected,
+                        "score": preserved,
+                        "reason": "Machine selection revalidated against the eligible "
+                        "supplier catalog; original score preserved.",
+                    }
+                )
+            ]
+        return {"match_status": "auto", "confidence": preserved, "candidates": candidates}
+    return {
+        "match_status": "confirmed",
+        "confidence": 100.0,
+        "candidates": [
+            _public_candidate(
+                {
+                    **selected,
+                    "score": 100.0,
+                    "reason": "Supplied catalog row validated against the eligible supplier catalog.",
+                }
+            )
+        ],
+    }
+
 
 def _public_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
     result = {
