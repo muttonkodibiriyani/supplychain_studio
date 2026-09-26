@@ -2231,6 +2231,9 @@ Three failures compounded, and the order matters:
 **Rule 8: withdraw what was refuted, and say whether the claim is now unsupported or false.**
 **Rule 9: a correction gets the same scrutiny as a claim, including the population check, especially when
 it is against yourself.**
+**Rule 10: two instruments that read the same untested input do not corroborate each other about that
+input — they inherit it.** Before citing a reproduced number, ask which claim it is evidence *for*. If both
+competing hypotheses predict the same number, the number is not weak evidence for either; it is none.
 
 One thing stays retired, and not because of this: the assertion that no forecast of the automatic-match
 rate survives was never resting on the duplicate finding. The 92 lines with no exact master row at all
@@ -2239,6 +2242,36 @@ describes what blocked 115 lines. It was never a forecast, and it is not one now
 
 The ranking key, the third mechanism in that commit, could not be isolated by patching and was not faked.
 It remains unmeasured, so the export figure's dependency on it stays open.
+
+## The cost-comparison count survives reproduction and still proves nothing about prices
+
+The comparison stage's above-tolerance count has now been produced by a second instrument and agrees with
+the first. That agreement tests one thing: that the stage computes what its code says it computes. It is an
+arithmetic check. It cannot reach the semantics, because both instruments read the same master cost column
+and neither asks what that column is denominated in — the shared, untested input. Rule 10.
+
+The count's predicate is "a master cost existed and the absolute per-unit difference exceeded the
+tolerance". That is equally true under the currency-basis reading and under a genuine-price-variance
+reading. **A number both hypotheses predict cannot be cited in favour of either**, so the reproduction
+leaves the interpretation exactly where the withdrawal left it: unsupported, not false.
+
+**What the stage's own history shows is worse than an ambiguous count.** Before the rematch, the comparison
+status was *unavailable, no match* on 336 lines and *within tolerance* on 21, with **zero** above tolerance
+— and the 336 were exactly the union of the low-confidence and unmapped line sets. The pricing field was a
+re-encoding of "not matched" wearing a pricing name: a fourth instance of the silent-failure class, where a
+control reports a benign value because it is measuring something other than what its label says. After the
+rematch the three states sum to the machine-decided line count, which is the first point at which the field
+carries pricing information at all.
+
+**The single discriminating evidence stays labelled as such.** Only the ratio structure separates the two
+readings — two clusters about an order of magnitude apart, clustering by item family — and that remains
+**one instrument, nothing in flight**. It is recorded here at that strength and no stronger.
+
+**For a reviewer asked to sign off on the count:** ask which claim it is evidence for. "The stage computes
+the comparison correctly" is supported, and a sign-off should say only that. "There are that many price
+variances" is not supported, and the gap to name is that no code path tests the currency of the master cost
+column against the invoice's. That question is answerable from the code and requires no position on any
+withdrawal.
 
 ## The mechanism that makes lines touchless also picks their barcode arbitrarily
 
