@@ -32,6 +32,7 @@ GOVERNED = {
     "line_unmapped",
     "line_low_confidence",
     "unit_unconfirmed",
+    "rms_cost_missing",
     "price_above_tolerance",
     "adjustment_unpaired",
     "currency_basis_mismatch",
@@ -484,3 +485,101 @@ def test_k1_and_k3_are_not_evaluable_before_any_approval(tmp_path: Path) -> None
     assert kpis["k3_cycle_time"]["not_evaluable_reason"]
     # K2 is evaluable as soon as extraction has completed; it needs no approval.
     assert kpis["k2_first_time_match"]["denominator"] == 2
+
+
+# --- a matched line with no master cost to compare against -------------------
+
+
+def _approval_settings(service: InvoiceService) -> None:
+    service.update_settings(
+        1,
+        {
+            "brand_label": "Synthetic test brand",
+            "location": "00001",
+            "location_type": "Store (S)",
+            "supplier_rules": [
+                {"supplier_id": "SUP-TXT", "supplier_site": "00009", "tax_code": "TEST05"}
+            ],
+            "target_cost_policy": {"mode": "invoice_only", "maximum_absolute_difference_aed": 10},
+        },
+    )
+
+
+def _catalog(master_cost: str) -> bytes:
+    return (
+        "rms_item_id,description,supplier_id,uom,unit_cost\n"
+        f"RMS-TXT-1,Fictional Widget Blue,SUP-TXT,EA,{master_cost}\n"
+    ).encode()
+
+
+def _auto_match_invoice(ref: str) -> bytes:
+    """Like ``text_invoice`` but with a line the frozen extractor keeps whole
+    (no size token), so the matcher can reach an automatic match."""
+    return (
+        "TAX INVOICE\n"
+        "Supplier name: Fictional Text Supplier\n"
+        "Supplier ID: SUP-TXT\n"
+        "Invoice number: TXT-INV-9\n"
+        "Invoice date: 2026-09-24\n"
+        "Currency: AED\n"
+        f"Reference: {ref}\n\n"
+        "Item Description Qty UOM Unit Price Amount\n"
+        "Fictional Widget Blue 2 EA 10.00 20.00\n\n"
+        "Subtotal 20.00\n"
+        "Tax 1.00\n"
+        "Total 21.00\n"
+    ).encode()
+
+
+@pytest.mark.parametrize("master_cost", ["", "0"], ids=["null_cost", "zero_cost"])
+def test_matched_line_with_no_master_cost_cannot_be_approved(tmp_path: Path, master_cost: str) -> None:
+    """An automatically matched line carries no matching flag.  If its master
+    row has no cost to compare against it carries no comparison flag either,
+    so without an owner it would be approved with no cost check ever made.
+    Both fictional master rows (cost NULL, cost 0) must be refused, with and
+    without the cost-review acknowledgement, and the block must lift once the
+    master supplies a cost and the invoice is rematched."""
+    service = make_service(tmp_path)
+    _approval_settings(service)
+    service.import_catalog("catalog.csv", _catalog(master_cost))
+    invoice_id = process(service, "no-cost.txt", _auto_match_invoice("no-cost"))
+    invoice = service.get_invoice(invoice_id)
+    (line,) = invoice["lines"]
+    assert line["match_status"] == "auto" and line["rms_item_id"] == "RMS-TXT-1"
+    assert line["target_cost_comparison_status"] == "unavailable_rms_cost"
+    assert rc.comparison_state(line) == "unavailable"
+    assert line["reason_codes"] == ["rms_cost_missing"]
+    assert "rms_cost_missing" in invoice["reason_codes"]
+    assert "item_master_owner" in invoice["reason_owners"]
+    assert rc.REGISTRY["rms_cost_missing"].owner == "item_master_owner"
+    assert "no master cost to compare against" in rc.REGISTRY["rms_cost_missing"].message
+    assert "variance" not in rc.REGISTRY["rms_cost_missing"].message
+
+    classified = service.update_invoice(invoice_id, invoice["version"], {"document_type": "invoice"})
+    for acknowledge in (False, True):
+        with pytest.raises(ValidationFailure) as refused:
+            service.approve(
+                invoice_id, classified["version"], acknowledge_target_cost_variance=acknowledge
+            )
+        assert {e["code"] for e in refused.value.errors} >= {"rms_cost_missing"}, acknowledge
+    assert service.get_invoice(invoice_id)["status"] == "needs_review"
+
+    report = service.create_exception_report()
+    rows = {r["Invoice ID"]: r for r in csv.DictReader(io.StringIO(report["content"].decode("utf-8-sig")))}
+    assert "rms_cost_missing" in rows[invoice_id]["Reason Codes"].split(" | ")
+    assert "item_master_owner" in rows[invoice_id]["Owner Roles"].split(" | ")
+    queue = service.exception_queue()
+    group = next(g for g in queue["groups"] if g["code"] == "rms_cost_missing")
+    assert group["owner"] == "item_master_owner" and group["count"] == 1
+
+    # The condition can be met: the item master supplies the cost, the
+    # invoice is rematched, and the comparison is made.
+    service.import_catalog("catalog.csv", _catalog("10.00"))
+    current = service.get_invoice(invoice_id)
+    rematched = service.rematch(invoice_id, current["version"])
+    (line,) = rematched["lines"]
+    assert line["rms_item_id"] == "RMS-TXT-1"
+    assert line["target_cost_comparison_status"] == "within_tolerance"
+    assert "rms_cost_missing" not in rematched["reason_codes"]
+    approved = service.approve(invoice_id, rematched["version"])
+    assert approved["status"] == "ready"

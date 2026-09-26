@@ -270,6 +270,16 @@ def _decimal(value: Any) -> Decimal | None:
     return number
 
 
+def _rms_cost_usable(value: Decimal | None) -> bool:
+    """The ONE rule for whether a master unit cost can be compared against.
+
+    Used by the per-line comparison (``_prepare_lines``) and by the approval
+    gate (``_validation_errors``) so the two cannot drift: a missing, zero or
+    token cost is "no master cost to compare against" in both places.
+    """
+    return value is not None and value > Decimal("0.01")
+
+
 def _decimal_text(value: Any) -> str | None:
     number = _decimal(value)
     return None if number is None else format(number, "f")
@@ -2048,7 +2058,7 @@ class InvoiceService:
                 and rms_cost_max is not None
                 and rms_cost_max > rms_cost_min
             )
-            rms_usable = rms_unit_cost is not None and rms_unit_cost > Decimal("0.01")
+            rms_usable = _rms_cost_usable(rms_unit_cost)
             target_unit_cost = invoice_unit_cost
             target_source = "invoice"
             comparison_currency_available = invoice_currency in currency_scope
@@ -3104,6 +3114,23 @@ class InvoiceService:
                     )
                     if unit["block"]:
                         error(f"{prefix}.uom", "unit_unconfirmed", unit["reason"])
+                    # Master cost at approval, recomputed from the catalog row
+                    # with the comparison's own predicate: a matched line whose
+                    # master row has no cost to compare against carries no
+                    # comparison flag, so without this gate it would be
+                    # approved with no cost check ever made.  Owned by the
+                    # item master; the cost-review acknowledgement below does
+                    # not clear it.
+                    try:
+                        master_cost = _decimal(catalog_item["unit_cost"])
+                    except (InvalidOperation, ValueError, TypeError):
+                        master_cost = None
+                    if not _rms_cost_usable(master_cost):
+                        error(
+                            f"{prefix}.rms_unit_cost",
+                            "rms_cost_missing",
+                            "matched RMS item has no master cost to compare against; supply the master cost, then rematch",
+                        )
             try:
                 target_unit_cost = _decimal(line.get("target_unit_cost"))
             except (InvalidOperation, ValueError, TypeError):

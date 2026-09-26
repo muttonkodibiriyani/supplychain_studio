@@ -12,6 +12,7 @@ export const REASON_CODES:ReasonCodeEntry[]=[
  {code:'line_unmapped',owner:'item_master_owner',message:'a line has no RMS item; resolve it against the item master',level:'line'},
  {code:'line_low_confidence',owner:'brand_reviewer',message:'a line has a suggested RMS item that needs confirmation against the source',level:'line'},
  {code:'unit_unconfirmed',owner:'brand_reviewer',message:'unit of measure disagrees with the RMS item or could not be established',level:'line'},
+ {code:'rms_cost_missing',owner:'item_master_owner',message:'line is matched to an RMS item that has no master cost to compare against (unit cost missing or zero); supply the master cost, then rematch; the cost-review acknowledgement does not clear this',level:'line'},
  {code:'price_above_tolerance',owner:'brand_reviewer',message:'invoice cost differs from the RMS reference beyond tolerance',level:'line'},
  {code:'adjustment_unpaired',owner:'brand_reviewer',message:'a discount, credit or other adjustment row has no RMS item; keep it, pair it with the product lines it adjusts at review, never drop it',level:'line'},
  {code:'currency_basis_mismatch',owner:'finance_owner',message:'invoice currency basis differs from the comparison basis (reserved for the currency unit)',level:'invoice'},

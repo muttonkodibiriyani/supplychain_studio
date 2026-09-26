@@ -78,6 +78,12 @@ REASON_CODES: tuple[ReasonCode, ...] = (
         "line",
     ),
     ReasonCode(
+        "rms_cost_missing",
+        "item_master_owner",
+        "line is matched to an RMS item that has no master cost to compare against (unit cost missing or zero); supply the master cost, then rematch; the cost-review acknowledgement does not clear this",
+        "line",
+    ),
+    ReasonCode(
         "price_above_tolerance",
         "brand_reviewer",
         "invoice cost differs from the RMS reference beyond tolerance",
@@ -117,11 +123,14 @@ REASON_CODES: tuple[ReasonCode, ...] = (
 
 REGISTRY: dict[str, ReasonCode] = {entry.code: entry for entry in REASON_CODES}
 
-# A line whose RMS cost comparison could not be made is a STATE, not an
-# exception: nobody can act on the comparison until the line is matched, and
-# the line already carries the code for that (line_unmapped or
-# line_low_confidence).  ``comparison_state`` names the state so the API and
-# the workbench can show it beside the codes without assigning an owner.
+# A line whose RMS cost comparison could not be made because the line is not
+# matched yet is a STATE, not an exception: nobody can act on the comparison
+# until the line is matched, and the line already carries the code for that
+# (line_unmapped or line_low_confidence).  ``comparison_state`` names the
+# state so the API and the workbench can show it beside the codes without
+# assigning an owner.  The one unavailable case that IS owned is a matched
+# line whose master row has no cost to compare against: the service emits
+# ``rms_cost_missing`` for it (item_master_owner) and approval stays blocked.
 COMPARISON_STATES = ("above_tolerance", "within_tolerance", "unavailable")
 
 # Non-product rows are recognised by generic adjustment vocabulary only; no
@@ -167,6 +176,7 @@ VALIDATION_CODE_MAP: dict[str, str] = {
     "catalog_item_mismatch": "line_unmapped",
     "supplier_item_mismatch": "line_unmapped",
     "unit_unconfirmed": "unit_unconfirmed",
+    "rms_cost_missing": "rms_cost_missing",
     # Expanded per line by ``reason_codes_for_error``; the single-code form is
     # the gate's own name.  Lines whose comparison is unavailable add no code.
     "target_cost_review_required": "price_above_tolerance",
