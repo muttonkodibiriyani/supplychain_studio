@@ -1454,3 +1454,48 @@ that written requirement and about 2.4 times what was measured. Both readings ar
 and neither is quoted without the other. Which target governs the launch is a decision for the
 programme owner, not one this document takes. No projection is made to a dedicated machine: that
 requires a run on such a machine, and none has been performed.
+
+## The volume requirement was reduced by the requester, and the gate changes with it
+
+The delivery was originally asked for one thousand invoices converted in twenty to thirty minutes, and
+the programme design document separately sets ten thousand per day. **Neither is now the operating
+requirement.** The requester has since specified a batch of fifty to two hundred documents, with fifty
+acceptable, and no time figure. Both earlier numbers stay recorded as stated targets; neither is the
+launch gate. This section records the change so that a later reader does not measure the delivery
+against a requirement its owner withdrew, and does not read the withdrawal as the delivery lowering
+its own bar.
+
+**At the requested size the throughput question is effectively closed.** Prefix timings from the
+thousand-document run on the locked build give fifty documents in 4 minutes 22 seconds, one hundred in
+9 minutes 27 seconds, and two hundred in 16 minutes 18 seconds. Every one of those is an **upper
+bound** rather than a measurement, because those documents were processed while the remainder of the
+thousand was still arriving and competing for the same workers; a standalone batch can only be faster.
+They are OCR-class, on a shared host, and the text class is unmeasured at these sizes.
+
+**The launch gate is fifty distinct documents, and distinctness is the point.** The corpus holds fifty
+distinct source documents and the requester's minimum batch is fifty, so the two coincide exactly. A
+two-hundred-document batch assembled from the same fifty sources at four copies each measures
+throughput and adds nothing about conversion, so any such figure is labelled as copies rather than as
+invoices. The gate is:
+1. every document reaches a terminal state, and each is **either** exported into the consolidated
+   workbook **or** flagged with a reason code naming what is missing — nothing silently dropped,
+   silently partial, or exported wrong;
+2. the workbook satisfies the three-sheet contract, every detail and tax row links to a header
+   transaction, and line totals reconcile to the stated subtotal on every exported invoice — producing
+   a workbook is not the criterion, producing a reconciling one is;
+3. no failure carries a class outside those already characterised — a novel reason is a stop, not a
+   pass, notwithstanding that it is explicit;
+4. wall time is reported with its full scope and is **not** gated, because no time figure was given.
+
+**Two expected failures at this batch size, stated in advance.** One source fails deterministically on
+the page-size ceiling and one intermittently on the OCR time budget, so a fifty-document batch
+containing them shows about two failures. That is characterised behaviour, not a regression, and it is
+written here before the run so the first launch result is not misread by whoever sees it first.
+
+**The flagged share is reported and not gated, and that is the specification rather than a
+concession.** The delivery was asked to solve what it can and flag the rest for recheck. On present
+measurements the flagged share will be large: the touchless count is zero of twenty real uploads, and
+the corpus evaluation put thirteen of one hundred and seventy-nine documents through the strict
+financial gate. A large flagged share with correct reasons is the system behaving as asked; a single
+wrongly exported invoice is not. The gate above is written to separate those two outcomes, which a gate
+resting on terminal states alone cannot do.
