@@ -1,5 +1,7 @@
 """Prevent private-data formats and credentials from entering source releases."""
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -243,6 +245,22 @@ def test_ci_workflow_and_pre_push_hook_run_the_check_only_entry():
     assert 'pull_request' in workflow and 'push' in workflow
     assert 'scripts/package_source.py --check-only' in hook.read_text()
     assert hook.stat().st_mode & 0o111, 'pre-push must be executable'
+    if shutil.which('git') is not None and (root / '.git').exists():
+        # git skips a hook that is not executable, silently; the index mode is what a clone gets.
+        listing = subprocess.run(['git', '-C', str(root), 'ls-files', '-s', '.githooks/pre-push'],
+                                 capture_output=True, text=True, check=True).stdout
+        assert listing.startswith('100755 '), listing
+
+
+def test_both_launchers_install_the_pre_push_hook_in_clones_only():
+    """Tripwire only: the acceptance evidence is a fresh-clone push refusal (docs/RELEASE_VALIDATION.md)."""
+    root = package_source.ROOT
+    for name in ['start.sh', 'Start-InvoiceStudio.ps1']:
+        text = (root / name).read_text()
+        assert 'core.hooksPath .githooks' in text, name
+        assert '.git' in text and 'core.hooksPath' in text.split('docker')[0], f'{name}: hook install must precede the Docker checks'
+    assert '-d .git' in (root / 'start.sh').read_text()
+    assert "Join-Path $PSScriptRoot '.git'" in (root / 'Start-InvoiceStudio.ps1').read_text()
 
 
 def test_whole_tree_guard_on_this_repository_is_clean():

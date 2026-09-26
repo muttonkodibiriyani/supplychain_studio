@@ -1,9 +1,17 @@
 #!/usr/bin/env sh
 # Whole-tree private-pattern guard before anything leaves this machine.
-# Enable once per clone:  git config core.hooksPath .githooks
+# Installed by start.sh / Start-InvoiceStudio.ps1 on first run from a clone, or
+# by hand once per clone:  git config core.hooksPath .githooks
 # Limit: local and bypassable (git push --no-verify); the CI workflow is the
 # authoritative check but runs after the push has already published.
 set -e
 cd "$(git rev-parse --show-toplevel)"
-if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=python3; fi
+if [ -x .venv/bin/python ]; then PY=.venv/bin/python
+elif [ -x .venv/Scripts/python.exe ]; then PY=.venv/Scripts/python.exe
+elif command -v python3 >/dev/null 2>&1; then PY=python3
+elif command -v python >/dev/null 2>&1; then PY=python
+else
+    echo "pre-push privacy guard: no Python interpreter found. Install python3 (3.11 or newer) or create the project venv (.venv), then push again. The push was refused." >&2
+    exit 1
+fi
 exec "$PY" scripts/package_source.py --check-only

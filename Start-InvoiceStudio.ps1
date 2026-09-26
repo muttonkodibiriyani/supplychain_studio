@@ -10,6 +10,18 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Development clones only: point git at the in-repo pre-push privacy guard so a
+# push from this clone runs scripts/package_source.py --check-only. Git never
+# installs hooks on clone, so this is done here, on the first start. Idempotent,
+# silent when already set, skipped in an unpacked source package (no .git).
+if ((Test-Path -LiteralPath (Join-Path $PSScriptRoot '.git') -PathType Container) -and (Get-Command git -ErrorAction SilentlyContinue)) {
+    $hooksPath = & git -C $PSScriptRoot config --get core.hooksPath 2>$null
+    if ($hooksPath -ne '.githooks') {
+        & git -C $PSScriptRoot config core.hooksPath .githooks
+        Write-Host 'Installed the pre-push privacy guard for this clone (git config core.hooksPath .githooks).'
+    }
+}
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw 'Docker was not found. Follow docs/WINDOWS_SETUP.md, install Docker Desktop, then reopen PowerShell.'
 }
