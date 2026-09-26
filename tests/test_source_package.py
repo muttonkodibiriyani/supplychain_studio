@@ -242,7 +242,8 @@ def test_ci_workflow_and_pre_push_hook_run_the_check_only_entry():
     assert present, 'privacy-guard.yml missing from both .github/workflows/ and .github/workflows.pending/'
     workflow = present[0].read_text()
     hook = root / '.githooks/pre-push'
-    assert 'scripts/package_source.py --check-only' in workflow
+    assert 'scripts/package_source.py --check-only --range' in workflow
+    assert 'fetch-depth: 0' in workflow, 'the range scan needs history, not a depth-1 checkout'
     assert 'pull_request' in workflow and 'push' in workflow
     assert 'scripts/package_source.py --pre-push' in hook.read_text()
     assert hook.stat().st_mode & 0o111, 'pre-push must be executable'
@@ -405,14 +406,14 @@ def test_push_range_scan_covers_a_file_added_then_deleted_and_a_new_branch(tmp_p
     _git(clone, 'rm', '-q', 'notes.txt')
     _git(clone, 'commit', '-q', '-m', 'remove notes again')
     tip = _git(clone, 'rev-parse', 'HEAD').stdout.strip()
-    commits = package_source.commits_in_push(clone, tip, baseline)
-    assert len(commits) == 2
+    commits, all_history = package_source.commits_in_push(clone, tip, baseline)
+    assert len(commits) == 2 and not all_history
     blobs = package_source.blobs_introduced(clone, commits)
     assert [path for _sha, path, _commit in blobs] == ['notes.txt']
-    assert package_source.scan_blobs(clone, blobs) and 'notes.txt' in package_source.scan_blobs(clone, blobs)[0]
+    assert [path for path, _commit in package_source.scan_blobs(clone, blobs)] == ['notes.txt']
     # New branch (remote sha all zeros): only what origin lacks is scanned, and a delete line is skipped.
     zeros = '0' * 40
-    assert package_source.commits_in_push(clone, tip, zeros) == commits
+    assert package_source.commits_in_push(clone, tip, zeros) == (commits, False)
     with pytest.raises(SystemExit) as error:
         package_source.validate_push(clone, [f'refs/heads/feature {tip} refs/heads/feature {zeros}'])
     assert 'notes.txt' in str(error.value) and 'example-user' not in str(error.value)
@@ -420,9 +421,78 @@ def test_push_range_scan_covers_a_file_added_then_deleted_and_a_new_branch(tmp_p
     assert package_source.validate_push(clone, [f'refs/heads/main {baseline} refs/heads/main {baseline}']) == (0, 0)
 
 
+def test_refusal_names_commit_file_and_remedy_for_a_new_commit(tmp_path):
+    """E3: an unexplained refusal ends with someone unsetting the hook; name what to do instead."""
+    origin, clone = _clone_with_bare_origin(tmp_path)
+    _git(clone, 'config', 'core.hooksPath', '.githooks')
+    _plant_and_commit(clone)
+    marker_commit = _git(clone, 'rev-parse', 'HEAD').stdout.strip()
+    result = _git(clone, 'push', 'origin', 'main', check=False)
+    assert result.returncode != 0
+    assert f'commit {marker_commit[:12]} introduces notes.txt' in result.stderr
+    assert f'git rebase -i {marker_commit[:12]}~1' in result.stderr
+    assert 'deleting the file in a later commit does not remove it from the push' in result.stderr
+    assert 'do not bypass the hook' in result.stderr
+    assert 'example-user' not in result.stderr
+
+
+def test_refusal_names_history_already_published_and_the_owner_remedy(tmp_path):
+    """E3, all-history case: a hit in a commit a remote already has is history to rewrite, not a new commit."""
+    origin, clone = _clone_with_bare_origin(tmp_path)
+    _plant_and_commit(clone)
+    marker_commit = _git(clone, 'rev-parse', 'HEAD').stdout.strip()
+    _git(clone, 'push', '-q', 'origin', 'main')  # hook not installed: the marker reaches origin
+    _git(clone, 'rm', '-q', 'notes.txt')
+    _git(clone, 'commit', '-q', '-m', 'remove notes again')
+    # Push the whole history to a second, empty remote: the new-branch scan reaches every commit.
+    empty = tmp_path / 'empty.git'
+    subprocess.run(['git', 'init', '-q', '--bare', '-b', 'main', str(empty)], check=True, env=_git_env())
+    _git(clone, 'remote', 'add', 'mirror', str(empty))
+    _git(clone, 'config', 'core.hooksPath', '.githooks')
+    result = _git(clone, 'push', 'mirror', 'main', check=False)
+    assert result.returncode != 0
+    assert (f'the history of this repository carries previously removed content at {marker_commit[:12]} '
+            '(notes.txt): the repository owner must rewrite history before this push; do not bypass the hook'
+            ) in result.stderr
+    assert 'example-user' not in result.stderr
+
+
+def test_check_only_on_the_a2_tree_fails_exactly_as_the_push_does(tmp_path):
+    """E4: --check-only reads the same ref pair as the push path, so it is a true pre-flight."""
+    origin, clone = _clone_with_bare_origin(tmp_path)
+    _git(clone, 'config', 'core.hooksPath', '.githooks')
+    _plant_and_commit(clone)
+    _git(clone, 'rm', '-q', 'notes.txt')
+    _git(clone, 'commit', '-q', '-m', 'remove notes again')
+    package_source.validate_repository(clone)  # the tree alone is clean
+    with pytest.raises(SystemExit) as pre_flight:
+        package_source.check_only(clone)
+    push = _git(clone, 'push', 'origin', 'main', check=False)
+    assert push.returncode != 0
+    assert str(pre_flight.value) in push.stderr, (str(pre_flight.value), push.stderr)
+    assert 'notes.txt' in str(pre_flight.value) and 'example-user' not in str(pre_flight.value)
+    # The same pair given explicitly (what CI passes) refuses the same way.
+    baseline = _git(origin, 'rev-parse', 'main').stdout.strip()
+    with pytest.raises(SystemExit) as explicit:
+        package_source.check_only(clone, f'{baseline}..HEAD')
+    assert str(explicit.value) == str(pre_flight.value)
+
+
+def test_check_only_passes_once_the_branch_is_pushed_and_says_so_outside_a_checkout(tmp_path, capsys):
+    origin, clone = _clone_with_bare_origin(tmp_path)
+    assert package_source.check_only(clone) == 0
+    out = capsys.readouterr().out
+    assert 'pre-flight' in out and '0 distinct commits' in out
+    plain = tmp_path / 'unpacked'
+    plain.mkdir()
+    (plain / 'README.md').write_text('clean\n')
+    assert package_source.check_only(plain) == 0
+    assert 'Push range not covered: not inside a git checkout' in capsys.readouterr().out
+
+
 def test_push_range_scan_refuses_on_any_git_error(tmp_path):
     origin, clone = _clone_with_bare_origin(tmp_path)
     tip = _git(clone, 'rev-parse', 'HEAD').stdout.strip()
     with pytest.raises(SystemExit) as error:
         package_source.validate_push(clone, [f'refs/heads/main {tip} refs/heads/main {"f" * 40}'])
-    assert 'refused' in str(error.value)
+    assert 'refused the push' in str(error.value) and 'do not bypass the hook' in str(error.value)
