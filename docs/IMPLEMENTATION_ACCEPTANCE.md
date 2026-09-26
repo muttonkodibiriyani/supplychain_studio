@@ -1563,3 +1563,37 @@ quantity-times-price identity holds on all 289 real lines, so the real documents
 A fixture exercising a branch real data never reaches is worth exactly what it measures, and the
 converse — that this defect would silently multiply a delivered quantity if a real document ever did
 take the path — is why it is recorded rather than closed.
+
+## Two stages have never executed, and a cross-check that validates the duplicate-row finding
+
+**An independent reconciliation.** The duplicate-row finding above rests on one instrument, which is a
+reason to distrust it. It reconciles exactly with a figure derived by a different worker on a different
+harness: 141 automatic lines measured here, plus the 21 lines the corpus already carried as confirmed,
+is 162, and 162 is the automatic-decision count recorded from the duplicate-collapse branch's own
+evidence. Two harnesses, one number, neither built from the other. That does not make the classification
+correct, but it removes the most likely way for it to be wrong.
+
+**Cost comparison is starved, not inert.** 336 of 357 lines carry an unavailable-comparison status with
+no master unit cost, and the same 336 carry the review-required flag. The cause is not a defect in the
+cost machinery: no match means no master cost means nothing to compare. So the cost path is downstream
+of the matching failure, and when the duplicate collapse lands its automatic lines, cost comparison
+executes on real documents for the first time. A reason code resting entirely on this condition is a
+constant rather than a rule, and has been split for that reason.
+
+**Consequence for the launch gate, correcting a rule set out earlier in this record.** Two stages have
+never executed on a real document in this programme: export, because operator settings were never
+configured, and cost comparison, because almost nothing matched. The gate criterion forbidding a novel
+failure reason would therefore halt on the first reason either stage emits, which is not a defect but a
+certainty. The criterion is amended: a first-encounter reason originating in export or in cost
+comparison is expected and is reported rather than treated as a stop, while a novel reason from
+extraction, matching or the terminal-state machinery still stops the gate, those being the stages with a
+measured history to be novel against. A gate that fires on its own first execution tests nothing.
+
+**The whole-tree privacy guard closes the file hole and not the path hole.** Running the pattern set over
+every tracked and untracked-not-ignored text file, failing closed before the archive is written and
+naming the file rather than the value, is correct and it would have caught the historic leak's content.
+It runs when the packager runs. Publication to the forge happens on push, which does not invoke the
+packager, and the historic leak travelled by push. The remedy is a check on the publication path itself,
+with its limits stated rather than implied: a local hook prevents but is bypassable, and a
+publish-triggered check detects after the fact rather than preventing. Neither makes exposure
+impossible, and the record should not say otherwise.
