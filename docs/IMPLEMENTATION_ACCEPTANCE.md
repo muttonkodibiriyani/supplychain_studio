@@ -2313,10 +2313,24 @@ lines, the ones carrying two *differing* identifiers are unchanged, the rest car
 Stating zero matters more than leaving it unmeasured, because "unmeasured" invites a later rediscovery of
 exactly this. The defect stays in the fix's scope on the strength of the code, not of an occurrence.
 
-**Rule 11: a set deduplicates, so counting distinct values answers a different question than counting
-values — and when duplication is the thing under study, that substitution is silent.** The instrument
-removed the property it was built to measure. It surfaced as an unexplained zero where a count was
-expected, which is the same signal this record treats as a defect indicator everywhere else.
+**Rule 11: before collapsing values into a set, ask whether the question is about DISAGREEMENT or about
+COMPOSITION. Only the second is destroyed.** "Do these rows disagree?" is genuinely a distinct-value
+question and a set answers it correctly. "What pair of values is this?" is not, and a set silently answers
+a different question instead — here, removing the duplication the instrument was built to measure. The
+audit that followed found the same construct used correctly four more times in the same scripts, so the
+usable rule is this distinction and not a suspicion of sets. It surfaced as an unexplained zero where a
+count was expected, which is the signal this record treats as a defect indicator everywhere else.
+
+**A second shape, checked in the product rather than assumed.** A dictionary keyed on something that
+should be unique collapses an *identity*: if two records ever share the key, one silently wins and the
+other becomes unreachable, with no error and every downstream count short. Two instances were examined.
+The collapse guard's own cost and unit sets are **not** vulnerable, because a missing value enters the set
+as a member, so a group with a value on one row and none on the other has two members and is refused —
+which matters for scoping the identifier fix: the defect is that the identifier is **absent from the guard
+entirely**, not that a set was used, and a fix written as "audit the sets" would change two correct lines
+and miss it. The matcher's catalog lookup, keyed on the catalog row key, *is* vulnerable in principle; on
+the supplied master every row's key is present and distinct, so there is **no instance** — latent and
+unguarded rather than safe by construction, recorded so it is not rediscovered.
 
 ### What this obliges the record to do
 
@@ -2501,3 +2515,28 @@ only screen a human actually uses.
 
 This one was found by re-checking a claim of my own immediately after publishing it, which is rule 9 working
 as intended rather than as an apology.
+
+## The stored match results predate five of the commits under review
+
+Every figure this record has read off the corpus database's stored match column describes matching code from
+**before** the supplier-resolution fix, before the duplicate-row collapse, before the unit-of-measure lift
+and before the uncapped ranking. The documents were processed in a twenty-second window; the newest commit
+in existence at that instant precedes all five of those changes, which landed later the same night. **The
+stored column has never been re-matched.**
+
+This is rule 1 in its purest form, and it resolves a discrepancy that had been carried unexplained: the
+stored unmatched count sits a few lines below what every cell of the arbitration matrix returned, *including
+the control*. That was not a defect in the matcher and not an artefact of stripping stored selections — the
+selections-intact cell returns the same number as the stripped one, so stripping moves nothing there. **It
+was a comparison across two frames**, a recent run against a five-commit-old column, made by someone who had
+written the rule requiring both to be labelled.
+
+The consequence for anyone reading this record: **the stored split must not be cited as current behaviour.**
+It is not wrong data. It is correctly recorded data with an unstated observation time, which is the same
+class of failure as an unlabelled figure and is corrected the same way — by stating when it was observed.
+
+One route to the same discrepancy was closed rather than left open. There *are* post-match edits by a real
+user on every document, and the update path does not re-run matching, so a stale-status-after-edit
+explanation was available and plausible. It is dead: the only fields edited were the supplier site and the tax
+code, no line was edited, no alias was learned, and the matching scope keys on the supplier identifier rather
+than the site. The edits cannot move a match. A confirmation by equality rather than by counts is in flight.
