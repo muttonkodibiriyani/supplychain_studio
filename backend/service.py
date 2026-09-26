@@ -4107,10 +4107,10 @@ class InvoiceService:
         older than that detail fall back to their current lines being all
         'auto'.  CAVEAT: that fallback reads 'confirmed' as a human touch,
         but rematch currently promotes machine autos to confirmed/100.0
-        (matching.match_lines, supplied-id path), so until task 01a0db9a-5d3c
-        lands K2 may UNDERCOUNT after any rematch for records without the
-        detail.  Records with the detail are unaffected: the count is fixed
-        at extraction time.
+        (matching.match_lines, supplied-id path), so until that promotion is
+        fixed (a separate matcher defect) K2 may UNDERCOUNT after any rematch
+        for records without the detail.  Records with the detail are
+        unaffected: the count is fixed at extraction time.
         K3 cycle time: upload (created_at) to the first transition into ready,
         median over invoices that ever reached ready.  Seconds, not a rate.
         """
