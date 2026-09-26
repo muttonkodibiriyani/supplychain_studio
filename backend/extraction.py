@@ -46,6 +46,11 @@ class ExtractionLimits:
     max_pages: int = 50
     max_pixels_per_page: int = 30_000_000
     max_total_pixels: int = 150_000_000
+    # Rendering cap, not a content bound: a page whose rasterisation would
+    # exceed this many rendered pixels is rendered smaller (PDF) or resized
+    # (image) to fit, with a warning, instead of being refused.  The two
+    # pixel bounds above still apply to the reduced page.
+    max_render_pixels_per_page: int = 15_500_000
     max_spreadsheet_rows: int = 20_000
     max_spreadsheet_columns: int = 100
     max_archive_members: int = 10_000
@@ -302,7 +307,7 @@ def _extract_pdf(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
         )
     ocr_results: dict[int, tuple[str, str, float | None]] = {}
     if needs_ocr and structured_invoice is None:
-        ocr_results = _ocr_pdf_pages(path, needs_ocr, limits)
+        ocr_results = _ocr_pdf_pages(path, needs_ocr, limits, warnings=warnings)
         warnings.append(
             "OCR used English language data ('eng'); non-English text may be incomplete and requires review."
         )
@@ -667,8 +672,25 @@ def _explicit_po_token(reference: Any) -> str | None:
     return None
 
 
+def _fit_render_scale(width: float, height: float, scale: float, cap: int) -> float:
+    """Largest scale <= ``scale`` whose rendered pixel count fits ``cap``.
+
+    Returns ``scale`` unchanged when the page already fits, so pages under the
+    cap render exactly as before.
+    """
+    if int(width * scale) * int(height * scale) <= cap:
+        return scale
+    fitted = scale * math.sqrt(cap / max(1.0, width * scale * height * scale))
+    while fitted > 0 and int(width * fitted) * int(height * fitted) > cap:
+        fitted -= 0.001
+    return max(fitted, 0.001)
+
+
 def _ocr_pdf_pages(
-    path: Path, page_indices: Sequence[int], limits: ExtractionLimits
+    path: Path,
+    page_indices: Sequence[int],
+    limits: ExtractionLimits,
+    warnings: list[str] | None = None,
 ) -> dict[int, tuple[str, str, float | None]]:
     if shutil.which("tesseract") is None:
         raise DocumentExtractionError(
@@ -701,8 +723,16 @@ def _ocr_pdf_pages(
                 )
             page = document[index]
             width, height = page.get_size()
-            render_scale = 2.0
+            render_scale = _fit_render_scale(
+                width, height, 2.0, limits.max_render_pixels_per_page
+            )
             pixels = int(width * render_scale) * int(height * render_scale)
+            if render_scale != 2.0 and warnings is not None:
+                warnings.append(
+                    f"Page {index + 1} was rendered at {render_scale:.2f} px/pt ({pixels} pixels) "
+                    f"instead of 2.00 px/pt to stay within the {limits.max_render_pixels_per_page} "
+                    "rendered-pixel cap; small print may be less legible."
+                )
             _check_page_pixels(pixels, index + 1, limits)
             total_pixels += pixels
             if total_pixels > limits.max_total_pixels:
@@ -834,6 +864,7 @@ def _extract_image(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
 
     started = time.monotonic()
     page_evidence: list[dict[str, Any]] = []
+    downsample_warnings: list[str] = []
     total_pixels = 0
     try:
         with Image.open(path) as source:
@@ -842,6 +873,21 @@ def _extract_image(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
             for index, frame in enumerate(ImageSequence.Iterator(source)):
                 frame = ImageOps.exif_transpose(frame.copy())
                 pixels = frame.width * frame.height
+                if pixels > limits.max_render_pixels_per_page:
+                    original = (frame.width, frame.height)
+                    factor = _fit_render_scale(
+                        frame.width, frame.height, 1.0, limits.max_render_pixels_per_page
+                    )
+                    frame = frame.resize(
+                        (max(1, int(frame.width * factor)), max(1, int(frame.height * factor))),
+                        Image.Resampling.LANCZOS,
+                    )
+                    pixels = frame.width * frame.height
+                    downsample_warnings.append(
+                        f"Page {index + 1} was downsampled from {original[0]}x{original[1]} to "
+                        f"{frame.width}x{frame.height} ({pixels} pixels) to stay within the "
+                        f"{limits.max_render_pixels_per_page} rendered-pixel cap; small print may be less legible."
+                    )
                 _check_page_pixels(pixels, index + 1, limits)
                 total_pixels += pixels
                 if total_pixels > limits.max_total_pixels:
@@ -876,7 +922,8 @@ def _extract_image(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
         raise DocumentExtractionError(f"The image is corrupt or unreadable: {exc}") from exc
 
     warnings = [
-        "OCR used English language data ('eng'); non-English text may be incomplete and requires review."
+        "OCR used English language data ('eng'); non-English text may be incomplete and requires review.",
+        *downsample_warnings,
     ]
     for page in page_evidence:
         confidence = page["ocr_confidence"]

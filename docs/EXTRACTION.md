@@ -91,6 +91,7 @@ Exact default bounds from `ExtractionLimits` are:
 | Pages or image frames | 50 |
 | Pixels per rasterized page | 30,000,000 |
 | Pixels across a document | 150,000,000 |
+| Rendered pixels per page (rendering cap, not a bound) | 15,500,000 |
 | OCR per page | 45 seconds |
 | OCR across a document | 180 seconds |
 | Spreadsheet rows | 20,000 |
@@ -99,7 +100,7 @@ Exact default bounds from `ExtractionLimits` are:
 | Expanded DOCX/XLSX bytes | 100 MiB |
 | Large-member compression ratio | 200:1 |
 
-Crossing a bound rejects the file. There is no partial-page or partial-row success. DOCX and XLSX ZIP containers are checked before their parsers run. XLSX formulas are never executed (`data_only=True`, external links disabled). Encrypted and corrupt PDFs return explicit errors.
+Crossing a bound rejects the file. There is no partial-page or partial-row success. The rendered-pixel cap is the one exception and is not a bound: a PDF page whose rasterisation at the standard 2 px/pt would exceed it is rendered at the largest smaller scale that fits, and an image frame above it is resized to fit, each with a warning naming the page and the scale or size used. The reduced page then meets the two pixel bounds above as before. A page that fits the cap renders exactly as it did before the cap existed. DOCX and XLSX ZIP containers are checked before their parsers run. XLSX formulas are never executed (`data_only=True`, external links disabled). Encrypted and corrupt PDFs return explicit errors.
 
 For thousands of uploads, the job service should store files first, queue one job per file, and run a bounded worker pool. Tesseract and PDF rendering are CPU and memory intensive, so worker concurrency should be sized from measured page latency and resident memory rather than the HTTP request count. The extractor itself has no shared mutable state and can run in separate worker processes.
 
