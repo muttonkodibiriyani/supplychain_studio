@@ -14,8 +14,8 @@ test fails on every run without depending on a race.
 
 The race test that follows is a non-gating stress check.  Its limits: against
 the unlocked code it passes 4 of 4 runs at the shipped settings (8 threads, 3
-rounds of 1.5 s) and fails only 1 of 4 runs at 16 threads / 4 s (Reviewer B's
-pre-run on c8b291b), so it cannot gate.  It runs only with PDFIUM_STRESS=1.
+rounds of 1.5 s) and fails only 1 of 4 runs at 16 threads / 4 s (an independent
+review run on c8b291b), so it cannot gate.  It runs only with PDFIUM_STRESS=1.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def _make_scanned_pdf(path: Path, pages: int) -> None:
 class PdfiumSerialisationTests(unittest.TestCase):
     """Structural assertion that every guarded pypdfium2 call is serialised."""
 
-    THREADS = 8  # shipped extraction worker count
+    THREADS = 8  # the documented raise-to value (.env.example), above the shipped default of 4
 
     def test_guarded_pdfium_calls_never_overlap_across_threads(self) -> None:
         import pypdfium2
