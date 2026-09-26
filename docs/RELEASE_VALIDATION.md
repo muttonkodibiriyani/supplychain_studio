@@ -141,8 +141,22 @@ Three times in this programme a benign-looking artefact shipped with a capabilit
 - the source packager omitted `start.sh` and `Start-InvoiceStudio.command`, so the unmodified zip died at exit 127 on the documented first command (section 1);
 - the privacy guard checked only the paths written into the archive, so a document excluded from the zip by the allowlist was never scanned by anything, while git published it (closed by the whole-tree guard in `scripts/package_source.py`, `validate_repository`);
 - a margin check that could pass vacuously, with nothing under it that could fail.
+- a pre-push hook committed into the repository, which git never installs on clone, so it looked like a guard and fired for nobody; and, once installed, a hook that scanned the working tree while a push carries a commit range, so a marker committed and then deleted in a later commit passed it (closed by the launchers setting `core.hooksPath` and by `scripts/package_source.py --pre-push`, which scans every file version the pushed commits introduce).
 
 Standing check for every release validation from now on: execute the shipped artefact from an unmodified copy of what is published (not from the working tree); run the privacy guard over the whole repository tree, not only the packaged paths; and assert each gate on a value that can actually fail, showing the command and its output.
+
+### Push guard gate arms (fresh clone, real launcher)
+
+Measured at branch `fix/whole-tree-privacy-guard` commit `aa8818b` (the tree under test; this section is the only later change). Push target: a bare mirror of that branch cloned from GitHub, so no marker leaves the machine; each arm is a fresh clone of that mirror. Marker: a synthetic home-directory path matching the eighth listed pattern, assembled at run time. Log kept outside the repository.
+
+| Arm | Steps | Result |
+| --- | --- | --- |
+| C | `git ls-files -s .githooks/pre-push` in a fresh clone | `100755` in the index |
+| A | fresh clone; `core.hooksPath` unset; `./start.sh --project-name hook-arm --port 8071 --no-browser` (real launcher, image built, project up); `core.hooksPath` reads `.githooks`; commit the marker; push | refused: message names `notes.txt` and the commit, never the value; mirror head unchanged |
+| A2 | fresh clone; launcher once; commit the marker; commit its deletion on top; working tree clean and `--check-only` passes; push both | refused on the buried commit; mirror head unchanged |
+| B | fresh clone; nothing run; `core.hooksPath` unset; commit the marker; push | not refused; README states this limit |
+
+Mutation pair at the same commit, differing only in the hook's last line: with `--check-only` (tree-only) in place of `--pre-push`, the test for arm A still passes and the test for arm A2 fails; restored, both pass. Verified on the Unix launcher; the Windows launcher sets the same configuration but has not been exercised here. Corroboration: one instrument (this run) plus the same arms as unit tests against a local bare origin in `tests/test_source_package.py`; Reviewer B's independent run was in flight when this was written.
 
 ## Scope limits
 
