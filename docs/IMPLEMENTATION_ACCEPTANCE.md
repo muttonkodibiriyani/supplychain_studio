@@ -2607,6 +2607,33 @@ code** — which changes the repair from "retire the corpus" to "replay it from 
 record its own commit". The acceptance criterion is that one line: a build stamps the commit it was built from
 and a flag for a dirty tree, and a result cites it.
 
+
+**There is a third category, and it is the one that makes the missing commit stamp serious.** Two of the cases
+are easy to describe: a clean build of a commit, and a build containing a source file whose content is nowhere
+in version control. The artefact that appears to have produced the corpus is neither. Its two decisive source
+files are each carried by a commit — but by **two different commits**, and the one holding the newer file was
+written to the repository fifty-nine seconds *after* the artefact was built. It was built from a working tree
+that was dirty at the time, and the dirt was committed a minute later.
+
+This is the deceptive case because **after the fact, every file resolves to a commit and the build looks
+reproducible.** Hashing each file and looking it up answers "all committed" and is worse than useless; it is
+reassuring. The check that actually discriminates is the conjunction — whether **one** commit holds **all** of
+them at once — and nothing in the build pipeline records enough to ask it. That is the concrete argument for a
+dirty-tree flag rather than a commit stamp alone: a commit stamp on this artefact would have been *available*
+for every file and *wrong* for the build.
+
+It also fixes what a citation of this data may say. If the replay of the artefact's own bytes reproduces the
+stored column line for line, the column becomes attributable **to an artefact and not to a version** — cited by
+the artefact's digest and the content hashes of its source files, because there is no commit to name and naming
+one would be the false stamp this record has already barred. If it does not reproduce line for line, the
+candidate is excluded outright. There is no third outcome: per-record equality is binary, and a small residual
+is a refutation with a residual, not a near-reproduction.
+
+One operational consequence, dull and urgent. The artefact is retained only because it still carries a tag, and
+**no running process holds it**, so a routine reclamation of unused build artefacts would destroy the only copy
+of the build every acceptance figure rests on. Its source files have been copied out and hashed. A programme
+that cannot name its build is at least able to keep it.
+
 ## The promotion defect has no trade-off to weigh
 
 Two runs of the matcher over the same documents at the same commit, identical except for whether each line
