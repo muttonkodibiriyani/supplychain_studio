@@ -2405,3 +2405,75 @@ oversized page instead of failing the document**: rendering above roughly 400 dp
 accuracy, and refusing a whole invoice over one page is the wrong trade. Either way the page and pixel
 bounds must be made consistent, or the advertised page count stated as resolution-dependent, and the Windows
 procedure must name a supported scan resolution until the bounds move.
+
+## Eight runs at volume: throughput is not the problem
+
+The volume question this programme was scoped around has been answered, and the answer is that volume was
+never the constraint. Fifty distinct sources, run at one, two and four copies each, on a locked image, fresh
+database each time, with the load rule satisfied at firing.
+
+**Text class: 50 documents reach terminal state in about four minutes, 100 in about eight and a half, 200 in
+about ten and a half.** The curve flattens rather than steepening. Two hundred documents of the OCR class
+took about sixteen and a half minutes, though that run's host load rose above the rule mid-way so it is a
+gated start and not a gated run. Peak memory across every run stayed under about 2.1 GiB.
+
+**And every one of those runs exported nothing.** Zero of fifty, zero of one hundred, zero of two hundred,
+on both classes. So the honest answer to "how many invoices can this handle" is that ingestion comfortably
+handles two hundred and conversion delivers none, and the second number is the one that matters. No
+accuracy figure exists at any volume, because accuracy is measured on exported workbooks.
+
+**The one strong positive of the night: the pipeline is deterministic.** With each source duplicated two and
+four times, every reason code, every yield bucket and every text-length group scaled by exactly the copy
+factor. Identical content produced identical parse and match results, every time, under concurrency. That is
+a real property and it is worth stating plainly, because it means the failures below are properties of the
+documents and the code rather than of timing — with one exception, noted further down.
+
+## The OCR class does not work at all, and the failure is after text production
+
+Of fifty scanned documents, the matcher decided **nothing** automatically — not one line, at any volume. The
+whole class yielded about a hundred and twenty lines against a text class that yielded seven hundred from
+the same number of documents, and supplier identity resolved on **zero of fifty**, at every scale.
+
+**Most of these documents produce plenty of text and no lines.** Of the thirty-four that yielded no lines at
+all, thirty-one carry substantial recognised text — tens of thousands of characters, with the invoice number
+and total often found — and the line-table parser returns nothing from it. Two carry no text at all and end
+in review with a missing-lines flag where a dedicated empty-recognition outcome would be the correct
+terminal.
+
+So the OCR failure is **downstream of text production**, in the parser that has to find a line table in
+recognised text. That is a narrower and more tractable target than "OCR does not work". It is not, however,
+a clean bill for recognition quality: text being present is not text being correct, and no digit-level
+accuracy measurement exists yet. Both questions are open and they are different questions.
+
+**This also bounds the duplicate-row finding to nothing on this class.** The collapse only engages inside a
+resolved supplier scope, and supplier identity resolves on none of these documents. The mechanism that lifts
+the most lines elsewhere is **inert on the scanned class**.
+
+## The duplicate-invoice guard cannot fire where supplier identity is unresolved
+
+Running each source twice showed the duplicate-invoice check working exactly as designed: every repeated
+document was flagged. But the count of flags equalled twice the number of documents **whose supplier
+resolved** — and the documents whose supplier did not resolve were not duplicate-checked at all, because the
+check is keyed on supplier plus invoice number.
+
+**So the control against paying the same invoice twice is inert on the documents whose supplier could not be
+identified** — over half the text class and the entire scanned class. It does not fail, warn or degrade; it
+simply has nothing to compare, and the document proceeds looking clean. This is the silent-failure class
+again, and of all its instances in this record it is the one with a direct financial consequence.
+
+A second question the same experiment raises: at four copies, all four were flagged, including the first.
+Whichever copy is the legitimate original is flagged alongside the repeats, so the flag identifies a
+collision rather than an offender, and an operator re-uploading a document blocks the one already on file.
+That needs a decision about which record the guard should protect.
+
+## One terminal outcome depends on host load, and an operator cannot tell it apart from a bad document
+
+At the largest scanned volume, four documents failed on a processing time budget that the same documents
+clear at low load. Their content did not change; the host was busier. Because a bound failure refuses the
+whole document, the same invoice is a hard failure on a loaded machine and a success on a quiet one.
+
+Everywhere else this record found determinism; here it did not. And the operator sees a failed document
+either way, with no way to distinguish "this file cannot be processed" from "the machine was busy, try
+again". **Time-budget failures must be a separately named, explicitly retryable class, distinct from content
+failures**, before any of this is put in front of a user — otherwise the correct response to a transient
+condition is indistinguishable from the correct response to a permanent one.
