@@ -292,7 +292,15 @@ def line_price_code(line: Mapping[str, Any]) -> str | None:
 
 
 def is_adjustment_line(line: Mapping[str, Any]) -> bool:
-    """A non-product row (discount, credit, rebate, ...) by generic vocabulary."""
+    """A non-product row (discount, credit, rebate, ...) by generic vocabulary.
+
+    The vocabulary is generic English matched at word start, case-insensitive,
+    so a product whose description begins with one of these words (say
+    "Credit card terminal") is flagged as an adjustment row too.  That false
+    positive costs a routing only: the line stays flagged for the reviewer,
+    still fails the approval gate, and is never dropped.  No supplier's own
+    spelling or phrasing is keyed here.
+    """
     return bool(_ADJUSTMENT_PATTERN.search(str(line.get("description") or "")))
 
 
