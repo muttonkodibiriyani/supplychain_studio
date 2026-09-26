@@ -140,6 +140,47 @@ class UploadRejected(ServiceError):
     pass
 
 
+# Extraction methods whose lines are parsed from recognised text (a text layer,
+# OCR, a plain-text or DOCX body).  For these, zero non-whitespace characters
+# of recognised text means the document could not be read at all, which is a
+# processing failure, not an invoice that was read and found to have no lines.
+# Structured sources (Factur-X XML, CSV/XLSX cells) are excluded: their lines
+# come from data fields, and their raw_text is only a rendering of those cells.
+TEXT_RECOGNITION_METHODS = frozenset(
+    {"image_ocr", "pdf_ocr", "pdf_text", "pdf_text+ocr", "text", "docx_text"}
+)
+RECOGNITION_EMPTY_REASON = "ocr_empty"
+
+
+class RecognitionEmpty(ServiceError):
+    """Recognition produced no text: the document could not be read.
+
+    Distinct from ``lines:required`` (text was read but no line rows were
+    detected).  Raised with the invoice record in hand, after extraction, so
+    the extraction module does not change.
+    """
+
+    reason = RECOGNITION_EMPTY_REASON
+
+    def __init__(self, extraction_method: str | None):
+        method = extraction_method or "unknown"
+        super().__init__(
+            f"{RECOGNITION_EMPTY_REASON}: recognition produced no text "
+            f"(extraction method {method}); the document could not be read, "
+            "so there is nothing to review. Check the scan or file and retry."
+        )
+        self.extraction_method = method
+
+
+def recognised_text_is_empty(extracted: Mapping[str, Any]) -> bool:
+    """Structural test: no non-whitespace character in the recognised text."""
+
+    method = str(extracted.get("extraction_method") or "")
+    if method not in TEXT_RECOGNITION_METHODS:
+        return False
+    return not str(extracted.get("raw_text") or "").strip()
+
+
 # Every row POST /api/demo writes is recognisable by one of these prefixes.
 # Seeded lines carry match_status 'auto' and confidence 100 as literals, so a
 # database holding them must never be read as a measurement of the matcher.
@@ -1707,6 +1748,16 @@ class InvoiceService:
 
     def _complete_processing(self, invoice_id: str, extracted: Mapping[str, Any]) -> None:
         now = utc_now()
+        if recognised_text_is_empty(extracted):
+            # "Could not be read" is a failure with its own reason; it must not
+            # be stored as needs_review and later reported as lines:required.
+            self._fail_processing(
+                invoice_id,
+                RecognitionEmpty(extracted.get("extraction_method")),
+                permanent=True,
+                reason=RECOGNITION_EMPTY_REASON,
+            )
+            return
         try:
             lines = self._prepare_lines(
                 extracted.get("lines") or [],
@@ -1781,7 +1832,14 @@ class InvoiceService:
                 created_at=now,
             )
 
-    def _fail_processing(self, invoice_id: str, error: BaseException, *, permanent: bool) -> None:
+    def _fail_processing(
+        self,
+        invoice_id: str,
+        error: BaseException,
+        *,
+        permanent: bool,
+        reason: str | None = None,
+    ) -> None:
         now = utc_now()
         message = f"{error.__class__.__name__}: {error}"[:2000]
         with self.db.transaction(immediate=True) as conn:
@@ -1813,7 +1871,12 @@ class InvoiceService:
                 version=new_version,
                 from_status="processing",
                 to_status=status,
-                details={"error": message, "attempt": attempts, "retry_at": next_attempt},
+                details={
+                    "error": message,
+                    "attempt": attempts,
+                    "retry_at": next_attempt,
+                    **({"reason": reason} if reason else {}),
+                },
                 created_at=now,
             )
         if retry:
