@@ -2332,6 +2332,21 @@ and miss it. The matcher's catalog lookup, keyed on the catalog row key, *is* vu
 the supplied master every row's key is present and distinct, so there is **no instance** — latent and
 unguarded rather than safe by construction, recorded so it is not rediscovered.
 
+
+**Rule 12: a timestamp tells you when, not which.** A version's commit time bounds what *could* have been
+running when an observation was made; it never establishes what *was*. Attributing stored data to a version
+means reproducing the data, and reproducing it **per record** — two versions can agree on every total while
+disagreeing about which records they counted, so a total that matches is not a reproduction. This rule is not
+a corollary of the labelling rule that exposed it: labelling asks for the observation time and gets it right;
+this asks what produced the observation, and a time does not answer that.
+
+**Rule 13: an exclusion is only as wide as its enumeration, so state the enumeration inside the claim.** "No
+version of this code does X" is a statement about a population, and the population is whatever the walk
+actually visited — a first-parent history walk is not the repository, and a branch that was never merged is
+still committed code. The same applies to any sweep: name what was enumerated and by what command, or the
+claim silently means something narrower than it says. Getting this wrong produces the most dangerous kind of
+finding, a **completeness** claim, which reads as the end of an investigation rather than the middle of one.
+
 ### What this obliges the record to do
 
 The automatic count must be reported on both sides of this guard, and the higher figure must not be quoted
@@ -2516,30 +2531,81 @@ only screen a human actually uses.
 This one was found by re-checking a claim of my own immediately after publishing it, which is rule 9 working
 as intended rather than as an apology.
 
-## The stored match results predate five of the commits under review
+## The stored match results were produced by a build the tested versions do not reproduce
 
-Every figure this record has read off the corpus database's stored match column describes matching code from
-**before** the supplier-resolution fix, before the duplicate-row collapse, before the unit-of-measure lift
-and before the uncapped ranking. The documents were processed in a twenty-second window; the newest commit
-in existence at that instant precedes all five of those changes, which landed later the same night. **The
-stored column has never been re-matched.**
+Every figure this record has read off the corpus database's stored match column was written in a twenty-second
+window on the evening of the freeze, and **the column has never been re-matched.** Five main-line commits
+landed after it, including the supplier-resolution fix, the duplicate-row collapse, the unit-of-measure lift
+and the uncapped ranking. So the stored split is not a measurement of the current tree.
 
-This is rule 1 in its purest form, and it resolves a discrepancy that had been carried unexplained: the
-stored unmatched count sits a few lines below what every cell of the arbitration matrix returned, *including
-the control*. That was not a defect in the matcher and not an artefact of stripping stored selections — the
-selections-intact cell returns the same number as the stripped one, so stripping moves nothing there. **It
-was a comparison across two frames**, a recent run against a five-commit-old column, made by someone who had
-written the rule requiring both to be labelled.
+That much was established and survives. What was published alongside it did not, and the correction is worth
+more than the original claim. The column was attributed to the newest commit that existed at the moment of
+processing — an inference from commit timestamps, presented as a mechanism. A faithful replay of that commit
+refuted it: the automatic count agrees, but the boundary between *suggested* and *unmatched* moves by
+twenty-nine lines, every one of them in the same direction, and the stored value lies **outside** both the
+replayed commit's figure and the current tree's. A comparison of counts alone would have accepted the
+attribution as close enough. The per-line test is what killed it.
 
-The consequence for anyone reading this record: **the stored split must not be cited as current behaviour.**
-It is not wrong data. It is correctly recorded data with an unstated observation time, which is the same
-class of failure as an unlabelled figure and is corrected the same way — by stating when it was observed.
+The rule that failure names is not the one that found it. **A timestamp tells you when, not which.** Commit
+times bound what *could* have been running; they do not establish what *was*. Attributing an observation to a
+version requires reproducing the observation, not dating it — and the reproduction has to be per line, because
+two different versions can agree on every total and disagree about which lines they are counting.
 
-One route to the same discrepancy was closed rather than left open. There *are* post-match edits by a real
-user on every document, and the update path does not re-run matching, so a stale-status-after-edit
-explanation was available and plausible. It is dead: the only fields edited were the supplier site and the tax
-code, no line was edited, no alias was learned, and the matching scope keys on the supplier identifier rather
-than the site. The edits cannot move a match. A confirmation by equality rather than by counts is in flight.
+The attribution attempt also crossed a population boundary that is worth naming, because it is the third
+appearance of the same shape in this record. The excluded versions were enumerated by walking the first-parent
+main line. **A first-parent walk is not the repository.** The tree that the surviving build artefact actually
+contains sits on a branch that is not an ancestor of the main line, so it was never in the candidate set at
+all. A conclusion of the form "no version does this" is only as wide as its enumeration, and the enumeration
+belongs in the claim.
+
+Two things follow for anyone reading this record.
+
+**The stored split must not be cited as current behaviour, and must not be re-labelled with a commit either.**
+Stamping it with the version that was inferred would put a false provenance on real data — worse than an
+unlabelled figure, because a label invites trust. Until a replay reproduces it line for line, the column is
+unattributed.
+
+**One figure in that column is robust, and it is the one everything has been reconciled against.** The
+automatic set is invariant: the same count, and by set equality the same lines, in the stored column, in the
+current tree's control cell and in the replay of the older commit. Across three builds the automatic criterion
+returns the same lines while the suggested/unmatched boundary moves. Whatever differs between those builds
+moves candidate retention and does not touch the automatic rule. The published constants are common to all of
+them — the candidate limit, the suggestion floor and the score ceiling all read identically off the stored
+candidate lists — so the difference is a small arithmetic difference in scoring near the floor, not a
+threshold, a scope, a limit or a wider catalogue.
+
+One route to the discrepancy was closed rather than left open. There *are* post-match edits by a real user on
+every document, and the update path does not re-run matching, so a stale-status-after-edit explanation was
+available and plausible. It is dead: the only fields edited were the supplier site and the tax code, no line
+was edited, no alias was learned, and the matching scope keys on the supplier identifier rather than the site.
+The edits cannot move a match. The catalogue is frozen — every row carries a single creation instant and no
+later write — and the alias table is empty, so the inputs did not move either.
+
+What remains open is narrow and stated as open: **which build produced the column.** A candidate has been
+identified from a surviving build artefact whose creation instant falls nine seconds before the catalogue was
+ingested, and whose two relevant source files match a commit pair on a branch off the main line. That is a
+lead, not an attribution, and it is being tested by the same per-line standard that refuted the last one.
+
+## An acceptance build that cannot say what it was built from
+
+The build artefacts on this host record the project and the tool version that produced them. **None of them
+records the commit it was built from, or whether the tree was clean.** The corpus build was recovered only by
+extracting its source files and matching them against stored objects by content hash — which worked, and which
+is not a procedure anyone should need.
+
+Two consequences, and they point in opposite directions, so both belong here.
+
+The severity is real: **an acceptance measurement whose code cannot be named is not a measurement anyone can
+re-run**, and at least one artefact on this host contains a source file whose content does not exist in version
+control at all — an uncommitted working tree baked into something runnable. That is not a hypothetical about
+process hygiene; it is a build that no commit describes.
+
+The remedy is smaller than the severity suggests, and the stronger version of this finding overstated it. The
+bytes are not lost. A build artefact outlives the container that ran it and the branch it came from, and both
+of the relevant ones were reconstructed from artefacts in under a minute. What is missing is **provenance, not
+code** — which changes the repair from "retire the corpus" to "replay it from the artefact, and make the build
+record its own commit". The acceptance criterion is that one line: a build stamps the commit it was built from
+and a flag for a dirty tree, and a result cites it.
 
 ## The promotion defect has no trade-off to weigh
 
