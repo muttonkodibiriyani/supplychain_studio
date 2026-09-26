@@ -2295,15 +2295,28 @@ wants to ship without a human looking at them. The mechanism that delivers the t
 mechanism that picks the barcode arbitrarily, and the barcode is how the receiving system identifies the
 goods.
 
-### A second loss in the same guard, verified from the code
+### A second loss in the same guard — real in the code, zero instances in this master
 
-The lines that fold a real identifier against an empty one are not the benign case they look like. The
-survivor is chosen the same way — by row-identifier order, with no term for the identifier anywhere in the
-ranking — so **the empty value can win over the real one the master holds.** That is silent loss of an
-identifier the system already had, which is a different failure from exporting a real-but-arbitrary one,
-and the fix must prefer the non-empty value deterministically rather than merely refuse on disagreement.
-How many lines currently lose a known identifier this way has not been measured and no number is claimed
-here; the mechanism was read off the guard and the ranking function directly.
+The ranking function has no term for the exported identifier at all. So in a group where one row carries an
+identifier and the other is empty, the survivor is still decided by row-key order, and **the empty value can
+win over one the master holds.** That is read off the guard and the ranking function directly and it is a
+real latent defect: the fix must prefer a non-empty value deterministically, which is a different change
+from refusing on disagreement.
+
+**It has no instances here, and the number is zero rather than unmeasured.** The pairs first reported as
+"one value against a blank" were re-derived and are pairs where **both rows carry the same identifier** — an
+instrument that collected values into a set, so two identical values became one and fell into the
+else-branch meant for the blank case. Re-counted by values instead of distinct values: of the implicated
+lines, the ones carrying two *differing* identifiers are unchanged, the rest carry two *identical* ones, and
+**not one pair anywhere in the resolved scopes puts an identifier against a blank.**
+
+Stating zero matters more than leaving it unmeasured, because "unmeasured" invites a later rediscovery of
+exactly this. The defect stays in the fix's scope on the strength of the code, not of an occurrence.
+
+**Rule 11: a set deduplicates, so counting distinct values answers a different question than counting
+values — and when duplication is the thing under study, that substitution is silent.** The instrument
+removed the property it was built to measure. It surfaced as an unexplained zero where a count was
+expected, which is the same signal this record treats as a defect indicator everywhere else.
 
 ### What this obliges the record to do
 
