@@ -97,6 +97,8 @@ Complete **Brand setup** before importing invoices. These settings populate requ
 
 Missing supplier rules do not become guessed defaults. They must be resolved during invoice review. When settings change, identify and re-review every affected unexported invoice; do not assume previously calculated target fields updated correctly without opening the record.
 
+**Settings are applied once, at processing time.** When an upload is processed, the application copies the default location, location type, and the matching supplier rule's site and tax code onto that invoice record. They are not re-applied afterwards: **Rematch** re-reads only the cost-comparison policy, **Approve** validates the fields already stored on the invoice, and **Retry** touches only failed or queued uploads. So enter Brand setup and every supplier rule *before* uploading. Changing them later does not back-fill invoices that were already processed; those must be corrected by hand in the review screen or uploaded again after the change.
+
 **Commercial-decision status:** invoice-net-only export is the application's current conservative behavior, adopted while the business wording is being confirmed. It is not represented here as an unequivocally user-approved pricing policy. Operators must follow the deployed behavior and must not substitute RMS cost by hand. Commercial signoff is still pending; if the business owner approves a different rule, the release owner must update and revalidate the application and this guide before operators use it.
 
 ## 5. Prepare the brand item master
