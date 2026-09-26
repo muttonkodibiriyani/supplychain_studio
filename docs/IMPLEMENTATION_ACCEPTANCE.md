@@ -1501,6 +1501,9 @@ wrongly exported invoice is not. The gate above is written to separate those two
 resting on terminal states alone cannot do.
 
 ## Post-freeze findings, sixth round: the word "converted" was wrong, and the block on automatic matching was the master repeating itself
+> **WITHDRAWN.** The duplicate-master-row diagnosis below is refuted by a second instrument and is no
+> longer this document's position. See "Two withdrawals" at the end.
+
 
 Three findings and one withdrawal, all measured at `af4a6d8` unless stated. Two of them reduce what
 this programme may claim; one of them is the largest positive movement recorded so far; and the last is
@@ -1565,6 +1568,9 @@ converse — that this defect would silently multiply a delivered quantity if a 
 take the path — is why it is recorded rather than closed.
 
 ## Two stages have never executed, and a cross-check that validates the duplicate-row finding
+> **PARTLY WITHDRAWN.** The cross-check below does not validate the duplicate-row finding; it
+> corroborated a number produced by a three-part change. See "Two withdrawals" at the end.
+
 
 **An independent reconciliation.** The duplicate-row finding above rests on one instrument, which is a
 reason to distrust it. It reconciles exactly with a figure derived by a different worker on a different
@@ -1728,6 +1734,9 @@ defect — reporting a document that could not be read as one that was read and 
 requester will meet on their own scans and will have no way to diagnose.
 
 ## A label that manufactures human review, and the cost stage's first real numbers
+> **PARTLY WITHDRAWN.** The above-tolerance count below is an artefact of an undeclared currency basis
+> and is not a price variance. See "Two withdrawals" at the end.
+
 
 **A machine decision is relabelled as a reviewed one.** The matcher revalidates any line that already
 carries a persisted catalog selection and, on revalidation, stamps it confirmed at a confidence of
@@ -1916,3 +1925,112 @@ row away from becoming a silent approval.
 This is the fourth occurrence in this programme of the same shape: a control that loses its capability
 and returns a normal-looking result. It is the first where the capability is removed by a change that is
 itself correct, which is why it is recorded beside that change rather than against it.
+
+## Two withdrawals, and the first real export
+
+Two findings recorded earlier in this document are withdrawn. Both were mine, both were published before
+a second instrument existed, and both are withdrawn now rather than held pending a third opinion, because
+a wrong diagnosis in an acceptance record is planned on top of by other people while it waits.
+
+### Withdrawn: the block on automatic matching is not the master repeating itself
+
+The claim was that of the lines matching a master row on an exact normalised description and not being
+decided automatically, all but two were the same item listed twice under one identifier, so a
+duplicate-collapse rule was the route to automatic matching. A second instrument, using **the matcher's
+own normalisation function** rather than a reimplementation of it, finds that those lines have **zero**
+exact normalised rows in scope and zero in the entire master, and that the matcher's own top-candidate
+reasons on them are fuzzy-similarity reasons, not exact ties. The two genuine cases stand, and the
+collapse rule correctly refuses to fold them because they are two different items at two different costs.
+
+**Why my defence of this finding failed, which matters more than the finding.** When the classification
+was challenged I argued it survived a catalog-scope error, because narrowing a scope can hide candidates
+but cannot invent a duplicate row. That argument is correct and it was answering the wrong threat. The
+refutation did not come through scope. It came through **normalisation**: I compared descriptions with my
+own equality rule instead of the one the matcher uses, and a looser equality manufactures an exact tie
+where the matcher sees none. I defended the instrument against the attack I had thought of.
+
+**What replaces it, honestly.** The ceiling on automatic matching is not duplicate rows. It is that for
+most of these lines **no master row's description matches the invoice's description under the matcher's
+own normalisation at all** — the master and the suppliers' documents use different words for the same
+goods. That is a vocabulary gap, and it is a harder problem than a bookkeeping duplicate: a collapse rule
+is a day's work with a clear test, and closing a vocabulary gap means alias learning, operator
+confirmation that accumulates, or both. **No forecast of the automatic-match rate in this document
+survives this withdrawal, and nothing here should be read as saying we know what closes the gap.**
+
+### Withdrawn: the above-tolerance lines are not a price variance
+
+The claim was that the cost stage's first execution revealed genuine price variance, giving touchless
+processing a second ceiling that no matching fix could lift. The mechanism was not checked, only the
+number, which is the failure this document has charged repeatedly at others.
+
+The master's cost column is declared in a currency that is **not** the invoices' currency, and the
+comparison on the current mainline treats the two as the same currency without saying so. Every
+above-tolerance and within-tolerance count produced so far therefore compares quantities on two
+different scales. With a currency basis required and no rate supplied, every compared line refuses with
+a basis-mismatch reason on almost every invoice — which is the correct fail-closed behaviour and did not
+exist before. With an arbitrary round rate supplied by the measuring operator and labelled as such, the
+two groups **swap**: the lines that were above tolerance fall within it and the lines that were within it
+go above, and the two groups are disjoint item families sitting in different identifier bands.
+
+Two groups that exchange places under a single scale factor, separated cleanly by item family, do not
+indicate price drift. They indicate **units** — and here that the master's cost basis is mixed across
+item families, so no single rate is correct for the whole master. This is the second time tonight a gap
+between two groups has named a mechanism rather than a trend.
+
+Consequences, and the third is a ruling:
+
+- The cost-comparison axis is **NOT EVALUABLE**, not "flagged on N lines". A count published with a
+  careful caveat still travels as a count, and the caveat does not travel with it. The axis reports its
+  reason, not its numerator, until the basis is declared.
+- Touchless processing has no demonstrated second ceiling. The earlier claim that every touchless
+  forecast was an overestimate was itself unfounded; what is true is that the cost axis cannot yet
+  contribute a number in either direction.
+- **Which basis is authoritative — the master's declared currency column or the values in it — is not a
+  question this programme may answer by choosing.** The software must refuse rather than default, which
+  is what the pending change does. The question goes to the item master's owner, and it must not be put
+  as "what currency are your costs in", because the measurement says the answer is not one currency. It
+  is put as: are all costs on one basis, or do some item families use another.
+
+### Not withdrawn: export has run end to end on real documents
+
+The first genuinely positive delivery fact in this record. On a copy of real data, with suggested lines
+confirmed to their top candidate as a human reviewer would, invoices approved and an export created: a
+workbook is produced with its header, tax-breakdown and detail sheets populated, for **5 of 20**
+invoices, identically on the mainline and on both arms of the currency change. No aliases were learned in
+the process, before or after.
+
+The 15 refusals are named and are not mysteries: a required subtotal or tax total absent, unmapped lines,
+required supplier fields absent, and a supplier/item mismatch. Those are the work queue.
+
+Two labels this figure must carry wherever it is quoted. It is **harness-assisted**: a harness stood in
+for the human who confirms suggested lines, so it measures what the system delivers *with* a reviewer,
+not touchless throughput. And for that reason it is **not comparable** with the machine-only first-time
+match metric — the two differ by definition and not by defect, which is a separate fact from the
+relabelling defect recorded earlier and must not be folded into it.
+
+### The worst part of the second withdrawal: this document already contained the refutation
+
+An earlier section of this same document, written by the same author, records that the currency of the
+master rows being compared against is never tested, that an invoice in the operating currency matched
+onto rows denominated otherwise is compared against **incommensurable figures**, and that a large real
+discrepancy can therefore fall inside an absolute per-unit tolerance and be approved silently.
+
+That is the refutation of the variance claim, in full, several hundred lines above the claim. It was
+written before the claim was made. When the above-tolerance count arrived from a measurement run, it was
+recorded as a finding about prices without anyone — least of all me — going back to the section that said
+those two quantities are not comparable. The number was new, so it was treated as evidence, and the
+existing conclusion that would have disqualified it was not re-read.
+
+This is a harder failure than missing something. A missed fact is a gap in knowledge; **this was a fact
+already established, written down, and owned, that was not consulted when the very measurement it
+governed came in.** It is the reason the earlier prediction "the cost stage will execute for the first
+time when matching lands" felt like a confirmation when it arrived: the prediction was about the stage
+running, and the stage running was mistaken for the stage producing a meaningful number.
+
+Two standing rules follow, and they apply to this document first:
+
+- When a stage produces a number for the first time, re-read what this record already says about that
+  stage's inputs **before** recording the number. First execution is the moment a latent input defect
+  becomes visible, not the moment it stops mattering.
+- A finding is not retired by being superseded in attention. The incommensurability note had not been
+  withdrawn, contradicted or resolved. It was simply older than the excitement.
