@@ -1,6 +1,6 @@
 """Governed reason codes, duplicate suspicion, exception queue and KPIs.
 
-Unit C (EXC-01, MAT-03, INV-07, CTL-02).  Everything here runs on synthetic
+Requirements EXC-01, MAT-03, INV-07, CTL-02.  Everything here runs on synthetic
 text invoices and the fictional demo seed; no private corpus is involved.
 """
 
