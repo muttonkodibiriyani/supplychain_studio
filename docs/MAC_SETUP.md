@@ -294,7 +294,7 @@ The usual cause is a different Compose project name. Stop before importing or up
 
 ### A file is rejected or remains in review, or two brands were mixed
 
-Same rules as Windows: see the [Windows guide](WINDOWS_SETUP.md#12-troubleshooting) and the exception procedure in [OPERATOR_TRAINING.md](OPERATOR_TRAINING.md). If two brands were mixed, stop work immediately, do not approve or export, and notify the pilot owner.
+Same rules as Windows, including the supported scan resolution: see the [Windows guide](WINDOWS_SETUP.md#12-troubleshooting) and the exception procedure in [OPERATOR_TRAINING.md](OPERATOR_TRAINING.md). If two brands were mixed, stop work immediately, do not approve or export, and notify the pilot owner.
 
 ## 12. What was verified for Apple Silicon and Intel Macs
 

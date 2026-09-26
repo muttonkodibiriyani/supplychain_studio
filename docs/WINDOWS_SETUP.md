@@ -463,6 +463,10 @@ Restart with the original `$ProjectName`. Do not copy database files manually be
 
 Current Docker defaults for invoice documents include 64 MiB per file, 50 pages/frames, one invoice per file, and explicit supported formats. The item-master importer has a separate 128 MiB catalog limit so an approved original RMS XLSX can be projected without weakening the invoice-document limit. Encrypted, corrupt, empty, legacy XLS/DOC, HEIC, ZIP, HTML, SVG, and limit-exceeding invoice files are rejected. Review capture notes and the original. Do not split, rename, or convert a finance document in a way that loses pages or audit provenance; follow the exception procedure in [OPERATOR_TRAINING.md](OPERATOR_TRAINING.md).
 
+### A scanned image is rejected for its resolution
+
+**Supported scan resolution (until the limits become configurable).** Two fixed pixel limits apply to image inputs (PNG, JPG, TIFF, BMP, WebP frames): a hard limit of 30,000,000 pixels per page, which fails the whole document, and a total budget of 150,000,000 pixels per document across all frames. An A4 page scanned at 600 dpi is about 4,962 x 7,014 pixels (about 34.8 million) and is rejected; A4 at 300, 400 or 500 dpi passes the per-page limit. The total budget allows about 17 A4 pages at 300 dpi or about 6 at 500 dpi in one multi-frame image, whatever the 50-page limit says. Scan at 300 dpi for multi-page documents and never above 500 dpi. PDF pages are rasterised at a fixed 144 dpi from the page size, so a PDF carrying a 600 dpi A4 scan is not rejected by the pixel limits; the per-file size limit and the OCR time budget of 180 seconds per document still apply. Rescan at 300 dpi rather than resampling a finance document; if a rescan is impossible, follow the exception procedure in [OPERATOR_TRAINING.md](OPERATOR_TRAINING.md).
+
 ### Two brands were mixed
 
 Stop work immediately. Do not approve, export, or try to repair mappings by hand. Record the two project names, ports, affected filenames, and actions taken; then notify the pilot owner. Restore from the last known clean brand backup if the owner confirms that is required.
