@@ -11,8 +11,9 @@ export function ageLabel(seconds:number|null|undefined):string{
  if(s<60)return `${s} s`;const m=Math.floor(s/60);if(m<60)return `${m} min`;const h=Math.floor(m/60);if(h<48)return `${h} h ${m%60} min`;const d=Math.floor(h/24);return `${d} d ${h%24} h`;
 }
 function ownerLabel(owner:string){return OWNER_LABELS[owner]||owner.replaceAll('_',' ');}
-function Ratio({label,ratio,hint}:{label:string;ratio:{numerator:number;denominator:number;definition:string};hint:string}){
- return <div className="stat-card" title={ratio.definition}><div><span>{label}</span><span className="stat-icon"><Gauge size={18}/></span></div><strong>{ratio.numerator.toLocaleString()} of {ratio.denominator.toLocaleString()}</strong><small>{hint}</small></div>;
+function Ratio({label,ratio,hint}:{label:string;ratio:{numerator:number;denominator:number;definition:string;evaluable?:boolean;not_evaluable_reason?:string|null};hint:string}){
+ const blocked=ratio.evaluable===false;
+ return <div className="stat-card" title={ratio.definition}><div><span>{label}</span><span className="stat-icon"><Gauge size={18}/></span></div><strong>{blocked?'Not evaluable':`${ratio.numerator.toLocaleString()} of ${ratio.denominator.toLocaleString()}`}</strong><small>{blocked?(ratio.not_evaluable_reason||hint):hint}</small></div>;
 }
 export function Workbench({onOpen,notify}:{onOpen:(id:string)=>void;notify:(m:string,error?:boolean)=>void}){
  const [queue,setQueue]=useState<ExceptionQueue|null>(null);const [kpis,setKpis]=useState<Kpis|null>(null);const [error,setError]=useState('');const [busy,setBusy]=useState(false);
@@ -24,7 +25,7 @@ export function Workbench({onOpen,notify}:{onOpen:(id:string)=>void;notify:(m:st
  {kpis&&<section className="stats-grid" aria-label="Control KPIs">
   <Ratio label="K1 · Touchless" ratio={kpis.k1_touchless} hint="Reached ready or exported with no human correction, over all invoices"/>
   <Ratio label="K2 · First-time match" ratio={kpis.k2_first_time_match} hint="Every line matched automatically at first extraction, over extracted invoices"/>
-  <div className="stat-card" title={kpis.k3_cycle_time.definition}><div><span>K3 · Cycle time (median)</span><span className="stat-icon"><Clock3 size={18}/></span></div><strong>{kpis.k3_cycle_time.median_seconds==null?'—':ageLabel(kpis.k3_cycle_time.median_seconds)}</strong><small>{kpis.k3_cycle_time.n.toLocaleString()} invoice{kpis.k3_cycle_time.n===1?'':'s'} reached ready · upload to first ready</small></div>
+  <div className="stat-card" title={kpis.k3_cycle_time.definition}><div><span>K3 · Cycle time (median)</span><span className="stat-icon"><Clock3 size={18}/></span></div><strong>{kpis.k3_cycle_time.evaluable===false||kpis.k3_cycle_time.median_seconds==null?'Not evaluable':ageLabel(kpis.k3_cycle_time.median_seconds)}</strong><small>{kpis.k3_cycle_time.evaluable===false?(kpis.k3_cycle_time.not_evaluable_reason||'no invoice has reached ready yet'):`${kpis.k3_cycle_time.n.toLocaleString()} invoice${kpis.k3_cycle_time.n===1?'':'s'} reached ready · upload to first ready`}</small></div>
  </section>}
  {kpis?.contains_demo_data&&<div className="callout muted-callout"><AlertTriangle size={20}/><div><strong>Fictional sample data is included</strong><p>These figures describe the sample workspace, not a measured corpus.</p></div></div>}
  {queue&&<p className="inline-note">{queue.invoices_with_exceptions.toLocaleString()} of {queue.invoices_total.toLocaleString()} invoices carry at least one reason code · snapshot {dateLabel(queue.as_of)}</p>}

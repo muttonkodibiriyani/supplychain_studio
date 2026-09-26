@@ -13,7 +13,7 @@ export const REASON_CODES:ReasonCodeEntry[]=[
  {code:'line_low_confidence',owner:'brand_reviewer',message:'a line has a suggested RMS item that needs confirmation against the source',level:'line'},
  {code:'unit_unconfirmed',owner:'brand_reviewer',message:'unit of measure disagrees with the RMS item or could not be established',level:'line'},
  {code:'price_above_tolerance',owner:'brand_reviewer',message:'invoice cost differs from the RMS reference beyond tolerance',level:'line'},
- {code:'price_comparison_unavailable',owner:'item_master_owner',message:'no RMS cost comparison could be made for a line (no RMS item, unit disagreement, missing RMS cost, currency or missing invoice cost); fix the reference data or acknowledge at review',level:'line'},
+ {code:'adjustment_unpaired',owner:'brand_reviewer',message:'a discount, credit or other adjustment row has no RMS item; keep it, pair it with the product lines it adjusts at review, never drop it',level:'line'},
  {code:'currency_basis_mismatch',owner:'finance_owner',message:'invoice currency basis differs from the comparison basis (reserved for the currency unit)',level:'invoice'},
  {code:'total_reconciliation_failed',owner:'brand_reviewer',message:'line, subtotal, tax or total arithmetic does not reconcile',level:'invoice'},
  {code:'duplicate_suspected',owner:'finance_owner',message:'another invoice in this workspace shares the supplier and invoice number; confirm before approval',level:'invoice'},

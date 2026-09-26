@@ -33,7 +33,7 @@ GOVERNED = {
     "line_low_confidence",
     "unit_unconfirmed",
     "price_above_tolerance",
-    "price_comparison_unavailable",
+    "adjustment_unpaired",
     "currency_basis_mismatch",
     "total_reconciliation_failed",
     "duplicate_suspected",
@@ -147,9 +147,9 @@ def test_suggested_line_is_low_confidence_and_bare_line_is_unmapped() -> None:
     assert rc.reason_code_for_error(error, [{}, {"match_status": "suggested"}]) == "line_low_confidence"
     assert rc.reason_code_for_error(error, [{}, {"match_status": "unmatched"}]) == "line_unmapped"
     assert rc.line_reason_codes(1, {"match_status": "suggested"}, [error]) == ["line_low_confidence"]
-    assert rc.line_reason_codes(0, {"target_cost_review_required": True}, [error]) == [
-        "price_comparison_unavailable"
-    ]
+    # A flagged line with no comparison made is a state, not an exception.
+    assert rc.line_reason_codes(0, {"target_cost_review_required": True}, [error]) == []
+    assert rc.comparison_state({"target_cost_review_required": True}) == "unavailable"
     assert rc.assign_reason_codes(
         status="queued", error_text=None, validation_errors=[error], lines=[], duplicate_level="strong"
     ) == []
@@ -193,10 +193,10 @@ def test_invoices_expose_reason_codes_and_the_csv_gains_code_and_owner_columns(t
         assert by_id["demo-invoice-002"]["duplicate_suspicion"] == {"level": None, "matches": []}
 
         detail = client.get("/api/invoices/demo-invoice-002").json()
-        assert detail["lines"][0]["reason_codes"] == [
-            "line_low_confidence",
-            "price_comparison_unavailable",
-        ]
+        assert detail["lines"][0]["reason_codes"] == ["line_low_confidence"]
+        assert detail["price_comparison"]["lines"] == len(detail["lines"])
+        assert detail["price_comparison"]["unavailable"] >= 1
+        assert "price_above_tolerance" not in detail["reason_codes"]
 
         queue = client.get("/api/exceptions").json()
         assert queue["invoices_total"] == len(listed)
@@ -214,8 +214,11 @@ def test_invoices_expose_reason_codes_and_the_csv_gains_code_and_owner_columns(t
         assert kpis["k3_cycle_time"] == {
             "median_seconds": None,
             "n": 0,
+            "evaluable": False,
+            "not_evaluable_reason": kpis["k3_cycle_time"]["not_evaluable_reason"],
             "definition": kpis["k3_cycle_time"]["definition"],
         }
+        assert kpis["k3_cycle_time"]["not_evaluable_reason"]
 
         report = client.get("/api/reports/exceptions.csv")
         assert report.status_code == 200
@@ -360,6 +363,10 @@ def test_kpi_arithmetic_on_a_seeded_workspace(tmp_path: Path) -> None:
     kpis = service.kpis()
     assert kpis["contains_demo_data"] is False
     assert (kpis["k1_touchless"]["numerator"], kpis["k1_touchless"]["denominator"]) == (2, 6)
+    assert kpis["k1_touchless"]["evaluable"] is True
+    assert kpis["k1_touchless"]["approval_stage"] == 3
+    assert kpis["k1_touchless"]["not_evaluable_reason"] is None
+    assert kpis["k3_cycle_time"]["evaluable"] is True
     assert (kpis["k2_first_time_match"]["numerator"], kpis["k2_first_time_match"]["denominator"]) == (4, 5)
     assert kpis["k3_cycle_time"]["n"] == 3
     assert kpis["k3_cycle_time"]["median_seconds"] == 100.0
@@ -387,7 +394,7 @@ def test_kpi_arithmetic_on_a_seeded_workspace(tmp_path: Path) -> None:
     assert queue["groups"] == sorted(queue["groups"], key=lambda g: (-g["count"], g["code"]))
 
 
-def test_price_gate_splits_beyond_tolerance_from_comparison_unavailable() -> None:
+def test_price_gate_codes_only_a_comparison_that_was_made_and_failed() -> None:
     above = {"target_cost_comparison_status": "above_tolerance", "target_cost_review_required": True}
     within = {"target_cost_comparison_status": "within_tolerance", "target_cost_review_required": False}
     unavailable = {
@@ -395,26 +402,85 @@ def test_price_gate_splits_beyond_tolerance_from_comparison_unavailable() -> Non
         "target_cost_review_required": True,
     }
     legacy = {"target_cost_comparison_status": None, "target_cost_review_required": True}
+    assert rc.comparison_state(above) == "above_tolerance"
+    assert rc.comparison_state(within) == "within_tolerance"
+    assert rc.comparison_state(unavailable) == "unavailable"
+    assert rc.comparison_state(legacy) == "unavailable"
+    assert rc.comparison_state({}) is None
     assert rc.line_price_code(above) == "price_above_tolerance"
-    assert rc.line_price_code(within) is None
-    assert rc.line_price_code(unavailable) == "price_comparison_unavailable"
-    assert rc.line_price_code(legacy) == "price_comparison_unavailable"
+    assert rc.line_price_code(unavailable) is None
     assert rc.line_reason_codes(0, above, []) == ["price_above_tolerance"]
-    assert rc.line_reason_codes(0, unavailable, []) == ["price_comparison_unavailable"]
+    assert rc.line_reason_codes(0, unavailable, []) == []
+    assert rc.comparison_summary([above, within, unavailable, legacy, {}]) == {
+        "above_tolerance": 1,
+        "within_tolerance": 1,
+        "unavailable": 2,
+        "lines": 5,
+    }
 
     gate = {"field": "target_cost_reviewed", "code": "target_cost_review_required"}
-    assign = lambda lines: rc.assign_reason_codes(  # noqa: E731
+
+    def assign(lines, variance=False):
+        return rc.assign_reason_codes(
+            status="needs_review",
+            error_text=None,
+            validation_errors=[gate],
+            lines=lines,
+            duplicate_level=None,
+            target_variance_flagged=variance,
+        )
+
+    assert assign([within, unavailable]) == []
+    assert assign([above, within]) == ["price_above_tolerance"]
+    assert assign([above, unavailable]) == ["price_above_tolerance"]
+    # The invoice-level target variance is a reconciliation failure, coded as one.
+    assert assign([within], variance=True) == ["total_reconciliation_failed"]
+    assert assign([above, unavailable], variance=True) == [
+        "price_above_tolerance",
+        "total_reconciliation_failed",
+    ]
+    assert "price_comparison_unavailable" not in rc.REGISTRY
+    assert rc.REGISTRY["price_above_tolerance"].owner == "brand_reviewer"
+
+
+def test_adjustment_rows_leave_the_item_master_queue_but_are_never_dropped() -> None:
+    error = {"field": "lines.0.rms_item_id", "code": "unmapped"}
+    discount = {"description": "Promotional discount", "match_status": "unmatched"}
+    credit = {"description": "CREDIT for returned goods", "match_status": "unmatched"}
+    product = {"description": "Fictional Widget 250ml", "match_status": "unmatched"}
+    suggested_discount = {"description": "Discount", "match_status": "suggested"}
+    assert rc.is_adjustment_line(discount) and rc.is_adjustment_line(credit)
+    assert not rc.is_adjustment_line(product)
+    assert rc.reason_code_for_error(error, [discount]) == "adjustment_unpaired"
+    assert rc.reason_code_for_error(error, [credit]) == "adjustment_unpaired"
+    assert rc.reason_code_for_error(error, [product]) == "line_unmapped"
+    assert rc.reason_code_for_error(error, [suggested_discount]) == "line_low_confidence"
+    assert rc.REGISTRY["adjustment_unpaired"].owner == "brand_reviewer"
+    assert rc.owners_for(["adjustment_unpaired"]) == ["brand_reviewer"]
+    # Generic vocabulary only: the keyword list carries no supplier spelling.
+    assert all(word.islower() and word.isalpha() for word in rc.ADJUSTMENT_KEYWORDS)
+    # The row still fails the approval gate (it is kept and flagged, not dropped).
+    assert rc.assign_reason_codes(
         status="needs_review",
         error_text=None,
-        validation_errors=[gate],
-        lines=lines,
+        validation_errors=[error],
+        lines=[discount],
         duplicate_level=None,
-    )
-    assert assign([within, unavailable]) == ["price_comparison_unavailable"]
-    assert assign([above, within]) == ["price_above_tolerance"]
-    assert assign([above, unavailable]) == ["price_above_tolerance", "price_comparison_unavailable"]
-    # Invoice-level target variance with no flagged line keeps the residual mapping.
-    assert assign([within]) == ["price_above_tolerance"]
-    assert assign([]) == ["price_above_tolerance"]
-    assert rc.REGISTRY["price_comparison_unavailable"].owner == "item_master_owner"
-    assert rc.REGISTRY["price_above_tolerance"].owner == "brand_reviewer"
+    ) == ["adjustment_unpaired"]
+
+
+def test_k1_and_k3_are_not_evaluable_before_any_approval(tmp_path: Path) -> None:
+    service = make_service(tmp_path)
+    process(service, "k1-a.txt", text_invoice("k1-a"))
+    process(service, "k1-b.txt", text_invoice("k1-b", number="TXT-INV-10"))
+    kpis = service.kpis()
+    assert kpis["k1_touchless"]["denominator"] == 2
+    assert kpis["k1_touchless"]["numerator"] == 0
+    assert kpis["k1_touchless"]["approval_stage"] == 0
+    assert kpis["k1_touchless"]["evaluable"] is False
+    assert "ready" in kpis["k1_touchless"]["not_evaluable_reason"]
+    assert kpis["k3_cycle_time"]["n"] == 0
+    assert kpis["k3_cycle_time"]["evaluable"] is False
+    assert kpis["k3_cycle_time"]["not_evaluable_reason"]
+    # K2 is evaluable as soon as extraction has completed; it needs no approval.
+    assert kpis["k2_first_time_match"]["denominator"] == 2

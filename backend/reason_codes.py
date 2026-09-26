@@ -12,6 +12,7 @@ that order so the CSV, the API and the workbench agree.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -83,9 +84,9 @@ REASON_CODES: tuple[ReasonCode, ...] = (
         "line",
     ),
     ReasonCode(
-        "price_comparison_unavailable",
-        "item_master_owner",
-        "no RMS cost comparison could be made for a line (no RMS item, unit disagreement, missing RMS cost, currency or missing invoice cost); fix the reference data or acknowledge at review",
+        "adjustment_unpaired",
+        "brand_reviewer",
+        "a discount, credit or other adjustment row has no RMS item; keep it, pair it with the product lines it adjusts at review, never drop it",
         "line",
     ),
     ReasonCode(
@@ -115,6 +116,31 @@ REASON_CODES: tuple[ReasonCode, ...] = (
 )
 
 REGISTRY: dict[str, ReasonCode] = {entry.code: entry for entry in REASON_CODES}
+
+# A line whose RMS cost comparison could not be made is a STATE, not an
+# exception: nobody can act on the comparison until the line is matched, and
+# the line already carries the code for that (line_unmapped or
+# line_low_confidence).  ``comparison_state`` names the state so the API and
+# the workbench can show it beside the codes without assigning an owner.
+COMPARISON_STATES = ("above_tolerance", "within_tolerance", "unavailable")
+
+# Non-product rows are recognised by generic adjustment vocabulary only; no
+# supplier's own spelling or phrasing is keyed here.
+ADJUSTMENT_KEYWORDS = (
+    "discount",
+    "rebate",
+    "credit",
+    "allowance",
+    "adjustment",
+    "surcharge",
+    "promotion",
+    "promo",
+    "rounding",
+)
+_ADJUSTMENT_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(word) for word in ADJUSTMENT_KEYWORDS) + r")",
+    re.IGNORECASE,
+)
 _ORDER = {entry.code: index for index, entry in enumerate(REASON_CODES)}
 
 
@@ -141,8 +167,8 @@ VALIDATION_CODE_MAP: dict[str, str] = {
     "catalog_item_mismatch": "line_unmapped",
     "supplier_item_mismatch": "line_unmapped",
     "unit_unconfirmed": "unit_unconfirmed",
-    # Expanded per line by ``reason_codes_for_error``; this entry is the residual
-    # for an invoice-level target variance with no flagged line.
+    # Expanded per line by ``reason_codes_for_error``; the single-code form is
+    # the gate's own name.  Lines whose comparison is unavailable add no code.
     "target_cost_review_required": "price_above_tolerance",
     "duplicate_supplier_invoice": "duplicate_suspected",
     "duplicate_suspected": "duplicate_suspected",
@@ -211,42 +237,74 @@ def reason_code_for_error(
         raise UnknownReasonCode(f"{field}.{code}")
     if code == "unmapped" and index is not None and lines is not None and index < len(lines):
         # A suggestion the matcher offered but nobody confirmed is a different
-        # queue (reviewer) from a line with nothing to confirm (item master).
-        if str(lines[index].get("match_status") or "") == "suggested":
+        # queue (reviewer) from a line with nothing to confirm (item master),
+        # and an adjustment row with nothing to map is the reviewer's to pair.
+        line = lines[index]
+        if str(line.get("match_status") or "") == "suggested":
             return "line_low_confidence"
+        if is_adjustment_line(line):
+            return "adjustment_unpaired"
     if code in VALIDATION_CODE_MAP:
         return VALIDATION_CODE_MAP[code]
     raise UnknownReasonCode(f"{field}.{code}")
 
 
 def reason_codes_for_error(
-    error: Mapping[str, Any], lines: Sequence[Mapping[str, Any]] | None = None
+    error: Mapping[str, Any],
+    lines: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    target_variance_flagged: bool = False,
 ) -> list[str]:
-    """Like ``reason_code_for_error`` but the price gate expands to one code per
-    distinct cause on the flagged lines: ``price_above_tolerance`` only where a
-    comparison was made and failed, ``price_comparison_unavailable`` where it
-    could not be made.  With no flagged line the gate reflects an invoice-level
-    target variance and keeps the residual mapping."""
-    if str(error.get("code") or "") == "target_cost_review_required" and lines:
-        codes = {code for line in lines for code in [line_price_code(line)] if code}
-        if codes:
-            return sort_codes(codes)
+    """Like ``reason_code_for_error`` but the price gate expands from its lines.
+
+    The gate fires when any line needs a cost review or the invoice's target
+    total disagrees with its captured subtotal.  ``price_above_tolerance`` is
+    assigned only for lines where a comparison was MADE and exceeded tolerance;
+    lines whose comparison could not be made add nothing (see
+    ``comparison_state``).  An invoice-level target variance is a
+    reconciliation failure and is coded as one.
+    """
+    if str(error.get("code") or "") == "target_cost_review_required":
+        codes = {code for line in (lines or []) for code in [line_price_code(line)] if code}
+        if target_variance_flagged:
+            codes.add("total_reconciliation_failed")
+        return sort_codes(codes)
     return [reason_code_for_error(error, lines)]
 
 
-def line_price_code(line: Mapping[str, Any]) -> str | None:
-    """The price-gate code one line carries, from the comparison the matcher
-    recorded.  A flagged line with no recorded comparison status is a line
-    whose comparison was never established, so it is reported as unavailable,
-    never as a measured variance."""
+def comparison_state(line: Mapping[str, Any]) -> str | None:
+    """``above_tolerance`` / ``within_tolerance`` / ``unavailable`` / None.
+
+    A flagged line with no recorded comparison status never had a comparison
+    established, so it is ``unavailable``, never a measured variance."""
     status = str(line.get("target_cost_comparison_status") or "")
-    if status == "above_tolerance":
-        return "price_above_tolerance"
-    if status.startswith("unavailable"):
-        return "price_comparison_unavailable"
-    if line.get("target_cost_review_required"):
-        return "price_comparison_unavailable"
+    if status in {"above_tolerance", "within_tolerance"}:
+        return status
+    if status.startswith("unavailable") or line.get("target_cost_review_required"):
+        return "unavailable"
     return None
+
+
+def line_price_code(line: Mapping[str, Any]) -> str | None:
+    """The price-gate code one line carries: only a comparison that was made
+    and exceeded tolerance is an exception a reviewer can act on."""
+    return "price_above_tolerance" if comparison_state(line) == "above_tolerance" else None
+
+
+def is_adjustment_line(line: Mapping[str, Any]) -> bool:
+    """A non-product row (discount, credit, rebate, ...) by generic vocabulary."""
+    return bool(_ADJUSTMENT_PATTERN.search(str(line.get("description") or "")))
+
+
+def comparison_summary(lines: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """How many lines sit in each comparison state (a state, not an exception)."""
+    summary = {state: 0 for state in COMPARISON_STATES}
+    summary["lines"] = len(lines)
+    for line in lines:
+        state = comparison_state(line)
+        if state:
+            summary[state] += 1
+    return summary
 
 
 def reason_code_for_failure(error_text: str | None) -> str:
@@ -270,6 +328,7 @@ def assign_reason_codes(
     validation_errors: Sequence[Mapping[str, Any]],
     lines: Sequence[Mapping[str, Any]] | None,
     duplicate_level: str | None,
+    target_variance_flagged: bool = False,
 ) -> list[str]:
     """Invoice-level governed reason codes for one invoice, in registry order.
 
@@ -282,7 +341,13 @@ def assign_reason_codes(
         return []
     if status == "failed":
         return [reason_code_for_failure(error_text)]
-    codes = {code for error in validation_errors for code in reason_codes_for_error(error, lines)}
+    codes = {
+        code
+        for error in validation_errors
+        for code in reason_codes_for_error(
+            error, lines, target_variance_flagged=target_variance_flagged
+        )
+    }
     if duplicate_level in {"strong", "weak"}:
         codes.add("duplicate_suspected")
     return sort_codes(codes)
@@ -339,6 +404,11 @@ __all__ = [
     "VALIDATION_CODE_MAP",
     "FAILURE_CLASS_MAP",
     "assign_reason_codes",
+    "ADJUSTMENT_KEYWORDS",
+    "COMPARISON_STATES",
+    "comparison_state",
+    "comparison_summary",
+    "is_adjustment_line",
     "line_price_code",
     "line_reason_codes",
     "owners_for",

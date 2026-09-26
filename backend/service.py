@@ -1283,8 +1283,16 @@ class InvoiceService:
             validation_errors=validation_errors,
             lines=lines,
             duplicate_level=invoice["duplicate_suspicion"]["level"],
+            target_variance_flagged=bool(
+                target_variance is not None
+                and not _money_equal(target_variance, Decimal("0"), currency)
+            ),
         )
         invoice["reason_owners"] = reason_registry.owners_for(invoice["reason_codes"])
+        # Lines without an RMS cost comparison are a state the workbench shows,
+        # not an exception anyone owns: nobody can act on the comparison until
+        # the line is matched, and the line carries that code already.
+        invoice["price_comparison"] = reason_registry.comparison_summary(lines)
         if full:
             for index, line in enumerate(lines):
                 line["reason_codes"] = reason_registry.line_reason_codes(
@@ -4097,7 +4105,12 @@ class InvoiceService:
         K2 first-time match: every line matched automatically at the FIRST
         extraction, read from the extraction_completed audit detail; records
         older than that detail fall back to their current lines being all
-        'auto' (a confirmed line means a human touched it).
+        'auto'.  CAVEAT: that fallback reads 'confirmed' as a human touch,
+        but rematch currently promotes machine autos to confirmed/100.0
+        (matching.match_lines, supplied-id path), so until task 01a0db9a-5d3c
+        lands K2 may UNDERCOUNT after any rematch for records without the
+        detail.  Records with the detail are unaffected: the count is fixed
+        at extraction time.
         K3 cycle time: upload (created_at) to the first transition into ready,
         median over invoices that ever reached ready.  Seconds, not a rate.
         """
@@ -4132,12 +4145,19 @@ class InvoiceService:
             by_invoice.setdefault(event["invoice_id"], []).append(event)
 
         touchless = 0
+        approval_stage = 0
         first_time_match = 0
+        # K2's denominator is invoices with an extraction_completed event.  On
+        # a workspace where every upload completed extraction (the replay
+        # corpus, for one) it equals the invoice count; that is a coincidence
+        # of that corpus, not the definition: failed, queued and processing
+        # records are outside it.
         extracted = 0
         cycle_seconds: list[float] = []
         for row in invoices:
             trail = by_invoice.get(row["id"], [])
             if row["status"] in {"ready", "exported"}:
+                approval_stage += 1
                 human_corrections = [
                     event
                     for event in trail
@@ -4178,12 +4198,30 @@ class InvoiceService:
                 if len(cycle_seconds) % 2
                 else (cycle_seconds[middle - 1] + cycle_seconds[middle]) / 2
             )
+        # A numerator that can only count approved invoices says nothing until
+        # one exists: "0 of N" would not distinguish "nothing touchless" from
+        # "nothing approved yet", so K1 and K3 declare themselves not evaluable
+        # instead of publishing a zero.
+        k1_reason = (
+            None
+            if approval_stage
+            else "no invoice has reached ready or exported in this workspace, so no "
+            "touchless outcome can be observed yet"
+        )
+        k3_reason = (
+            None
+            if cycle_seconds
+            else "no invoice has reached ready in this workspace, so there is no cycle to measure"
+        )
         return {
             "as_of": utc_now(),
             "contains_demo_data": contains_demo,
             "k1_touchless": {
                 "numerator": touchless,
                 "denominator": len(invoices),
+                "approval_stage": approval_stage,
+                "evaluable": approval_stage > 0,
+                "not_evaluable_reason": k1_reason,
                 "definition": (
                     "invoices in ready or exported whose audit trail has no human "
                     "action other than the approval itself, over all invoices"
@@ -4196,12 +4234,15 @@ class InvoiceService:
                     "invoices whose lines all matched automatically at the first "
                     "extraction (from the extraction_completed audit detail; records "
                     "without that detail fall back to their current lines all being "
-                    "auto), over invoices that completed extraction"
+                    "auto, which may undercount after a rematch), over invoices that "
+                    "completed extraction"
                 ),
             },
             "k3_cycle_time": {
                 "median_seconds": median,
                 "n": len(cycle_seconds),
+                "evaluable": bool(cycle_seconds),
+                "not_evaluable_reason": k3_reason,
                 "definition": (
                     "median seconds from upload to the first transition into ready, "
                     "over invoices that ever reached ready"
