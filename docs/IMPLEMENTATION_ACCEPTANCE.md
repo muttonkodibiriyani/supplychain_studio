@@ -103,6 +103,28 @@ follows.
    publishing one; it is the better bet only because removing a claim costs a delay when it is wrong,
    where adding one costs a wrong plan.
 
+
+### A caveat that applies to every replayed score in this record
+
+Late in the acceptance it was found that **the environment used for the replays does not have the ranking
+library the product declares as a requirement**, and that the product *silently substitutes a different
+similarity function when that library is missing*. Every replay figure in this record that depends on a
+similarity score was therefore computed by the substitute, not by the scorer a correctly installed system
+uses. The next section states the defect; this note states what it does to the figures.
+
+**What survives unchanged.** Set-level invariants measured across runs: the set of lines decided
+automatically is the same under both scorers, which makes that invariant stronger than it was, not weaker.
+Anything decided by exact-match eligibility rather than by a score — the duplicate-row collapse, the
+identifier divergence counts, the promotion relabelling — does not pass through the similarity function at
+all.
+
+**What is now labelled.** Every count of the form "this version and that version disagree on N lines" was
+measured under the substitute scorer. The *exclusions* stand as exclusions: a version that fails to
+reproduce the stored data under one scorer has not been shown to reproduce it under another, and no
+retroactive claim is made either way. But the **magnitudes** are confounded between a code difference and a
+scorer difference, so they must not be read as distances between versions, and an ordering of two such
+counts carries no information about which version is closer.
+
 ## How to reproduce this record
 
 Two read-only instruments were written for this acceptance. They live outside this repository, in
@@ -2530,6 +2552,41 @@ only screen a human actually uses.
 
 This one was found by re-checking a claim of my own immediately after publishing it, which is rule 9 working
 as intended rather than as an apology.
+
+
+## The matcher silently swaps its scoring function when a declared dependency is absent
+
+The similarity score that decides which catalogue row a line matches is computed by a third-party ranking
+library. That library is a **declared, pinned requirement** and the extraction documentation names it as the
+ranking dependency. The code imports it inside the scoring function and, on failure, catches the import error
+and computes the score with a standard-library string matcher instead.
+
+Nothing records that this happened. There is no log line, no startup warning, no field in any status
+response, and no mention in the run output. The comment on the fallback describes it as a deterministic
+lightweight path for constrained environments, which is an accurate description of the code and an incomplete
+description of the consequence: **a correctly installed system and a system missing one wheel both run, both
+report the same confidences in the same range, and rank candidates by different functions.**
+
+This is the same class this record has catalogued five times over — a control that loses capability and
+returns a normal-looking value — and it is the most consequential instance, because it sits on the function
+the product's accuracy claim rests on. Its practical shape is an installation one. The library ships as a
+compiled wheel; the platforms this system is required to install on from zero are the two where a compiled
+wheel is most likely to fail to build. An operator who hits that failure gets a working application, a
+populated review queue, plausible confidence percentages, and a different matcher, with nothing anywhere
+telling them so.
+
+It also bounds what any accuracy figure means. A confidence percentage produced by this system is a property
+of the code **and of whether one import succeeded**, and that second input has never been recorded in any run
+output, so no figure published before this was found can state which scorer produced it.
+
+**Required, and the shape follows the rule this record uses for every other guard.** A declared requirement
+that the product silently does without is not a fallback, it is an undocumented second product. Either the
+missing library **refuses at startup, naming the library and the install command** — the treatment this record
+has demanded of every other fail-closed control, because a refusal that names its remedy gets fixed and a
+silent degradation gets shipped — or, if a scorer-free mode is genuinely wanted, it must announce itself: a
+startup log line, a field in the status response, a line in every run header, and a visible mark on every
+confidence value it produced. And no accuracy figure may be published by anyone without naming the scorer
+that produced it.
 
 ## The stored match results were produced by a build the tested versions do not reproduce
 
