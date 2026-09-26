@@ -1684,3 +1684,40 @@ two classes is admissible, because averaging a working path with a non-working o
 text-layer PDFs the system extracts and matches line items. For scans and photographs it currently reads
 no line items from most documents and flags them for manual entry. Any per-document success rate in this
 programme carries its class or it carries nothing.
+
+### Which reading held: recognition works, the line parser does not
+
+The discriminator registered above was measured on the 34 zero-yield documents and the first reading
+holds on 32 of them, with the second holding on 2. Recognised text is present in volume — median 41,250
+characters, with 32 of 34 above two thousand — and header fields are recovered from 20 of the 34. On 2
+documents recognition produced nothing; those reached a review state carrying a lines-required reason
+instead of failing with a recognition reason, which is the mislabelling defect registered above,
+small in count and real in kind.
+
+**The evidence inverts the intuitive explanation, which is why it is worth recording in detail.** On
+every available proxy for document quality the zero-yield group is equal to or better than the group that
+did yield lines: characters 41,250 against 26,978, numeric-candidate lines 107 against 62, invoice total
+recovered on 20 of 34 against 4 of 14, and vocabulary, alphabetic and whitespace ratios indistinguishable
+between the groups. The documents the parser reads nothing from are the longer, denser, more numeric ones.
+Failure correlates positively with content density. Degraded recognition, short text and missing headers
+are all excluded, and what remains is a structural limit in the line-table parser's row model as column
+structure grows richer. Characterisation starts from the densest zero-yield document rather than the
+smallest, and three strata are kept separate: the 32 the parser cannot read, the 2 near-empty, and the 6
+within the 32 that carry long text yet not one header field.
+
+**A condition that outranks the fix.** Character accuracy against ground truth is unmeasured. That text
+is present, and of the same profile as text the parser does read, is a claim about volume and shape and
+not about correctness. Teaching the parser to read these layouts while recognition silently mis-reads
+digits would not produce a non-conversion; it would produce a wrong quantity and a wrong price carried
+into a downstream system with a terminal state and no flag — this record's recurring defect class in its
+most damaging available form, and strictly worse than reading nothing. A digit-level accuracy check on a
+hand-transcribed sample of quantities and prices is therefore required *before* any parser change is
+planned as a fix. If digit accuracy on those fields is not high, the class is not fixable by parsing and
+the honest product statement is that scanned and photographed invoices must be keyed by hand.
+
+**The mislabelling fix is not held by the extraction freeze.** The lines-required error is raised in the
+service validator with the invoice record in hand, and the recognised text is a stored column, so a
+near-empty recognition result can be given its own reason and a failed terminal state without touching
+the frozen extraction module. It is two documents in fifty and still worth doing promptly, because the
+defect — reporting a document that could not be read as one that was read and found empty — is one the
+requester will meet on their own scans and will have no way to diagnose.
