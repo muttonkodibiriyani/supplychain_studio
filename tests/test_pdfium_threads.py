@@ -2,16 +2,27 @@
 in one process.  Rasterising scanned PDFs concurrently without serialising the
 PDFium calls raises "Could not rasterize scanned PDF pages: Failed to load
 document (PDFium: Data format error)" or "Failed to load page." on files that
-load cleanly single-threaded.  The fixtures are small image-only PDFs generated
-here; OCR is stubbed so only the rasterisation path runs, and small pages keep
-document loads (where the race lives) dense.  The test is a gate on the
-aggregate of several rounds so that it is red against the unlocked code every
-run, not most runs."""
+load cleanly single-threaded.
+
+The gating test is structural: the pypdfium2 entry points the lock guards
+(document load, page access, page size, render, bitmap copy, close) are
+replaced by probes that record an entry/exit interval per thread and hold a
+barrier open inside the call.  Serialised calls can never satisfy the barrier
+and never overlap; with the lock replaced by a no-op every worker enters the
+document load together, the barrier passes and the intervals overlap, so the
+test fails on every run without depending on a race.
+
+The race test that follows is a non-gating stress check.  Its limits: against
+the unlocked code it passes 4 of 4 runs at the shipped settings (8 threads, 3
+rounds of 1.5 s) and fails only 1 of 4 runs at 16 threads / 4 s (Reviewer B's
+pre-run on c8b291b), so it cannot gate.  It runs only with PDFIUM_STRESS=1.
+"""
 
 from __future__ import annotations
 
 import collections
 import importlib.util
+import os
 import tempfile
 import threading
 import time
@@ -41,7 +52,121 @@ def _make_scanned_pdf(path: Path, pages: int) -> None:
 
 
 @unittest.skipUnless(PDFIUM_AVAILABLE, "pypdfium2 is required")
-class ConcurrentRasterisationTests(unittest.TestCase):
+class PdfiumSerialisationTests(unittest.TestCase):
+    """Structural assertion that every guarded pypdfium2 call is serialised."""
+
+    THREADS = 8  # shipped extraction worker count
+
+    def test_guarded_pdfium_calls_never_overlap_across_threads(self) -> None:
+        import pypdfium2
+
+        real_document = pypdfium2.PdfDocument
+        intervals: list[tuple[str, int, float, float]] = []
+        state_lock = threading.Lock()
+        inside = {"count": 0, "max": 0}
+        # Passes only if THREADS workers are inside a probed call at once.
+        barrier = threading.Barrier(self.THREADS, timeout=1.0)
+        barrier_passed = {"count": 0}
+
+        def probed(name, function):
+            def call(*args, **kwargs):
+                started = time.monotonic()
+                with state_lock:
+                    inside["count"] += 1
+                    inside["max"] = max(inside["max"], inside["count"])
+                try:
+                    try:
+                        barrier.wait()
+                        with state_lock:
+                            barrier_passed["count"] += 1
+                    except threading.BrokenBarrierError:
+                        pass
+                    return function(*args, **kwargs)
+                finally:
+                    with state_lock:
+                        inside["count"] -= 1
+                        intervals.append((name, threading.get_ident(), started, time.monotonic()))
+
+            return call
+
+        class ProbeBitmap:
+            def __init__(self, bitmap):
+                self._bitmap = bitmap
+                self.to_pil = probed("bitmap.to_pil", bitmap.to_pil)
+                self.close = probed("bitmap.close", bitmap.close)
+
+        class ProbePage:
+            def __init__(self, page):
+                self._page = page
+                self.get_size = probed("page.get_size", page.get_size)
+                self.close = probed("page.close", page.close)
+
+            def render(self, *args, **kwargs):
+                return ProbeBitmap(probed("page.render", self._page.render)(*args, **kwargs))
+
+        class ProbeDocument:
+            def __init__(self, *args, **kwargs):
+                self._document = probed("PdfDocument", real_document)(*args, **kwargs)
+                self.close = probed("document.close", self._document.close)
+
+            def __len__(self):
+                return len(self._document)
+
+            def __getitem__(self, index):
+                return ProbePage(probed("document[index]", self._document.__getitem__)(index))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scan.pdf"
+            _make_scanned_pdf(path, pages=2)
+            limits = ExtractionLimits()
+            errors: list[str] = []
+
+            def worker() -> None:
+                try:
+                    _ocr_pdf_pages(path, [0, 1], limits)
+                except Exception as exc:  # noqa: BLE001 - asserted below
+                    errors.append(f"{type(exc).__name__}: {exc}"[:120])
+
+            with patch.object(pypdfium2, "PdfDocument", ProbeDocument), patch.object(
+                extraction.shutil, "which", return_value="/usr/bin/tesseract"
+            ), patch.object(extraction, "_run_tesseract", return_value=("stub", 90.0)):
+                threads = [threading.Thread(target=worker) for _ in range(self.THREADS)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+
+        self.assertEqual(errors, [])
+        probed_names = {name for name, _, _, _ in intervals}
+        self.assertTrue(
+            {"PdfDocument", "document[index]", "page.get_size", "page.render", "bitmap.to_pil", "document.close"}
+            <= probed_names,
+            probed_names,
+        )
+        self.assertGreaterEqual(len({thread for _, thread, _, _ in intervals}), self.THREADS)
+        overlaps = [
+            (first, second)
+            for index, first in enumerate(intervals)
+            for second in intervals[index + 1 :]
+            if first[1] != second[1] and first[2] < second[3] and second[2] < first[3]
+        ]
+        self.assertEqual(
+            len(overlaps),
+            0,
+            f"{len(overlaps)} overlapping guarded pypdfium2 intervals across threads, "
+            f"first: {overlaps[0][0][0]} vs {overlaps[0][1][0]}" if overlaps else "",
+        )
+        self.assertEqual(inside["max"], 1, "more than one thread inside a guarded call at once")
+        self.assertEqual(barrier_passed["count"], 0, "all workers entered a guarded call together")
+
+
+@unittest.skipUnless(PDFIUM_AVAILABLE, "pypdfium2 is required")
+@unittest.skipUnless(os.environ.get("PDFIUM_STRESS") == "1", "non-gating stress check; set PDFIUM_STRESS=1")
+class ConcurrentRasterisationStressTests(unittest.TestCase):
+    """Non-gating stress check.  See the module docstring for its limits: it
+    does not fail reliably against the unlocked code and must not be read as
+    proof of serialisation."""
+
     ROUNDS = 3
     THREADS = 8
     SECONDS_PER_ROUND = 1.5
