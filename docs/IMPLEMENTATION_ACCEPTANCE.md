@@ -1530,8 +1530,10 @@ wrongly exported invoice is not. The gate above is written to separate those two
 resting on terminal states alone cannot do.
 
 ## Post-freeze findings, sixth round: the word "converted" was wrong, and the block on automatic matching was the master repeating itself
-> **WITHDRAWN.** The duplicate-master-row diagnosis below is refuted by a second instrument and is no
-> longer this document's position. See "Two withdrawals" at the end.
+> **WITHDRAWAL NARROWED.** The mechanism below — duplicate master rows blocking automatic matching — is
+> **supported** by a with/without measurement. What is withdrawn is the *evidence path*: the claim that
+> these lines matched a master row on an exact normalised description. See "The withdrawal was too broad"
+> at the end.
 
 
 Three findings and one withdrawal, all measured at `af4a6d8` unless stated. Two of them reduce what
@@ -2175,3 +2177,93 @@ from any other cause of two ratio clusters.
 
 Which leaves the ruling unchanged and better founded: the cost axis is not evaluable, no numerator is
 published, and the question of which basis is authoritative goes to the master's owner.
+
+## The withdrawal is itself withdrawn: the duplicate diagnosis is confirmed
+
+The four-cell experiment is complete and it reinstates the finding this record retracted. All figures come
+from the matcher itself on a fresh read-only copy, with every stored selection stripped so the relabelling
+defect cannot enter, at one tree, with the mechanisms patched independently.
+
+**The control validates the instrument before anything else is read.** With both mechanisms off, automatic
+decisions come to 21 — exactly the corpus's own stored count. The harness at the pre-change setting returns
+what the corpus already contains, so everything above that line is the change and not the measuring device.
+This is the check this record demanded of others and its absence is what made an earlier instrument of my
+own produce a confidently wrong split.
+
+**The decomposition, additive with a small interaction:** 21 at baseline, plus 21 from lifting an
+uninformative unit-of-measure scoring cap, plus **115 from collapsing duplicate master rows**, plus 5 that
+require both mechanisms present, giving 162.
+
+**The re-derivation, by a different route, lands on the same 115.** Of the lines held non-automatic at
+baseline, those having at least one exact-description eligible master row number 117 — and every single one
+of them has **exactly two**. Not one, not three. Of those 117, **115 are two rows sharing one item
+identifier**, and 2 are genuinely different items carrying two distinct costs, which the collapse rule
+correctly refuses to fold. After the collapse, all 115 are automatic and none remain in review. Two
+measurements, taken by unrelated routes, agreeing on the same number.
+
+The original claim was 107 of 109; this is 115 of 117 — same shape, same striking two-candidate
+uniformity, same two genuinely ambiguous cases, slightly larger for reasons declared before the run. That
+is a second instrument reproducing a finding, not a near miss.
+
+**Both refuting measurements were also correct, and the error was the inference between them.** The
+residual having no exact normalised row is exactly what this data *predicts*: every exact-row line becomes
+automatic, so none are left afterwards. Nothing was ever in contradiction.
+
+### How I got this wrong, which is worth more than the finding
+
+**I withdrew a claim about the lines held at baseline on evidence about the lines left behind.** That is the
+population boundary this record states as rule 5 — and two messages before making this error I had caught
+the same reviewer crossing the same boundary in the opposite direction, explained why it mattered, and
+written the rule down. Then I crossed it myself, in the other direction, on my own claim.
+
+Three failures compounded, and the order matters:
+
+1. I treated a refutation of my **evidence** as a refutation of my **conclusion**. A reimplemented equality
+   rule had indeed manufactured the exact-tie test, and that was a real defect in my instrument. It made
+   the conclusion *unsupported*. It did not make it *false*. An unsupported claim needs a better
+   measurement; a false one needs a different hypothesis, and I ordered the wrong work.
+2. I did not check the population of the refuting measurement, having just written the rule that requires it.
+3. **Withdrawing against myself felt like rigour, and it substituted for the check.** That is the part to
+   watch for: self-correction carries the same false confidence as self-congratulation, and I published a
+   sweeping retraction — "no forecast survives" — in the register of someone being careful. Volume of
+   self-criticism is not evidence. It reads as diligence and it can be exactly as unfounded as a boast.
+
+**Rule 8: withdraw what was refuted, and say whether the claim is now unsupported or false.**
+**Rule 9: a correction gets the same scrutiny as a claim, including the population check, especially when
+it is against yourself.**
+
+One thing stays retired, and not because of this: the assertion that no forecast of the automatic-match
+rate survives was never resting on the duplicate finding. The 92 lines with no exact master row at all
+remain unexplained, and by line count they are the larger half of the problem. The duplicate finding
+describes what blocked 115 lines. It was never a forecast, and it is not one now.
+
+The ranking key, the third mechanism in that commit, could not be isolated by patching and was not faked.
+It remains unmeasured, so the export figure's dependency on it stays open.
+
+## The mechanism that makes lines touchless also picks their barcode arbitrarily
+
+Found by the same reviewer during the confirmation, and it survives it. The collapse guard refuses to fold
+a group whose members diverge on unit cost or unit of measure. It does not look at the identifier the
+surviving row **exports**.
+
+Of the 115 lines the collapse promotes to automatic, **57 fold two rows carrying two distinct, non-empty
+barcodes** — not one value against a blank, two different real values. A further 58 fold a value against an
+empty one. None diverge on parent item or master purchase-order number.
+
+The survivor is the group's first member after ranking, and for two rows of one item with identical
+description, cost and unit of measure every ranking term ties down to the last one: the catalog row key,
+compared as a string. **So the exported barcode is decided by lexicographic row-identifier order, and
+re-importing the same master in a different order can change the barcode exported for the same invoice
+line.** Nothing warns, nothing records the discarded value, and no human sees it.
+
+**The severity is in which lines these are, not in how many.** They are not edge cases parked in a review
+queue. They are precisely the lines the collapse promotes to automatic — the lines this programme most
+wants to ship without a human looking at them. The mechanism that delivers the touchless outcome is the
+mechanism that picks the barcode arbitrarily, and the barcode is how the receiving system identifies the
+goods.
+
+This does not block the collapse, which does real and correct work on 115 lines. The guard should refuse,
+or at least warn, on a group whose exported identifiers differ, exactly as it already does for cost and
+unit of measure — a small change to a function that already has the right shape. Until it lands, the
+export of an automatically matched line is not reproducible from the master alone, and **that claim must
+not be made to the receiving system's owner.**
