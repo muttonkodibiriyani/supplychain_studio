@@ -2262,6 +2262,24 @@ wants to ship without a human looking at them. The mechanism that delivers the t
 mechanism that picks the barcode arbitrarily, and the barcode is how the receiving system identifies the
 goods.
 
+### A second loss in the same guard, verified from the code
+
+The lines that fold a real identifier against an empty one are not the benign case they look like. The
+survivor is chosen the same way — by row-identifier order, with no term for the identifier anywhere in the
+ranking — so **the empty value can win over the real one the master holds.** That is silent loss of an
+identifier the system already had, which is a different failure from exporting a real-but-arbitrary one,
+and the fix must prefer the non-empty value deterministically rather than merely refuse on disagreement.
+How many lines currently lose a known identifier this way has not been measured and no number is claimed
+here; the mechanism was read off the guard and the ranking function directly.
+
+### What this obliges the record to do
+
+The automatic count must be reported on both sides of this guard, and the higher figure must not be quoted
+again without stating that a substantial part of it rested on an arbitrarily chosen identifier. A figure
+whose basis has changed while keeping its label is the defect this record spends most of its length on.
+Nothing has been delivered — the export has only ever run inside this harness — so there is no recall
+question today. If anything ships before the guard lands, there is.
+
 This does not block the collapse, which does real and correct work on 115 lines. The guard should refuse,
 or at least warn, on a group whose exported identifiers differ, exactly as it already does for cost and
 unit of measure — a small change to a function that already has the right shape. Until it lands, the
