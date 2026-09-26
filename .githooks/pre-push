@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Whole-tree private-pattern guard before anything leaves this machine.
+# Enable once per clone:  git config core.hooksPath .githooks
+# Limit: local and bypassable (git push --no-verify); the CI workflow is the
+# authoritative check but runs after the push has already published.
+set -e
+cd "$(git rev-parse --show-toplevel)"
+if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=python3; fi
+exec "$PY" scripts/package_source.py --check-only

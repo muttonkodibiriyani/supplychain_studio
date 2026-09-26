@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "public" / "invoice-studio-source.zip"
@@ -124,7 +125,16 @@ def validate_repository(root: Path = ROOT) -> None:
             + ", ".join(offending) + "; inspect locally before publication"
         )
 
+def check_only(root: Path = ROOT) -> int:
+    """Entry point for CI and the pre-push hook: tree guard only, no archive."""
+    validate_repository(root)
+    print(f"Repository privacy guard: {len(repository_text_files(root))} text files scanned, no listed pattern found")
+    return 0
+
+
 def main() -> None:
+    if "--check-only" in sys.argv[1:]:
+        raise SystemExit(check_only(ROOT))
     validate_repository(ROOT)
     for template in (ROOT / "public/templates").glob("*.csv"):
         template.with_suffix(".csv.txt").write_bytes(template.read_bytes())

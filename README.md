@@ -92,6 +92,8 @@ npm run build
 
 For UI development run `npm run dev`; Vite proxies `/api`. API documentation is at `/docs`.
 
+Enable the pre-push privacy guard once per clone with `git config core.hooksPath .githooks`; it runs `python scripts/package_source.py --check-only` before every push.
+
 ```bash
 python3 -m pytest -q
 npm run build
@@ -105,4 +107,4 @@ The labelled static preview uses fictional browser-local data. Real OCR, persist
 
 ## Source distribution
 
-The source package and GitHub repository contain code, documentation and synthetic examples. Real invoices, item masters, learned mappings, local databases and credentials remain private. The package builder uses an explicit file selection rather than copying the working directory. Open-source component notes are in [OPEN_SOURCE.md](docs/OPEN_SOURCE.md).
+The source package and GitHub repository contain code, documentation and synthetic examples. Real invoices, item masters, learned mappings, local databases and credentials remain private. The package builder uses an explicit file selection rather than copying the working directory, and `scripts/package_source.py --check-only` scans every tracked text file for listed private-content patterns (secrets, coordination ids, share links, home-directory paths). That scan runs in three places with different limits: in the package build; in the local pre-push hook, which prevents a push but is bypassable with `--no-verify`; and in the GitHub Actions workflow, which is authoritative but runs after the push has already published, so it detects rather than prevents. The CI half is committed under `.github/workflows.pending/` because the automation token cannot create workflows; the repository owner moves it to `.github/workflows/` (web editor, edit file, change the path) to activate it. Until moved, only the local pre-push hook runs. Patterns catch only what has a shape. A private filename, a count or a size has none, so every diff still gets a human read of its numerals before it is pushed. Open-source component notes are in [OPEN_SOURCE.md](docs/OPEN_SOURCE.md).

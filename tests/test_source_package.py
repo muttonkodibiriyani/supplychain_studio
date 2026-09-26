@@ -218,6 +218,33 @@ def test_whole_tree_guard_walks_the_tree_outside_a_git_checkout(tmp_path):
     assert 'docs/VOLUME_RESULTS.md' in str(error.value) and hit not in str(error.value)
 
 
+def test_check_only_entry_fails_closed_and_names_the_file(tmp_path, capsys):
+    root = _minimal_root(tmp_path)
+    assert package_source.check_only(root) == 0
+    assert 'no listed pattern found' in capsys.readouterr().out
+    hit = 'https://drive.' + G + '/file/d/abc/view'
+    (root / 'docs/VOLUME_RESULTS.md').write_text(hit + '\n')
+    with pytest.raises(SystemExit) as error:
+        package_source.check_only(root)
+    assert 'docs/VOLUME_RESULTS.md' in str(error.value) and hit not in str(error.value)
+
+
+def test_ci_workflow_and_pre_push_hook_run_the_check_only_entry():
+    root = package_source.ROOT
+    # Committed under workflows.pending/ until the repository owner moves it (the
+    # automation token cannot create workflows); either path must pass.
+    candidates = [root / '.github/workflows/privacy-guard.yml',
+                  root / '.github/workflows.pending/privacy-guard.yml']
+    present = [path for path in candidates if path.is_file()]
+    assert present, 'privacy-guard.yml missing from both .github/workflows/ and .github/workflows.pending/'
+    workflow = present[0].read_text()
+    hook = root / '.githooks/pre-push'
+    assert 'scripts/package_source.py --check-only' in workflow
+    assert 'pull_request' in workflow and 'push' in workflow
+    assert 'scripts/package_source.py --check-only' in hook.read_text()
+    assert hook.stat().st_mode & 0o111, 'pre-push must be executable'
+
+
 def test_whole_tree_guard_on_this_repository_is_clean():
     package_source.validate_repository(package_source.ROOT)
 
