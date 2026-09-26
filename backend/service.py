@@ -33,6 +33,7 @@ from .db import (
 )
 from .exporter import SCHEMA_NAME, build_target_workbook
 from . import matching
+from . import reason_codes as reason_registry
 
 logger = logging.getLogger("invoice_studio.service")
 
@@ -77,6 +78,23 @@ DOCUMENT_EXTENSIONS = {
 CATALOG_EXTENSIONS = {".csv", ".xlsx"}
 MATCH_STATUSES = {"unmatched", "suggested", "auto", "confirmed"}
 DOCUMENT_TYPES = {"invoice", "credit_note", "purchase_order", "delivery_note", "unknown"}
+# The first five columns are the established exception CSV contract; the two
+# governed columns are appended so existing readers keep their positions.
+EXCEPTION_REPORT_COLUMNS = (
+    "Invoice ID",
+    "Filename",
+    "Document Type",
+    "Status",
+    "Reasons",
+    "Reason Codes",
+    "Owner Roles",
+)
+EXCEPTION_QUEUE_PAGE = 100
+# K1 touchless: the upload, the approve click and the export click move an
+# invoice along without changing it; every other user-actor event is a
+# correction (edit, rematch, retry) and disqualifies the invoice.
+HANDOFF_EVENTS = {"uploaded", "invoice_approved", "invoice_exported"}
+NON_HUMAN_ACTORS = {"system", "demo_seed"}
 COST_POLICY_MODES = {"invoice_only"}
 ISO_CURRENCY_PATTERN = re.compile(r"[A-Z]{3}")
 # Comparison reason codes recorded on a line next to target_cost_comparison_status.
@@ -349,6 +367,33 @@ def _catalog_item_key(
         [supplier_id or "", rms_item_id, upc or "", (uom or "").casefold(), occurrence]
     )
     return "catalog:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+
+
+class _DuplicateProbe(dict):
+    """Row-shaped view of an invoice payload for ``_duplicate_matches``.
+
+    Validation runs on proposed edits as well as stored rows, so the probe
+    tolerates keys the payload omits (they read as missing, not as errors).
+    """
+
+    def __getitem__(self, key: str) -> Any:
+        return dict.get(self, key)
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _age_seconds(now: datetime | None, created_at: Any) -> float | None:
+    """Seconds between ``created_at`` and ``now``; None when unparseable."""
+    created = _parse_utc(created_at)
+    if created is None or now is None:
+        return None
+    return max(0.0, round((now - created).total_seconds(), 3))
 
 
 def _clean_filename(filename: str | None) -> str:
@@ -1223,10 +1268,94 @@ class InvoiceService:
                 and not _money_equal(target_variance, Decimal("0"), currency)
             )
         )
+        lines = [self._line_from_row(line) for line in line_rows]
+        duplicates = self._duplicate_matches(conn, row)
+        invoice["duplicate_suspicion"] = {
+            "level": duplicates[0]["level"] if duplicates else None,
+            "matches": duplicates,
+        }
+        validation_errors: list[dict[str, str]] = []
+        if row["status"] not in {"queued", "processing", "failed"}:
+            validation_errors = self._validation_errors(conn, {**invoice, "lines": lines})
+        invoice["reason_codes"] = reason_registry.assign_reason_codes(
+            status=row["status"],
+            error_text=row["error"],
+            validation_errors=validation_errors,
+            lines=lines,
+            duplicate_level=invoice["duplicate_suspicion"]["level"],
+        )
+        invoice["reason_owners"] = reason_registry.owners_for(invoice["reason_codes"])
         if full:
-            invoice["lines"] = [self._line_from_row(line) for line in line_rows]
+            for index, line in enumerate(lines):
+                line["reason_codes"] = reason_registry.line_reason_codes(
+                    index, line, validation_errors
+                )
+            invoice["lines"] = lines
             invoice["raw_text"] = row["raw_text"]
         return invoice
+
+    def _duplicate_matches(self, conn: Any, row: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Other records that collide with this one on invoice identity (INV-07).
+
+        strong: same supplier (ID, or normalised name when either side has no
+        ID), same invoice number, same total and same invoice date.
+        weak: same supplier and invoice number only.  Failed records are not
+        identities.  Nothing is ever deleted or merged here; the caller only
+        surfaces the other id.
+        """
+        number = str(row["invoice_number"] or "").strip().casefold()
+        if not number:
+            return []
+        supplier_id = str(row["supplier_id"] or "").strip().casefold()
+        supplier_key = _supplier_name_key(row["supplier_name"])
+        if not supplier_id and not supplier_key:
+            return []
+        candidates = conn.execute(
+            """
+            SELECT id, supplier_id, supplier_name, total, invoice_date, status, created_at
+            FROM invoices
+            WHERE id <> ? AND status <> 'failed' AND invoice_number IS NOT NULL
+              AND lower(trim(invoice_number)) = ?
+            ORDER BY created_at, id
+            """,
+            (row["id"], number),
+        ).fetchall()
+        try:
+            own_total = _decimal(row["total"])
+        except (InvalidOperation, ValueError, TypeError):
+            own_total = None
+        own_date = str(row["invoice_date"] or "").strip()
+        matches: list[dict[str, Any]] = []
+        for other in candidates:
+            other_id = str(other["supplier_id"] or "").strip().casefold()
+            if supplier_id and other_id:
+                same_supplier = supplier_id == other_id
+            else:
+                other_key = _supplier_name_key(other["supplier_name"])
+                same_supplier = bool(supplier_key) and supplier_key == other_key
+            if not same_supplier:
+                continue
+            try:
+                other_total = _decimal(other["total"])
+            except (InvalidOperation, ValueError, TypeError):
+                other_total = None
+            same_total = (
+                own_total is not None
+                and other_total is not None
+                and _money_equal(own_total, other_total, row["currency"])
+            )
+            same_date = bool(own_date) and own_date == str(other["invoice_date"] or "").strip()
+            matches.append(
+                {
+                    "invoice_id": other["id"],
+                    "level": "strong" if same_total and same_date else "weak",
+                    "same_total": same_total,
+                    "same_date": same_date,
+                    "status": other["status"],
+                }
+            )
+        matches.sort(key=lambda match: (match["level"] != "strong", match["invoice_id"]))
+        return matches
 
     def _get_row(self, conn: Any, invoice_id: str) -> Any:
         row = conn.execute("SELECT * FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
@@ -2227,6 +2356,11 @@ class InvoiceService:
                 ),
             )
             self._replace_lines(conn, invoice_id, lines)
+            auto_matched = sum(
+                1
+                for line in lines
+                if line.get("rms_item_id") and line.get("match_status") == "auto"
+            )
             self._audit(
                 conn,
                 invoice_id,
@@ -2235,9 +2369,67 @@ class InvoiceService:
                 version=new_version,
                 from_status="processing",
                 to_status="needs_review",
-                details={"method": extracted.get("extraction_method"), "line_count": len(lines)},
+                details={
+                    "method": extracted.get("extraction_method"),
+                    "line_count": len(lines),
+                    "auto_matched_lines": auto_matched,
+                },
                 created_at=now,
             )
+            self._flag_duplicates_on_completion(conn, invoice_id, new_version, warnings, now)
+
+    def _flag_duplicates_on_completion(
+        self,
+        conn: Any,
+        invoice_id: str,
+        version: int,
+        warnings: list[Any],
+        now: str,
+    ) -> None:
+        """Record duplicate suspicion durably at extraction completion (INV-07).
+
+        The suspicion is also recomputed on every read so a later edit or
+        upload keeps it current; this durable copy is the audit evidence and
+        the capture note the operator sees.  Nothing is deleted or merged.
+        """
+        row = self._get_row(conn, invoice_id)
+        matches = self._duplicate_matches(conn, row)
+        if not matches:
+            return
+        strongest = matches[0]
+        other_ids = ", ".join(match["invoice_id"] for match in matches[:5])
+        if strongest["level"] == "strong":
+            note = (
+                "Duplicate suspected: same supplier, invoice number, total and date as "
+                f"invoice {other_ids}. Confirm before approval; nothing was deleted."
+            )
+        else:
+            note = (
+                "Possible duplicate: same supplier and invoice number as invoice "
+                f"{other_ids}; total or date differ. Confirm before approval."
+            )
+        stored = [str(item)[:1000] for item in warnings[:100]]
+        if note not in stored:
+            stored = (stored + [note])[:100]
+            conn.execute(
+                "UPDATE invoices SET warnings_json=? WHERE id=?",
+                (json_dumps(stored), invoice_id),
+            )
+        self._audit(
+            conn,
+            invoice_id,
+            "duplicate_suspected",
+            actor="system",
+            version=version,
+            details={
+                "level": strongest["level"],
+                "matches": [
+                    {"invoice_id": match["invoice_id"], "level": match["level"]}
+                    for match in matches[:20]
+                ],
+            },
+            created_at=now,
+        )
 
     def _fail_processing(self, invoice_id: str, error: BaseException, *, permanent: bool) -> None:
         now = utc_now()
@@ -2944,21 +3136,13 @@ class InvoiceService:
                     f"subtotal plus tax ({expected_total}) does not match total ({numbers['total']})",
                 )
 
-        if invoice.get("supplier_id") and invoice.get("invoice_number"):
-            duplicate = conn.execute(
-                """
-                SELECT id FROM invoices
-                WHERE id <> ? AND lower(trim(supplier_id)) = lower(trim(?))
-                  AND lower(trim(invoice_number)) = lower(trim(?)) AND status <> 'failed'
-                LIMIT 1
-                """,
-                (invoice["id"], invoice["supplier_id"], invoice["invoice_number"]),
-            ).fetchone()
-            if duplicate:
+        if invoice.get("invoice_number"):
+            duplicates = self._duplicate_matches(conn, _DuplicateProbe(invoice))
+            if duplicates:
                 error(
                     "invoice_number",
                     "duplicate_supplier_invoice",
-                    f"supplier invoice number already exists on {duplicate['id']}",
+                    f"supplier invoice number already exists on {duplicates[0]['invoice_id']}",
                 )
         return errors
 
@@ -3816,18 +4000,211 @@ class InvoiceService:
                         _spreadsheet_safe_csv_text(invoice.get("document_type") or "unknown"),
                         _spreadsheet_safe_csv_text(invoice["status"]),
                         _spreadsheet_safe_csv_text(" | ".join(reasons)),
+                        _spreadsheet_safe_csv_text(" | ".join(invoice["reason_codes"])),
+                        _spreadsheet_safe_csv_text(" | ".join(invoice["reason_owners"])),
                     ]
                 )
 
         output = io.StringIO(newline="")
         writer = csv.writer(output, lineterminator="\r\n")
-        writer.writerow(["Invoice ID", "Filename", "Document Type", "Status", "Reasons"])
+        writer.writerow(list(EXCEPTION_REPORT_COLUMNS))
         writer.writerows(rows)
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         return {
             "filename": f"invoice-exceptions-{timestamp}.csv",
             "content": output.getvalue().encode("utf-8-sig"),
             "count": len(rows),
+        }
+
+    def exception_queue(self) -> dict[str, Any]:
+        """EXC-01 / MAT-03: every open exception grouped by governed reason code.
+
+        An invoice appears under each code it carries.  Age is measured from
+        upload (created_at) so the oldest untouched document surfaces first.
+        Counts only; the workbench renders the denominators.
+        """
+        now_dt = datetime.now(UTC)
+        groups: dict[str, dict[str, Any]] = {}
+        invoices_with_codes = 0
+        total_invoices = 0
+        with self.db.connection() as conn:
+            rows = conn.execute("SELECT * FROM invoices ORDER BY created_at, id").fetchall()
+            for row in rows:
+                total_invoices += 1
+                invoice = self._invoice_from_row(conn, row, full=False)
+                codes = invoice["reason_codes"]
+                if not codes:
+                    continue
+                invoices_with_codes += 1
+                age_seconds = _age_seconds(now_dt, row["created_at"])
+                summary = {
+                    "id": invoice["id"],
+                    "invoice_number": invoice["invoice_number"],
+                    "filename": invoice["filename"],
+                    "supplier_name": invoice["supplier_name"],
+                    "supplier_id": invoice["supplier_id"],
+                    "status": invoice["status"],
+                    "document_type": invoice["document_type"],
+                    "created_at": invoice["created_at"],
+                    "age_seconds": age_seconds,
+                    "reason_codes": codes,
+                    "duplicate_of": [
+                        match["invoice_id"] for match in invoice["duplicate_suspicion"]["matches"]
+                    ],
+                }
+                for code in codes:
+                    entry = reason_registry.REGISTRY[code]
+                    group = groups.setdefault(
+                        code,
+                        {
+                            "code": code,
+                            "owner": entry.owner,
+                            "message": entry.message,
+                            "level": entry.level,
+                            "count": 0,
+                            "oldest_age_seconds": None,
+                            "oldest_invoice_id": None,
+                            "invoices": [],
+                        },
+                    )
+                    group["count"] += 1
+                    if group["oldest_age_seconds"] is None or (
+                        age_seconds is not None and age_seconds > group["oldest_age_seconds"]
+                    ):
+                        group["oldest_age_seconds"] = age_seconds
+                        group["oldest_invoice_id"] = invoice["id"]
+                    if len(group["invoices"]) < EXCEPTION_QUEUE_PAGE:
+                        group["invoices"].append(summary)
+        ordered = sorted(groups.values(), key=lambda group: (-group["count"], group["code"]))
+        for group in ordered:
+            group["invoices"].sort(key=lambda item: -(item["age_seconds"] or 0))
+            group["truncated"] = group["count"] > len(group["invoices"])
+        return {
+            "as_of": utc_now(),
+            "invoices_total": total_invoices,
+            "invoices_with_exceptions": invoices_with_codes,
+            "groups": ordered,
+            "registry": reason_registry.registry_rows(),
+        }
+
+    def kpis(self) -> dict[str, Any]:
+        """CTL-02 control KPIs as counts with their denominators.
+
+        K1 touchless: reached ready/exported with no human correction.  There
+        is no auto-approval yet, so the approve click (like the upload and the
+        export) is a handoff, not a touch: an invoice counts when its audit
+        trail holds no user-actor event outside HANDOFF_EVENTS.
+        K2 first-time match: every line matched automatically at the FIRST
+        extraction, read from the extraction_completed audit detail; records
+        older than that detail fall back to their current lines being all
+        'auto' (a confirmed line means a human touched it).
+        K3 cycle time: upload (created_at) to the first transition into ready,
+        median over invoices that ever reached ready.  Seconds, not a rate.
+        """
+        with self.db.connection() as conn:
+            invoices = conn.execute("SELECT id, status, created_at FROM invoices").fetchall()
+            events = conn.execute(
+                """
+                SELECT invoice_id, event_type, actor, created_at, to_status, details_json
+                FROM audit_events ORDER BY invoice_id, id
+                """
+            ).fetchall()
+            line_state = {
+                row["invoice_id"]: (row["total_lines"], row["auto_lines"])
+                for row in conn.execute(
+                    """
+                    SELECT invoice_id, COUNT(*) AS total_lines,
+                           COALESCE(SUM(CASE WHEN rms_item_id IS NOT NULL
+                                             AND match_status = 'auto' THEN 1 ELSE 0 END),0)
+                               AS auto_lines
+                    FROM invoice_lines GROUP BY invoice_id
+                    """
+                ).fetchall()
+            }
+            contains_demo = bool(
+                conn.execute(
+                    "SELECT 1 FROM invoices WHERE id LIKE ? LIMIT 1",
+                    (f"{DEMO_INVOICE_PREFIX}%",),
+                ).fetchone()
+            )
+        by_invoice: dict[str, list[Any]] = {}
+        for event in events:
+            by_invoice.setdefault(event["invoice_id"], []).append(event)
+
+        touchless = 0
+        first_time_match = 0
+        extracted = 0
+        cycle_seconds: list[float] = []
+        for row in invoices:
+            trail = by_invoice.get(row["id"], [])
+            if row["status"] in {"ready", "exported"}:
+                human_corrections = [
+                    event
+                    for event in trail
+                    if event["actor"] not in NON_HUMAN_ACTORS
+                    and event["event_type"] not in HANDOFF_EVENTS
+                ]
+                if not human_corrections:
+                    touchless += 1
+                first_ready = next(
+                    (event for event in trail if event["to_status"] == "ready"), None
+                )
+                if first_ready is not None:
+                    seconds = _age_seconds(_parse_utc(first_ready["created_at"]), row["created_at"])
+                    if seconds is not None:
+                        cycle_seconds.append(seconds)
+            completion = next(
+                (event for event in trail if event["event_type"] == "extraction_completed"),
+                None,
+            )
+            if completion is None:
+                continue
+            extracted += 1
+            details = _load_json(completion["details_json"], {})
+            if "auto_matched_lines" in details:
+                line_count = int(details.get("line_count") or 0)
+                if line_count and int(details["auto_matched_lines"]) == line_count:
+                    first_time_match += 1
+            else:
+                total_lines, auto_lines = line_state.get(row["id"], (0, 0))
+                if total_lines and auto_lines == total_lines:
+                    first_time_match += 1
+        cycle_seconds.sort()
+        median = None
+        if cycle_seconds:
+            middle = len(cycle_seconds) // 2
+            median = (
+                cycle_seconds[middle]
+                if len(cycle_seconds) % 2
+                else (cycle_seconds[middle - 1] + cycle_seconds[middle]) / 2
+            )
+        return {
+            "as_of": utc_now(),
+            "contains_demo_data": contains_demo,
+            "k1_touchless": {
+                "numerator": touchless,
+                "denominator": len(invoices),
+                "definition": (
+                    "invoices in ready or exported whose audit trail has no human "
+                    "action other than the approval itself, over all invoices"
+                ),
+            },
+            "k2_first_time_match": {
+                "numerator": first_time_match,
+                "denominator": extracted,
+                "definition": (
+                    "invoices whose lines all matched automatically at the first "
+                    "extraction, over invoices that completed extraction"
+                ),
+            },
+            "k3_cycle_time": {
+                "median_seconds": median,
+                "n": len(cycle_seconds),
+                "definition": (
+                    "median seconds from upload to the first transition into ready, "
+                    "over invoices that ever reached ready"
+                ),
+            },
         }
 
     def list_exports(self) -> dict[str, Any]:

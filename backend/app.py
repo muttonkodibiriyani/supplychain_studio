@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .reason_codes import registry_rows
 from .service import (
     Conflict,
     DemoSeedRefused,
@@ -368,6 +369,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/exports")
     def exports() -> dict[str, Any]:
         return service.list_exports()
+
+    @app.get("/api/kpis")
+    def kpis() -> dict[str, Any]:
+        return service.kpis()
+
+    @app.get("/api/exceptions")
+    def exceptions() -> dict[str, Any]:
+        return service.exception_queue()
+
+    @app.get("/api/reason-codes")
+    def reason_codes() -> dict[str, Any]:
+        return {"reason_codes": registry_rows()}
 
     @app.get("/api/reports/exceptions.csv")
     def exception_report() -> Response:

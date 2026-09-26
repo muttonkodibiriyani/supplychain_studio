@@ -341,6 +341,8 @@ Do not insert a cover sheet, notes, totals, formulas, comments, or exception row
 
 On the invoice worklist, choose **Download exceptions** to save a separate CSV of documents that are not currently eligible for target export and their review reasons. This covers the whole brand workspace, independent of the current worklist search. It is a snapshot: regenerate it after corrections. Files rejected before intake have no stored invoice record; retain their upload error separately.
 
+The **Exceptions** page (the exception workbench) shows the same held invoices grouped by governed reason code. Each code names the role that owns the next action (brand operator, brand reviewer, item-master owner, finance/downstream owner, or pilot owner) and shows how long the oldest invoice in the group has waited; open any row to review it. The same codes appear on each invoice and in the two right-hand columns of the exceptions CSV, so the offline record below can use them verbatim. A `duplicate_suspected` code means another invoice in this workspace shares the supplier and invoice number (and, when strong, the total and date); the other invoice ID is shown, nothing is deleted or merged automatically, and approval stays blocked until the business event is confirmed. The panel above the groups shows the three control KPIs as counts with their denominators; read them as "x of N" for this workspace, never as a general accuracy claim.
+
 Keep an exception/status record outside the three-sheet workbook. Record at least the brand, source filename/hash, invoice/document number if known, classification, current stage, reason, owner, action, and decision timestamp.
 
 | Exception | Required response |
