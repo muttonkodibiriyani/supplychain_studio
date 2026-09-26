@@ -1432,7 +1432,8 @@ Every one of them terminated with an explicit, specific reason and a terminal fa
 dropped, none produced a silent partial conversion. That is the behaviour the delivery was asked for —
 solve what can be solved and flag the rest for recheck — and it is the second strongest result in this
 run. By **source document**, which is the denominator that carries meaning, 48 of 50 document types
-converted on every copy; one failed on every copy against a deterministic page-size limit, being a scan
+reached a terminal extraction-and-matching state on every copy; one failed on every copy against a
+deterministic page-size limit, being a scan
 whose raster exceeds the configured per-page ceiling; and one failed on five of its twenty copies
 against a time limit. **The upload figure is a count of copies, not a failure rate.** A rate on a
 genuinely distinct population is not estimable from fifty source documents and none is offered here.
@@ -1498,3 +1499,67 @@ the corpus evaluation put thirteen of one hundred and seventy-nine documents thr
 financial gate. A large flagged share with correct reasons is the system behaving as asked; a single
 wrongly exported invoice is not. The gate above is written to separate those two outcomes, which a gate
 resting on terminal states alone cannot do.
+
+## Post-freeze findings, sixth round: the word "converted" was wrong, and the block on automatic matching was the master repeating itself
+
+Three findings and one withdrawal, all measured at `af4a6d8` unless stated. Two of them reduce what
+this programme may claim; one of them is the largest positive movement recorded so far; and the last is
+a negative result that closes off a fix several people expected to be decisive.
+
+**Withdrawal: no run in this programme has converted anything.** Every volume run to date, the
+thousand-upload OCR-lock run included, started from a fresh database with empty operator settings. The
+approval validator therefore blocked every invoice on the four required setting codes and export was
+never attempted. That is the product behaving as specified — brand and location setup is the documented
+first operator step — but it means the sentence corrected above originally read "48 of 50 document types
+converted on every copy", and that was not measured. What was measured is that extraction and matching
+reached a terminal state with an explicit reason. Conversion, which is the thing actually asked for — a
+target workbook out the other end — has never been exercised at volume. The error is the one this
+record has repeatedly charged against others: measure the stage that ran, then name it with the word
+for the stage that did not. The launch gate of record configures settings from the repository's own
+fictional placeholders before upload, so it will be the first run in this programme to exercise export
+at all, and its result certifies structure and reconciliation under placeholder coding, never the
+requester's own codes.
+
+**The dominant block on automatic matching was a duplicate master row, not conservatism.** Re-matching
+the stored extracted lines of the twenty-invoice corpus holds extraction fixed so that only matching
+varies. The harness was validated before it was believed: at the baseline commit it reproduces the
+stored decision on 315 of 357 lines, with the 21 stored automatic lines reproducing as confirmed. 21
+stored-suggested lines recompute as unmatched and are not yet accounted for, most plausibly a small
+difference in catalog scope, so every count in this section carries that 21-line uncertainty.
+
+At the baseline, 109 real product lines match a master row on an exact normalised description and still
+do not reach automatic. Every one of them has exactly two exact candidates, and the blocker is the
+condition requiring a single exact candidate. The split is the whole finding: **107 of the 109 are two
+master rows carrying the identical normalised description and the same item id** — the same item listed
+twice, a bookkeeping duplicate. Only 2 of 109 are two genuinely different item ids, and those two carry
+two different master unit costs, so holding them for review is correct behaviour rather than a defect.
+The system's silence was not caution and it was not ambiguity in the goods; it was the master repeating
+itself while the gate read a repeat as a tie. Collapsing those duplicates in a resolved scope moves
+line-level automatic decisions from none to **141 of 357** on the same stored lines.
+
+**The negative result: fixing the phantom adjustment rows unlocks no invoice.** Invoice-level on
+matching status alone, 2 of 20 invoices now have every line automatic. The count of invoices blocked
+*only* by phantom rows is **zero** — every invoice carrying them also carries at least one suggested or
+unmatched real product line. The phantom-row defect remains worth fixing on its own correctness merits,
+and the earlier figure for it stands as what it always was, a count on the unmatched axis. It is not a
+route to touchless and must not be planned as one.
+
+Neither 2 of 20 nor 141 of 357 is a touchless figure. Touchless additionally requires no cost-variance
+review flag and an actual export, and export has never run. **Metric 1a therefore stays 0 of 20 as
+recorded.** The defensible statement is narrower and more useful: matching has stopped being the
+binding constraint on two of the twenty, and what constrains those two instead is unmeasured, because
+the stage that would reveal it has never executed.
+
+**A deterministic reproduction of a column-shift defect in the plain-text path.** The application
+snapshot arrived with a failing test, carried through this programme as pre-existing; it fails
+identically at the pre-programme commit, so that label is accurate. Its content is not background
+noise. On a synthetic invoice whose description matches the catalog exactly, whose supplier, unit of
+measure and unit cost all agree, the extractor reads the size token out of the product name as the
+quantity and shifts every later column left: a line of two units at ten becomes a line of two hundred
+and fifty of a volume unit at twenty, and the matcher then correctly reports a unit-of-measure conflict
+on corrupted input. The failure is in extraction and is being read as a matching failure. Its blast
+radius is bounded: on the real corpus every line carries no unit of measure at all and the
+quantity-times-price identity holds on all 289 real lines, so the real documents do not take this path.
+A fixture exercising a branch real data never reaches is worth exactly what it measures, and the
+converse — that this defect would silently multiply a delivered quantity if a real document ever did
+take the path — is why it is recorded rather than closed.
