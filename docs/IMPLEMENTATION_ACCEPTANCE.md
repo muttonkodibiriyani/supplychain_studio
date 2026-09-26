@@ -2113,3 +2113,65 @@ dispute resolving rather than independent of it.
 
 This has not been checked. It is recorded now, unchecked, because the point of writing it down before the
 answer is that nobody later gets to discover it and call it a surprise.
+
+**And the dependency is on the ranking key alone, not on "the dispute".** The sentence above originally
+said the export figure was contingent on the duplicate-collapse dispute resolving. That bundled three
+mechanisms into one dependency — the same bundling error this record charges against a PR label two
+sections earlier, committed here while describing it. The three can resolve in opposite directions: the
+collapse may turn out to do nothing while the ranking change does everything, in which case the export
+dependency is live *and* the duplicate diagnosis stays withdrawn. Every dependency in this record names
+which of the three mechanisms it rests on, or it is not a dependency, it is a mood.
+
+### The population the arbitrating instrument actually measures, and its stated limits
+
+The reviewer running the four-cell experiment has recorded, before their numbers exist, that the
+population they measure is neither the residual nor the movers. It is the set held **non-automatic at
+baseline**, computed with the mechanism patched off — which is the union of the two, because a moved line
+is by definition one that was held at baseline and is automatic afterwards. That is also exactly the
+population the withdrawn claim named. So the instrument was pointed at the claim's own population from
+the start, and the population criticism above applies to the argument that was offered for it, not to the
+instrument itself.
+
+This matters because that population can separate three readings the withdrawal cannot:
+
+- The baseline-held set contains a large duplicate-pair subset: the original diagnosis was right about the
+  moved lines and the withdrawal is over-broad.
+- It contains none: the diagnosis was wrong about its own stated population, not merely about the residual.
+- It contains some: that count is the honest size of the duplicate mechanism, and the remainder of the
+  movement belongs to the other two mechanisms in the same commit.
+
+Two limits were declared by the instrument's own operator rather than found by its reader, which is the
+standard this record asks for and rarely gets:
+
+1. Their exact-candidate test is normalised-description equality against the prepared eligible catalog,
+   **without** the matcher's additional compatibility requirement, which the matcher applies alongside
+   exactness. Their counts are therefore an **upper bound** on what the matcher would treat as exact. A
+   zero is decisive; a large number is a ceiling, not a measurement.
+2. They strip every persisted selection from each line before matching, so the relabelling defect cannot
+   enter the measurement. Their figures describe what the matcher decides **from the description**, which
+   is the right frame for this question and the wrong frame for anything about re-matching.
+
+### What the currency discriminator actually establishes, stated more narrowly than before
+
+The swap test was described earlier as showing the master's cost basis is mixed across item families. A
+reviewer has proposed the right attack on it: apply the factor to one family at a time rather than
+globally, because a global factor against a mixed basis might produce a clean-looking exchange as an
+artefact of where the tolerance band sits. The objection deserves an argument rather than a dismissal, and
+working it through narrows the claim.
+
+The tolerance is absolute and two-sided, so a line's distance from tolerance is **V-shaped** in the
+factor, not monotone: raising a master cost first moves a line toward the invoice price and then past it.
+So a single global factor *can* move different lines in opposite directions even on a uniform basis — the
+swap does not follow from bidirectionality alone. What it does require is that one group sat at a
+cost-to-price ratio near unity and the other near one-twelfth. That is a **bimodal ratio distribution**,
+and no single basis produces one.
+
+So the honest statement is narrower than the earlier one: **the swap establishes two ratio clusters
+separated by roughly one order of magnitude, clustered by item family.** That the master declares a
+currency differing from the invoices' is strong corroborating evidence for *why* the clusters exist, and
+it is not what the swap proves. Currency is the best available explanation, not the measurement. The
+per-family test remains the right next step and is now the one that would distinguish a currency basis
+from any other cause of two ratio clusters.
+
+Which leaves the ruling unchanged and better founded: the cost axis is not evaluable, no numerator is
+published, and the question of which basis is authoritative goes to the master's owner.
