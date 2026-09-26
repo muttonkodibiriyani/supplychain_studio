@@ -79,7 +79,13 @@ REASON_CODES: tuple[ReasonCode, ...] = (
     ReasonCode(
         "price_above_tolerance",
         "brand_reviewer",
-        "invoice cost differs from the RMS reference beyond tolerance, or the comparison is unavailable",
+        "invoice cost differs from the RMS reference beyond tolerance",
+        "line",
+    ),
+    ReasonCode(
+        "price_comparison_unavailable",
+        "item_master_owner",
+        "no RMS cost comparison could be made for a line (no RMS item, unit disagreement, missing RMS cost, currency or missing invoice cost); fix the reference data or acknowledge at review",
         "line",
     ),
     ReasonCode(
@@ -135,6 +141,8 @@ VALIDATION_CODE_MAP: dict[str, str] = {
     "catalog_item_mismatch": "line_unmapped",
     "supplier_item_mismatch": "line_unmapped",
     "unit_unconfirmed": "unit_unconfirmed",
+    # Expanded per line by ``reason_codes_for_error``; this entry is the residual
+    # for an invoice-level target variance with no flagged line.
     "target_cost_review_required": "price_above_tolerance",
     "duplicate_supplier_invoice": "duplicate_suspected",
     "duplicate_suspected": "duplicate_suspected",
@@ -211,6 +219,36 @@ def reason_code_for_error(
     raise UnknownReasonCode(f"{field}.{code}")
 
 
+def reason_codes_for_error(
+    error: Mapping[str, Any], lines: Sequence[Mapping[str, Any]] | None = None
+) -> list[str]:
+    """Like ``reason_code_for_error`` but the price gate expands to one code per
+    distinct cause on the flagged lines: ``price_above_tolerance`` only where a
+    comparison was made and failed, ``price_comparison_unavailable`` where it
+    could not be made.  With no flagged line the gate reflects an invoice-level
+    target variance and keeps the residual mapping."""
+    if str(error.get("code") or "") == "target_cost_review_required" and lines:
+        codes = {code for line in lines for code in [line_price_code(line)] if code}
+        if codes:
+            return sort_codes(codes)
+    return [reason_code_for_error(error, lines)]
+
+
+def line_price_code(line: Mapping[str, Any]) -> str | None:
+    """The price-gate code one line carries, from the comparison the matcher
+    recorded.  A flagged line with no recorded comparison status is a line
+    whose comparison was never established, so it is reported as unavailable,
+    never as a measured variance."""
+    status = str(line.get("target_cost_comparison_status") or "")
+    if status == "above_tolerance":
+        return "price_above_tolerance"
+    if status.startswith("unavailable"):
+        return "price_comparison_unavailable"
+    if line.get("target_cost_review_required"):
+        return "price_comparison_unavailable"
+    return None
+
+
 def reason_code_for_failure(error_text: str | None) -> str:
     """Map the stored ``invoices.error`` text (``Class: message``) onto a code."""
     class_name = str(error_text or "").split(":", 1)[0].strip()
@@ -244,7 +282,7 @@ def assign_reason_codes(
         return []
     if status == "failed":
         return [reason_code_for_failure(error_text)]
-    codes = {reason_code_for_error(error, lines) for error in validation_errors}
+    codes = {code for error in validation_errors for code in reason_codes_for_error(error, lines)}
     if duplicate_level in {"strong", "weak"}:
         codes.add("duplicate_suspected")
     return sort_codes(codes)
@@ -262,8 +300,9 @@ def line_reason_codes(
     for error in validation_errors:
         if line_index_of(str(error.get("field") or "")) == index:
             codes.add(reason_code_for_error(error, _padded(line, index)))
-    if line.get("target_cost_review_required"):
-        codes.add("price_above_tolerance")
+    price_code = line_price_code(line)
+    if price_code:
+        codes.add(price_code)
     return sort_codes(codes)
 
 
@@ -300,9 +339,11 @@ __all__ = [
     "VALIDATION_CODE_MAP",
     "FAILURE_CLASS_MAP",
     "assign_reason_codes",
+    "line_price_code",
     "line_reason_codes",
     "owners_for",
     "reason_code_for_error",
+    "reason_codes_for_error",
     "reason_code_for_failure",
     "registry_rows",
     "sort_codes",

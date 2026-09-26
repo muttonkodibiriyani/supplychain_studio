@@ -4194,7 +4194,9 @@ class InvoiceService:
                 "denominator": extracted,
                 "definition": (
                     "invoices whose lines all matched automatically at the first "
-                    "extraction, over invoices that completed extraction"
+                    "extraction (from the extraction_completed audit detail; records "
+                    "without that detail fall back to their current lines all being "
+                    "auto), over invoices that completed extraction"
                 ),
             },
             "k3_cycle_time": {

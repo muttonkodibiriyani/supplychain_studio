@@ -33,6 +33,7 @@ GOVERNED = {
     "line_low_confidence",
     "unit_unconfirmed",
     "price_above_tolerance",
+    "price_comparison_unavailable",
     "currency_basis_mismatch",
     "total_reconciliation_failed",
     "duplicate_suspected",
@@ -147,7 +148,7 @@ def test_suggested_line_is_low_confidence_and_bare_line_is_unmapped() -> None:
     assert rc.reason_code_for_error(error, [{}, {"match_status": "unmatched"}]) == "line_unmapped"
     assert rc.line_reason_codes(1, {"match_status": "suggested"}, [error]) == ["line_low_confidence"]
     assert rc.line_reason_codes(0, {"target_cost_review_required": True}, [error]) == [
-        "price_above_tolerance"
+        "price_comparison_unavailable"
     ]
     assert rc.assign_reason_codes(
         status="queued", error_text=None, validation_errors=[error], lines=[], duplicate_level="strong"
@@ -192,7 +193,10 @@ def test_invoices_expose_reason_codes_and_the_csv_gains_code_and_owner_columns(t
         assert by_id["demo-invoice-002"]["duplicate_suspicion"] == {"level": None, "matches": []}
 
         detail = client.get("/api/invoices/demo-invoice-002").json()
-        assert detail["lines"][0]["reason_codes"] == ["line_low_confidence", "price_above_tolerance"]
+        assert detail["lines"][0]["reason_codes"] == [
+            "line_low_confidence",
+            "price_comparison_unavailable",
+        ]
 
         queue = client.get("/api/exceptions").json()
         assert queue["invoices_total"] == len(listed)
@@ -381,3 +385,36 @@ def test_kpi_arithmetic_on_a_seeded_workspace(tmp_path: Path) -> None:
     assert groups["header_field_missing"]["owner"] == "brand_operator"
     assert all(group["oldest_age_seconds"] is not None for group in queue["groups"])
     assert queue["groups"] == sorted(queue["groups"], key=lambda g: (-g["count"], g["code"]))
+
+
+def test_price_gate_splits_beyond_tolerance_from_comparison_unavailable() -> None:
+    above = {"target_cost_comparison_status": "above_tolerance", "target_cost_review_required": True}
+    within = {"target_cost_comparison_status": "within_tolerance", "target_cost_review_required": False}
+    unavailable = {
+        "target_cost_comparison_status": "unavailable_no_match",
+        "target_cost_review_required": True,
+    }
+    legacy = {"target_cost_comparison_status": None, "target_cost_review_required": True}
+    assert rc.line_price_code(above) == "price_above_tolerance"
+    assert rc.line_price_code(within) is None
+    assert rc.line_price_code(unavailable) == "price_comparison_unavailable"
+    assert rc.line_price_code(legacy) == "price_comparison_unavailable"
+    assert rc.line_reason_codes(0, above, []) == ["price_above_tolerance"]
+    assert rc.line_reason_codes(0, unavailable, []) == ["price_comparison_unavailable"]
+
+    gate = {"field": "target_cost_reviewed", "code": "target_cost_review_required"}
+    assign = lambda lines: rc.assign_reason_codes(  # noqa: E731
+        status="needs_review",
+        error_text=None,
+        validation_errors=[gate],
+        lines=lines,
+        duplicate_level=None,
+    )
+    assert assign([within, unavailable]) == ["price_comparison_unavailable"]
+    assert assign([above, within]) == ["price_above_tolerance"]
+    assert assign([above, unavailable]) == ["price_above_tolerance", "price_comparison_unavailable"]
+    # Invoice-level target variance with no flagged line keeps the residual mapping.
+    assert assign([within]) == ["price_above_tolerance"]
+    assert assign([]) == ["price_above_tolerance"]
+    assert rc.REGISTRY["price_comparison_unavailable"].owner == "item_master_owner"
+    assert rc.REGISTRY["price_above_tolerance"].owner == "brand_reviewer"
