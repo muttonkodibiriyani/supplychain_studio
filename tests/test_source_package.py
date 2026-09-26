@@ -147,12 +147,8 @@ def _decoded_entries(package_json):
         return {info.filename: archive.read(info.filename) for info in archive.infolist()}
 
 
-def test_decoded_package_excludes_measurement_docs_and_every_private_pattern(tmp_path, monkeypatch, capsys):
+def test_decoded_package_excludes_measurement_docs_and_every_private_pattern(tmp_path, monkeypatch):
     root = _minimal_root(tmp_path)
-    # A measurement document that would fail every pattern sits in the tree on purpose:
-    # the allowlist must keep it out of the archive, and the build must still succeed.
-    (root / 'docs/VOLUME_RESULTS.md').write_text(
-        'source: https://docs.' + G + '/spreadsheets/d/abc/edit?usp=' + 'sharing&ou' + 'id=1\n')
     _point_packager_at(monkeypatch, root)
     package_source.main()
     entries = _decoded_entries(root / 'public/source-package.json')
@@ -166,6 +162,64 @@ def test_decoded_package_excludes_measurement_docs_and_every_private_pattern(tmp
         text = content.decode('utf-8', errors='replace')
         for pattern in package_source.PRIVATE_CONTENT_PATTERNS:
             assert not pattern.search(text), f'{pattern.pattern!r} matched inside {name}'
+
+
+# --- the whole-tree guard: a hit outside the archive allowlist still fails ---------
+
+def test_pattern_hit_outside_the_archive_allowlist_fails_the_build_closed(tmp_path, monkeypatch):
+    """A measurement doc is excluded from the zip but published by git; it is checked too."""
+    root = _minimal_root(tmp_path)
+    planted = 'source: https://docs.' + G + '/spreadsheets/d/abc/edit?usp=' + 'sharing&ou' + 'id=1'
+    (root / 'docs/VOLUME_RESULTS.md').write_text(planted + '\n')
+    assert root / 'docs/VOLUME_RESULTS.md' not in package_source.selected_files()
+    _point_packager_at(monkeypatch, root)
+    with pytest.raises(SystemExit) as error:
+        package_source.main()
+    assert 'docs/VOLUME_RESULTS.md' in str(error.value)
+    assert planted not in str(error.value)
+    assert not (root / 'public/invoice-studio-source.zip').exists(), 'the archive must not be written on a hit'
+
+
+def test_whole_tree_guard_uses_git_listing_and_skips_ignored_and_binary_files(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+    if shutil.which('git') is None:
+        pytest.skip('git is not installed here (the runtime image has none); the walk fallback is tested below')
+    root = _minimal_root(tmp_path)
+    subprocess.run(['git', 'init', '-q', str(root)], check=True)
+    (root / '.gitignore').write_text('ignored/\n')
+    (root / 'ignored').mkdir()
+    (root / 'ignored/notes.md').write_text('https://drive.' + G + '/file/d/abc/view\n')
+    (root / 'public/picture.png').write_bytes(b'\x89PNG\x00' + ('https://drive.' + G + '/file/d/abc/view').encode())
+    (root / 'untracked_but_committable.md').write_text('clean\n')
+    scanned = {p.relative_to(root).as_posix() for p in package_source.repository_text_files(root)}
+    assert 'untracked_but_committable.md' in scanned
+    assert 'ignored/notes.md' not in scanned
+    assert 'public/picture.png' not in scanned
+    package_source.validate_repository(root)  # ignored and binary hits do not fail
+    (root / 'untracked_but_committable.md').write_text('https://drive.' + G + '/file/d/abc/view\n')
+    with pytest.raises(SystemExit, match='untracked_but_committable.md'):
+        package_source.validate_repository(root)
+
+
+def test_whole_tree_guard_walks_the_tree_outside_a_git_checkout(tmp_path):
+    """An unzipped package or a test root has no .git; every regular text file is scanned."""
+    root = _minimal_root(tmp_path)
+    hit = 'https://drive.' + G + '/file/d/abc/view'
+    (root / 'data').mkdir(); (root / 'data/private.md').write_text(hit + '\n')
+    (root / 'public/picture.png').write_bytes(b'\x89PNG\x00' + hit.encode())
+    scanned = {p.relative_to(root).as_posix() for p in package_source.repository_text_files(root)}
+    assert 'docs/VOLUME_RESULTS.md' in scanned and 'README.md' in scanned
+    assert 'data/private.md' not in scanned and 'public/picture.png' not in scanned
+    package_source.validate_repository(root)
+    (root / 'docs/VOLUME_RESULTS.md').write_text(hit + '\n')
+    with pytest.raises(SystemExit) as error:
+        package_source.validate_repository(root)
+    assert 'docs/VOLUME_RESULTS.md' in str(error.value) and hit not in str(error.value)
+
+
+def test_whole_tree_guard_on_this_repository_is_clean():
+    package_source.validate_repository(package_source.ROOT)
 
 
 START_SCRIPTS = ['start.sh', 'Start-InvoiceStudio.command', 'Start-InvoiceStudio.ps1']

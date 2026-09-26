@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import re
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "public" / "invoice-studio-source.zip"
@@ -70,7 +71,61 @@ def validate_source(paths: list[Path]) -> None:
         if any(pattern.search(content) for pattern in PRIVATE_CONTENT_PATTERNS):
             raise SystemExit(f"Potential private content in {path.relative_to(ROOT)}; inspect locally before publication")
 
+
+# Directories never scanned when the tree is not a git checkout (an unzipped package,
+# or a test root). In a checkout, git's own ignore rules decide instead.
+UNSCANNED_DIRECTORIES = {".git", "node_modules", ".venv", "__pycache__", ".pytest_cache",
+                         "dist", "data", ".runtime", "test-results", "playwright-report"}
+
+
+def repository_text_files(root: Path = ROOT) -> list[Path]:
+    """Every text file the repository would publish: tracked plus untracked-not-ignored.
+
+    The archive allowlist decides what ships in the zip; GitHub publishes the whole
+    tree. Outside a git checkout every regular file under root is a candidate.
+    """
+    try:
+        listing = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            capture_output=True, check=True,
+        ).stdout.decode("utf-8", errors="surrogateescape")
+        candidates = [root / name for name in listing.split("\0") if name]
+    except (OSError, subprocess.CalledProcessError):
+        candidates = [
+            path for path in root.rglob("*")
+            if not any(part in UNSCANNED_DIRECTORIES for part in path.relative_to(root).parts)
+        ]
+    text_files = []
+    for path in candidates:
+        if path.is_symlink() or not path.is_file():
+            continue
+        with path.open("rb") as handle:
+            if b"\0" in handle.read(8192):
+                continue  # binary: images, archives, workbooks; the allowlist keeps them out of the zip
+        text_files.append(path)
+    return sorted(text_files)
+
+
+def validate_repository(root: Path = ROOT) -> None:
+    """Fail closed on a private-pattern hit anywhere in the tree, not only in the archive.
+
+    validate_source() checks the files the zip is written from. A file the allowlist
+    excludes from the zip is still published by git, so it gets the same check here.
+    The error names the file, never the matched value.
+    """
+    offending = []
+    for path in repository_text_files(root):
+        content = path.read_bytes().decode("utf-8", errors="replace")
+        if any(pattern.search(content) for pattern in PRIVATE_CONTENT_PATTERNS):
+            offending.append(path.relative_to(root).as_posix())
+    if offending:
+        raise SystemExit(
+            "Potential private content in the repository tree (not necessarily in the package): "
+            + ", ".join(offending) + "; inspect locally before publication"
+        )
+
 def main() -> None:
+    validate_repository(ROOT)
     for template in (ROOT / "public/templates").glob("*.csv"):
         template.with_suffix(".csv.txt").write_bytes(template.read_bytes())
     paths = selected_files()

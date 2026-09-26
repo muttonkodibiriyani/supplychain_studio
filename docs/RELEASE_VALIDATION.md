@@ -103,7 +103,7 @@ exit=0
 
 The second command does not collect `backend/tests`, which is why it is green; the first command is the release check. The skipped test requires a private master and is skipped by design. The warning is the upstream Starlette test-client deprecation.
 
-**Known open defect (not fixed in this release):** `backend/tests/test_backend.py::test_real_text_extraction_and_catalog_matching_flow_to_review` is red on every tree including `main`. Ticket wording: line parser reads a size token as quantity. The test stays in the suite unchanged.
+**Known open defect (not fixed in this release):** `backend/tests/test_backend.py::test_real_text_extraction_and_catalog_matching_flow_to_review` is red on every tree including `main`; the failing assertion is `assert invoice["lines"][0]["rms_item_id"] == "RMS-TXT-1"`. Ticket wording: line parser reads a size token as quantity. The test stays in the suite unchanged.
 
 ## 4. arm64 image build under emulation
 
@@ -133,6 +133,16 @@ exit=0
 ```
 
 Installation and the helper's behaviour on a clean Windows computer remain unverified here; `docs/WINDOWS_SETUP.md` keeps the direct Compose commands as the canonical procedure.
+
+## Silent capability loss: standing check
+
+Three times in this programme a benign-looking artefact shipped with a capability missing, and nothing red said so:
+
+- the source packager omitted `start.sh` and `Start-InvoiceStudio.command`, so the unmodified zip died at exit 127 on the documented first command (section 1);
+- the privacy guard checked only the paths written into the archive, so a document excluded from the zip by the allowlist was never scanned by anything, while git published it (closed by the whole-tree guard in `scripts/package_source.py`, `validate_repository`);
+- a margin check that could pass vacuously, with nothing under it that could fail.
+
+Standing check for every release validation from now on: execute the shipped artefact from an unmodified copy of what is published (not from the working tree); run the privacy guard over the whole repository tree, not only the packaged paths; and assert each gate on a value that can actually fail, showing the command and its output.
 
 ## Scope limits
 
