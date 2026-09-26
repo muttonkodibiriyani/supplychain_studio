@@ -1,0 +1,16 @@
+TAX INVOICE
+Synthetic Distribution LLC
+Bill To: Synthetic Retail LLC
+Invoice Number                 Invoice Date                 Invoice Currency
+SYN-ADJ-01                     25-Sep-2026                  AED
+
+Sr No   Description                                      Tax %   Quantity   Unit Price   Tax Amount   Amount Excl. Tax   Amount Incl. Tax
+1       Synthetic Renewal Serum 50ML                        N/A          3        10.00         1.50              30.00              31.50
+2       Promotional Price_CODE.000001                       N/A          3         0.00         0.00               0.00               0.00
+3       Price Adjustment_CODE.000002                        N/A          3        -1.00        -0.15              -3.00              -3.15
+4       Synthetic Daily Mist 100ML                          N/A          2         5.00         0.50              10.00              10.50
+5       Promotional Price_CODE.000003                       N/A          5        -1.00        -0.25              -5.00              -5.25
+6       Synthetic Hand Cream 75ML                           N/A          4         2.00         0.40               8.00               8.40
+        TEL +000 0 000 0000 - FAX +000 0 000 0000                                                                                  1/1
+
+Total Amount Due(inclusive of VAT) AED 42.00
