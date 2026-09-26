@@ -12,7 +12,8 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # Development clones only: point git at the in-repo pre-push privacy guard so a
-# push from this clone runs scripts/package_source.py --check-only. Git never
+# push from this clone runs scripts/package_source.py --pre-push (the commits
+# being pushed; --check-only is the manual pre-flight of the same range). Git never
 # installs hooks on clone, so this is done here, on the first start. Idempotent,
 # silent when already set, skipped in an unpacked source package (no .git).
 if ((Test-Path -LiteralPath (Join-Path $PSScriptRoot '.git') -PathType Container) -and (Get-Command git -ErrorAction SilentlyContinue)) {

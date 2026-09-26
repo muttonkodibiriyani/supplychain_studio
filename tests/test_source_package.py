@@ -430,7 +430,7 @@ def test_refusal_names_commit_file_and_remedy_for_a_new_commit(tmp_path):
     result = _git(clone, 'push', 'origin', 'main', check=False)
     assert result.returncode != 0
     assert f'commit {marker_commit[:12]} introduces notes.txt' in result.stderr
-    assert f'git rebase -i {marker_commit[:12]}~1' in result.stderr
+    assert f'rewrite from {marker_commit[:12]}: git rebase -i {marker_commit[:12]}~1 and drop or edit the commit, then push again' in result.stderr
     assert 'deleting the file in a later commit does not remove it from the push' in result.stderr
     assert 'do not bypass the hook' in result.stderr
     assert 'example-user' not in result.stderr

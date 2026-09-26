@@ -44,7 +44,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$script_dir"
 
 # Development clones only: point git at the in-repo pre-push privacy guard so a
-# push from this clone runs scripts/package_source.py --check-only. Git never
+# push from this clone runs scripts/package_source.py --pre-push (the commits
+# being pushed; --check-only is the manual pre-flight of the same range). Git never
 # installs hooks on clone, so this is done here, on the first start. Idempotent,
 # silent when already set, skipped in an unpacked source package (no .git).
 if [ -d .git ] && command -v git >/dev/null 2>&1; then

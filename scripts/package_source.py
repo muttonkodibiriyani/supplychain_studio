@@ -209,8 +209,8 @@ def refusal_message(root: Path, offending: list[tuple[str, str]]) -> str:
         else:
             lines.append(
                 f"- commit {short} introduces {path}, which matches a listed private-content pattern: "
-                f"remove it from that commit (git rebase -i {short}~1 and edit, or git reset --soft {short}~1 "
-                "and recommit without it), then push again; deleting the file in a later commit does not "
+                f"rewrite from {short}: git rebase -i {short}~1 and drop or edit the commit, then push again; "
+                "deleting the file in a later commit does not "
                 "remove it from the push; do not bypass the hook"
             )
     return "\n".join(lines)
