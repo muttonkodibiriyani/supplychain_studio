@@ -101,6 +101,8 @@ Exact default bounds from `ExtractionLimits` are:
 
 Crossing a bound rejects the file. There is no partial-page or partial-row success. DOCX and XLSX ZIP containers are checked before their parsers run. XLSX formulas are never executed (`data_only=True`, external links disabled). Encrypted and corrupt PDFs return explicit errors.
 
+Two kinds of bound fail a document. A content bound (upload size, pages, pixels, rows, columns, archive members) describes the document itself, so the failure is final: the job records it as `ExtractionLimitError` and does not retry it. The OCR time budgets bound the host's work, not the document: the same scan can clear them on a quiet machine and miss them on a busy one. A missed time budget therefore fails as `ExtractionTimeBudgetError`, whose message ends "try again when the host is quieter", and the job treats it like any transient error: it is re-queued automatically with back-off up to `INVOICE_MAX_ATTEMPTS` (default 3), and after that an operator can re-queue it with `POST /api/invoices/{id}/retry`. Neither budget moves; only the classification does.
+
 For thousands of uploads, the job service should store files first, queue one job per file, and run a bounded worker pool. Tesseract and PDF rendering are CPU and memory intensive, so worker concurrency should be sized from measured page latency and resident memory rather than the HTTP request count. The extractor itself has no shared mutable state and can run in separate worker processes.
 
 ## Structured files

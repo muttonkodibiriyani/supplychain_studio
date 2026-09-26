@@ -29,6 +29,8 @@ from xml.etree import ElementTree
 class DocumentExtractionError(RuntimeError):
     """A document could not be safely or credibly extracted."""
 
+    retryable = False
+
 
 class UnsupportedDocumentError(DocumentExtractionError):
     """The file type is outside the deliberately supported set."""
@@ -36,6 +38,21 @@ class UnsupportedDocumentError(DocumentExtractionError):
 
 class ExtractionLimitError(DocumentExtractionError):
     """A document exceeded a configured resource bound."""
+
+
+class ExtractionTimeBudgetError(ExtractionLimitError):
+    """OCR ran out of its time budget.
+
+    The time budget bounds the host's work, not the document's content: the
+    same document can clear it on a quiet host and miss it on a busy one.  The
+    failure is therefore retryable, unlike the content bounds (bytes, pages,
+    pixels, rows), which stay plain ``ExtractionLimitError`` and are final.
+    """
+
+    retryable = True
+
+
+_RETRY_HINT = "; try again when the host is quieter."
 
 
 @dataclass(frozen=True)
@@ -696,8 +713,9 @@ def _ocr_pdf_pages(
             page_started = time.monotonic()
             remaining = limits.ocr_timeout_seconds_total - (time.monotonic() - started)
             if remaining <= 0:
-                raise ExtractionLimitError(
-                    f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit."
+                raise ExtractionTimeBudgetError(
+                    f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit"
+                    + _RETRY_HINT
                 )
             page = document[index]
             width, height = page.get_size()
@@ -850,8 +868,9 @@ def _extract_image(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
                     )
                 remaining = limits.ocr_timeout_seconds_total - (time.monotonic() - started)
                 if remaining <= 0:
-                    raise ExtractionLimitError(
-                        f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit."
+                    raise ExtractionTimeBudgetError(
+                        f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit"
+                        + _RETRY_HINT
                     )
                 text, confidence = _run_tesseract(
                     frame,
@@ -956,7 +975,9 @@ def _run_tesseract(
                 timeout=max(1.0, timeout),
             )
         except subprocess.TimeoutExpired as exc:
-            raise ExtractionLimitError(f"OCR page exceeded its {timeout:.0f} second limit.") from exc
+            raise ExtractionTimeBudgetError(
+                f"OCR page exceeded its {timeout:.0f} second limit" + _RETRY_HINT
+            ) from exc
         if completed.returncode != 0:
             detail = (completed.stderr or "unknown Tesseract error").strip().replace("\n", " ")[:500]
             raise DocumentExtractionError(f"Tesseract OCR failed: {detail}")
