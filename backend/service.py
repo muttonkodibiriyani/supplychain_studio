@@ -21,7 +21,16 @@ from typing import Any, Iterable, Mapping, Sequence
 from openpyxl import load_workbook
 from PIL import Image, ImageDraw
 
-from .db import Database, INVOICE_STATUSES, json_dumps, utc_now
+from .db import (
+    DEFAULT_ABSOLUTE_TOLERANCE,
+    Database,
+    INVOICE_STATUSES,
+    LEGACY_CATALOG_IMPORT_ID,
+    TOLERANCE_SCOPES,
+    default_tolerance_policy,
+    json_dumps,
+    utc_now,
+)
 from .exporter import SCHEMA_NAME, build_target_workbook
 from . import matching
 
@@ -69,6 +78,12 @@ CATALOG_EXTENSIONS = {".csv", ".xlsx"}
 MATCH_STATUSES = {"unmatched", "suggested", "auto", "confirmed"}
 DOCUMENT_TYPES = {"invoice", "credit_note", "purchase_order", "delivery_note", "unknown"}
 COST_POLICY_MODES = {"invoice_only"}
+ISO_CURRENCY_PATTERN = re.compile(r"[A-Z]{3}")
+# Comparison reason codes recorded on a line next to target_cost_comparison_status.
+REASON_NO_CONVERSION_RATE = "no_conversion_rate"
+REASON_CONVERTED = "converted_with_operator_rate"
+REASON_SAME_CURRENCY = "same_currency"
+REASON_MASTER_CURRENCY_UNDECLARED = "master_cost_currency_undeclared"
 # ISO 4217 minor-unit exponents used by the money gates.  The previous
 # implementation rounded every currency to cents, which silently discarded
 # fils for KWD/BHD/OMR (and dinars with three minor units).  Keep the map
@@ -352,6 +367,14 @@ def _spreadsheet_safe_csv_text(value: Any) -> str:
     return text
 
 
+def quantity_of(source: Mapping[str, Any]) -> Decimal | None:
+    try:
+        quantity = _decimal(source.get("quantity"))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return quantity if quantity is not None and quantity > 0 else None
+
+
 class InvoiceService:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -384,8 +407,7 @@ class InvoiceService:
         self._orphaned_jobs: set[str] = set()
 
     def _settings_from_row(self, row: Mapping[str, Any]) -> dict[str, Any]:
-        policy = _load_json(row["target_cost_policy_json"], {})
-        tolerance = _number(policy.get("maximum_absolute_difference_aed"))
+        policy = self._tolerance_policy_from_row(row)
         return {
             "version": row["version"],
             "brand_label": row["brand_label"],
@@ -393,12 +415,310 @@ class InvoiceService:
             "location_type": row["location_type"],
             "supplier_rules": _load_json(row["supplier_rules_json"], []),
             "include_upc_in_export": bool(row["include_upc_in_export"]),
+            # Compatibility projection of the versioned policy: the bare
+            # tolerance clients and tests already read.
             "target_cost_policy": {
                 "mode": "invoice_only",
-                "maximum_absolute_difference_aed": 10 if tolerance is None else tolerance,
+                "maximum_absolute_difference_aed": policy["absolute_tolerance"],
             },
+            "tolerance_policy": policy,
             "updated_at": row["updated_at"],
         }
+
+    @staticmethod
+    def _tolerance_policy_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+        keys = row.keys() if hasattr(row, "keys") else ()
+        stored = _load_json(row["tolerance_policy_json"], None) if "tolerance_policy_json" in keys else None
+        if not isinstance(stored, Mapping):
+            legacy = _load_json(row["target_cost_policy_json"], {})
+            tolerance = _number(legacy.get("maximum_absolute_difference_aed"))
+            stored = default_tolerance_policy(
+                DEFAULT_ABSOLUTE_TOLERANCE if tolerance is None else tolerance
+            )
+        policy = default_tolerance_policy()
+        policy.update({key: stored.get(key, policy[key]) for key in policy})
+        policy["absolute_tolerance"] = _number(policy["absolute_tolerance"])
+        if policy["absolute_tolerance"] is None:
+            policy["absolute_tolerance"] = DEFAULT_ABSOLUTE_TOLERANCE
+        policy["percentage_tolerance"] = _number(policy["percentage_tolerance"])
+        if policy["scope"] not in TOLERANCE_SCOPES:
+            policy["scope"] = "per_line"
+        scope = policy.get("invoice_currency_scope")
+        policy["invoice_currency_scope"] = [
+            str(code).upper() for code in scope if str(code)
+        ] if isinstance(scope, list) and scope else ["AED"]
+        policy["version"] = int(policy.get("version") or 1)
+        policy["owner"] = str(policy.get("owner") or "")
+        policy["effective_date"] = str(policy.get("effective_date") or "")
+        return policy
+
+    @staticmethod
+    def _validate_tolerance_policy(
+        raw: Any, current: Mapping[str, Any], errors: list[dict[str, str]]
+    ) -> dict[str, Any]:
+        """Validate an operator-submitted policy against the current one.
+
+        The version is server-assigned (current + 1 when anything changes);
+        a client-supplied version is ignored rather than trusted.
+        """
+
+        policy = dict(current)
+        if not isinstance(raw, Mapping):
+            errors.append(
+                {"field": "tolerance_policy", "code": "invalid", "message": "must be an object"}
+            )
+            return policy
+        owner = raw.get("owner", current.get("owner", ""))
+        if owner is None:
+            owner = ""
+        if not isinstance(owner, str):
+            errors.append(
+                {"field": "tolerance_policy.owner", "code": "invalid", "message": "must be text"}
+            )
+            owner = ""
+        policy["owner"] = owner.replace("\x00", "").strip()[:200]
+        effective = raw.get("effective_date", current.get("effective_date"))
+        effective = str(effective or "").strip()[:10] or utc_now()[:10]
+        try:
+            date.fromisoformat(effective)
+        except ValueError:
+            errors.append(
+                {
+                    "field": "tolerance_policy.effective_date",
+                    "code": "invalid_date",
+                    "message": "must be an ISO date (YYYY-MM-DD)",
+                }
+            )
+        policy["effective_date"] = effective
+        try:
+            absolute = _decimal(raw.get("absolute_tolerance", current.get("absolute_tolerance")))
+        except (InvalidOperation, ValueError, TypeError):
+            absolute = None
+        if absolute is None or absolute < 0 or absolute > Decimal("100000"):
+            errors.append(
+                {
+                    "field": "tolerance_policy.absolute_tolerance",
+                    "code": "invalid_number",
+                    "message": "must be a non-negative amount",
+                }
+            )
+        else:
+            policy["absolute_tolerance"] = _number(absolute)
+        raw_percentage = raw.get("percentage_tolerance", current.get("percentage_tolerance"))
+        if raw_percentage in (None, ""):
+            policy["percentage_tolerance"] = None
+        else:
+            try:
+                percentage = _decimal(raw_percentage)
+            except (InvalidOperation, ValueError, TypeError):
+                percentage = None
+            if percentage is None or percentage < 0 or percentage > Decimal("100"):
+                errors.append(
+                    {
+                        "field": "tolerance_policy.percentage_tolerance",
+                        "code": "invalid_number",
+                        "message": "must be between 0 and 100 or empty",
+                    }
+                )
+            else:
+                policy["percentage_tolerance"] = _number(percentage)
+        scope = str(raw.get("scope", current.get("scope")) or "")
+        if scope not in TOLERANCE_SCOPES:
+            errors.append(
+                {
+                    "field": "tolerance_policy.scope",
+                    "code": "invalid",
+                    "message": "must be per_line or per_invoice",
+                }
+            )
+        else:
+            policy["scope"] = scope
+        currencies = raw.get("invoice_currency_scope", current.get("invoice_currency_scope"))
+        if isinstance(currencies, str):
+            currencies = [part for part in re.split(r"[\s,;]+", currencies) if part]
+        if not isinstance(currencies, list) or not currencies:
+            errors.append(
+                {
+                    "field": "tolerance_policy.invoice_currency_scope",
+                    "code": "required",
+                    "message": "list at least one ISO currency code",
+                }
+            )
+        else:
+            cleaned: list[str] = []
+            for code in currencies:
+                code = str(code or "").strip().upper()
+                if not ISO_CURRENCY_PATTERN.fullmatch(code):
+                    errors.append(
+                        {
+                            "field": "tolerance_policy.invoice_currency_scope",
+                            "code": "invalid_currency",
+                            "message": "codes must be three-letter ISO currency codes",
+                        }
+                    )
+                    break
+                if code not in cleaned:
+                    cleaned.append(code)
+            else:
+                policy["invoice_currency_scope"] = cleaned
+        return policy
+
+    @staticmethod
+    def _policy_payload(policy: Mapping[str, Any]) -> dict[str, Any]:
+        return {key: policy[key] for key in policy if key != "version"}
+
+    def list_policy_audit(self, *, limit: int = 100) -> dict[str, Any]:
+        with self.db.connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM policy_audit ORDER BY id DESC LIMIT ?", (max(1, min(limit, 1000)),)
+            ).fetchall()
+        return {
+            "items": [
+                {
+                    "id": row["id"],
+                    "policy_name": row["policy_name"],
+                    "actor": row["actor"],
+                    "changed_at": row["changed_at"],
+                    "settings_version": row["settings_version"],
+                    "before": _load_json(row["before_json"], None),
+                    "after": _load_json(row["after_json"], None),
+                }
+                for row in rows
+            ]
+        }
+
+    # ---- operator-entered conversion rates ---------------------------------
+
+    @staticmethod
+    def _rate_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "from_currency": row["from_currency"],
+            "to_currency": row["to_currency"],
+            "rate": _number(row["rate"]),
+            "source": row["source"],
+            "entered_by": row["entered_by"],
+            "entered_at": row["entered_at"],
+            "effective_date": row["effective_date"],
+        }
+
+    def _conversion_rates(self, conn: Any) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            "SELECT * FROM conversion_rates ORDER BY from_currency,to_currency,effective_date DESC,id DESC"
+        ).fetchall()
+        return [self._rate_from_row(row) for row in rows]
+
+    def list_conversion_rates(self) -> dict[str, Any]:
+        with self.db.connection() as conn:
+            return {"items": self._conversion_rates(conn)}
+
+    def add_conversion_rate(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Append an operator-entered rate. Rates are never fetched or defaulted."""
+
+        errors: list[dict[str, str]] = []
+
+        def currency(field: str) -> str:
+            code = str(payload.get(field) or "").strip().upper()
+            if not ISO_CURRENCY_PATTERN.fullmatch(code):
+                errors.append(
+                    {
+                        "field": field,
+                        "code": "invalid_currency",
+                        "message": "must be a three-letter ISO currency code",
+                    }
+                )
+            return code
+
+        def text(field: str, limit: int = 500) -> str:
+            value = payload.get(field)
+            value = "" if value is None else str(value).replace("\x00", "").strip()[:limit]
+            if not value:
+                errors.append({"field": field, "code": "required", "message": f"{field} is required"})
+            return value
+
+        from_currency = currency("from_currency")
+        to_currency = currency("to_currency")
+        if from_currency and from_currency == to_currency:
+            errors.append(
+                {
+                    "field": "to_currency",
+                    "code": "invalid",
+                    "message": "from and to currencies must differ",
+                }
+            )
+        try:
+            rate = _decimal(payload.get("rate"))
+        except (InvalidOperation, ValueError, TypeError):
+            rate = None
+        if rate is None or rate <= 0 or rate > Decimal("1000000"):
+            errors.append(
+                {"field": "rate", "code": "invalid_number", "message": "must be a positive number"}
+            )
+        source = text("source")
+        entered_by = text("entered_by", 200)
+        # The effective date defaults to the entry date; the rate itself never does.
+        effective = str(payload.get("effective_date") or utc_now()).strip()[:10]
+        try:
+            date.fromisoformat(effective)
+        except ValueError:
+            errors.append(
+                {
+                    "field": "effective_date",
+                    "code": "invalid_date",
+                    "message": "must be an ISO date (YYYY-MM-DD)",
+                }
+            )
+        if errors:
+            raise ValidationFailure(errors)
+        now = utc_now()
+        with self.db.transaction(immediate=True) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO conversion_rates
+                    (from_currency,to_currency,rate,source,entered_by,entered_at,effective_date)
+                VALUES (?,?,?,?,?,?,?)
+                """,
+                (from_currency, to_currency, _decimal_text(rate), source, entered_by, now, effective),
+            )
+            row = conn.execute(
+                "SELECT * FROM conversion_rates WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO policy_audit
+                    (policy_name,actor,changed_at,settings_version,before_json,after_json)
+                VALUES ('conversion_rate',?,?,NULL,NULL,?)
+                """,
+                (entered_by, now, json_dumps(self._rate_from_row(row))),
+            )
+            return self._rate_from_row(row)
+
+    @staticmethod
+    def _applicable_rate(
+        rates: Sequence[Mapping[str, Any]],
+        from_currency: str,
+        to_currency: str,
+        on_date: str | None,
+    ) -> Mapping[str, Any] | None:
+        """Latest rate for the pair effective on or before ``on_date`` (today when unknown)."""
+
+        cutoff = str(on_date or "")[:10]
+        try:
+            date.fromisoformat(cutoff)
+        except ValueError:
+            cutoff = utc_now()[:10]
+        best: Mapping[str, Any] | None = None
+        for rate in rates:
+            if rate["from_currency"] != from_currency or rate["to_currency"] != to_currency:
+                continue
+            if str(rate["effective_date"]) > cutoff or rate["rate"] is None:
+                continue
+            if best is None or (str(rate["effective_date"]), rate["id"]) > (
+                str(best["effective_date"]),
+                best["id"],
+            ):
+                best = rate
+        return best
 
     def _get_settings_row(self, conn: Any) -> Any:
         row = conn.execute("SELECT * FROM app_settings WHERE id = 1").fetchone()
@@ -488,37 +808,44 @@ class InvoiceService:
                 }
             )
 
-        raw_policy = changes.get("target_cost_policy", {})
-        if not isinstance(raw_policy, Mapping):
-            raw_policy = {}
-            errors.append(
-                {
-                    "field": "target_cost_policy",
-                    "code": "invalid",
-                    "message": "must be an object",
-                }
-            )
-        mode = str(raw_policy.get("mode") or "")
-        if mode not in COST_POLICY_MODES:
-            errors.append(
-                {
-                    "field": "target_cost_policy.mode",
-                    "code": "invalid",
-                    "message": "must be invoice_only",
-                }
-            )
-        try:
-            tolerance = _decimal(raw_policy.get("maximum_absolute_difference_aed"))
-        except (InvalidOperation, ValueError, TypeError):
-            tolerance = None
-        if tolerance is None or tolerance < 0 or tolerance > Decimal("100000"):
-            errors.append(
-                {
-                    "field": "target_cost_policy.maximum_absolute_difference_aed",
-                    "code": "invalid_number",
-                    "message": "must be a non-negative amount",
-                }
-            )
+        actor = clean("changed_by") or "operator"
+        raw_tolerance_policy = changes.get("tolerance_policy")
+        tolerance: Decimal | None = None
+        # A client that sends the versioned policy edits it directly. The legacy
+        # target_cost_policy shape is still validated whenever it is sent, and
+        # is the edit when it is the only input.
+        if raw_tolerance_policy is None or changes.get("target_cost_policy") is not None:
+            raw_policy = changes.get("target_cost_policy", {})
+            if not isinstance(raw_policy, Mapping):
+                raw_policy = {}
+                errors.append(
+                    {
+                        "field": "target_cost_policy",
+                        "code": "invalid",
+                        "message": "must be an object",
+                    }
+                )
+            mode = str(raw_policy.get("mode") or "")
+            if mode not in COST_POLICY_MODES:
+                errors.append(
+                    {
+                        "field": "target_cost_policy.mode",
+                        "code": "invalid",
+                        "message": "must be invoice_only",
+                    }
+                )
+            try:
+                tolerance = _decimal(raw_policy.get("maximum_absolute_difference_aed"))
+            except (InvalidOperation, ValueError, TypeError):
+                tolerance = None
+            if tolerance is None or tolerance < 0 or tolerance > Decimal("100000"):
+                errors.append(
+                    {
+                        "field": "target_cost_policy.maximum_absolute_difference_aed",
+                        "code": "invalid_number",
+                        "message": "must be a non-negative amount",
+                    }
+                )
         if errors:
             raise ValidationFailure(errors)
 
@@ -529,12 +856,29 @@ class InvoiceService:
                 raise Conflict(
                     "settings were changed by another user", current_version=row["version"]
                 )
+            current_policy = self._tolerance_policy_from_row(row)
+            if raw_tolerance_policy is not None:
+                policy = self._validate_tolerance_policy(
+                    raw_tolerance_policy, current_policy, errors
+                )
+            else:
+                # Legacy clients send only the bare threshold: it edits the
+                # absolute tolerance of the versioned policy and nothing else.
+                policy = dict(current_policy)
+                policy["absolute_tolerance"] = _number(tolerance)
+            if errors:
+                raise ValidationFailure(errors)
+            policy_changed = self._policy_payload(policy) != self._policy_payload(current_policy)
+            if policy_changed:
+                policy["version"] = int(current_policy["version"]) + 1
+            else:
+                policy = current_policy
             new_version = row["version"] + 1
             conn.execute(
                 """
                 UPDATE app_settings SET brand_label=?,location=?,location_type=?,
                     supplier_rules_json=?,include_upc_in_export=?,
-                    target_cost_policy_json=?,version=?,updated_at=?
+                    target_cost_policy_json=?,tolerance_policy_json=?,version=?,updated_at=?
                 WHERE id=1
                 """,
                 (
@@ -545,14 +889,24 @@ class InvoiceService:
                     int(include_upc_in_export),
                     json_dumps(
                         {
-                            "mode": mode,
-                            "maximum_absolute_difference_aed": _number(tolerance),
+                            "mode": "invoice_only",
+                            "maximum_absolute_difference_aed": policy["absolute_tolerance"],
                         }
                     ),
+                    json_dumps(policy),
                     new_version,
                     now,
                 ),
             )
+            if policy_changed:
+                conn.execute(
+                    """
+                    INSERT INTO policy_audit
+                        (policy_name,actor,changed_at,settings_version,before_json,after_json)
+                    VALUES ('tolerance_policy',?,?,?,?,?)
+                    """,
+                    (actor, now, new_version, json_dumps(current_policy), json_dumps(policy)),
+                )
             return self._settings_from_row(self._get_settings_row(conn))
 
     def _target_defaults(self, conn: Any, supplier_id: str | None) -> dict[str, Any]:
@@ -572,6 +926,7 @@ class InvoiceService:
             "supplier_site": supplier_rule.get("supplier_site") or None,
             "tax_code": supplier_rule.get("tax_code") or None,
             "target_cost_policy": settings["target_cost_policy"],
+            "tolerance_policy": settings["tolerance_policy"],
         }
 
     @property
@@ -769,10 +1124,14 @@ class InvoiceService:
             "unit_status": row["unit_status"],
             "unit_reason": row["unit_reason"],
             "rms_po_number": row["rms_po_number"],
+            "rms_cost_currency": row["rms_cost_currency"],
+            "rms_unit_cost_converted": _number(row["rms_unit_cost_converted"]),
+            "conversion_rate_id": row["conversion_rate_id"],
             "target_unit_cost": _number(row["target_unit_cost"]),
             "target_cost_source": row["target_cost_source"],
             "target_cost_variance": _number(row["target_cost_variance"]),
             "target_cost_comparison_status": row["target_cost_comparison_status"],
+            "target_cost_comparison_reason": row["target_cost_comparison_reason"],
             "target_cost_review_required": bool(row["target_cost_review_required"]),
             "match_status": row["match_status"],
             "confidence": float(row["confidence"] or 0),
@@ -1420,6 +1779,7 @@ class InvoiceService:
             "uom": row["uom"],
             "unit_cost": _number(row["unit_cost"]),
             "master_po_number": row["master_po_number"],
+            "cost_currency": row["cost_currency"] if "cost_currency" in row.keys() else None,
         }
 
     def _matching_scope_supplier(self, conn: Any, supplier_id: str | None) -> str | None:
@@ -1487,6 +1847,9 @@ class InvoiceService:
         *,
         target_cost_policy: Mapping[str, Any] | None = None,
         currency: str | None = None,
+        tolerance_policy: Mapping[str, Any] | None = None,
+        conversion_rates: Sequence[Mapping[str, Any]] | None = None,
+        invoice_date: str | None = None,
     ) -> list[dict[str, Any]]:
         prepared: list[dict[str, Any]] = []
         ids: set[str] = set()
@@ -1494,14 +1857,38 @@ class InvoiceService:
             target_cost_policy
             or {
                 "mode": "invoice_only",
-                "maximum_absolute_difference_aed": 10,
+                "maximum_absolute_difference_aed": DEFAULT_ABSOLUTE_TOLERANCE,
             }
         )
         try:
             tolerance = _decimal(policy.get("maximum_absolute_difference_aed"))
         except (InvalidOperation, ValueError, TypeError):
-            tolerance = Decimal("10")
-        tolerance = tolerance if tolerance is not None else Decimal("10")
+            tolerance = Decimal(DEFAULT_ABSOLUTE_TOLERANCE)
+        tolerance = tolerance if tolerance is not None else Decimal(DEFAULT_ABSOLUTE_TOLERANCE)
+        if tolerance_policy is None:
+            tolerance_policy = default_tolerance_policy(_number(tolerance) or 0)
+        else:
+            tolerance = _decimal(tolerance_policy.get("absolute_tolerance"))
+            if tolerance is None:
+                tolerance = Decimal(DEFAULT_ABSOLUTE_TOLERANCE)
+        percentage = _decimal(tolerance_policy.get("percentage_tolerance"))
+        currency_scope = {
+            str(code).upper() for code in tolerance_policy.get("invoice_currency_scope") or ["AED"]
+        }
+        invoice_currency = str(currency or "").upper() or None
+        rates = list(conversion_rates or [])
+
+        def exceeds(variance: Decimal, base: Decimal) -> bool:
+            # Above tolerance when the absolute band is exceeded, or, with a
+            # percentage configured, when the proportional band is exceeded:
+            # the percentage catches a proportional gap the absolute band hides.
+            if abs(variance) > tolerance:
+                return True
+            if percentage is not None and base > 0:
+                return abs(variance) * Decimal("100") > percentage * base
+            return False
+
+        comparable: list[tuple[int, Decimal, Decimal, Decimal | None]] = []
         for position, source in enumerate(lines or []):
             line_id = str(source.get("id") or f"line-{position + 1}")[:100]
             if line_id in ids:
@@ -1527,8 +1914,12 @@ class InvoiceService:
             rms_usable = rms_unit_cost is not None and rms_unit_cost > Decimal("0.01")
             target_unit_cost = invoice_unit_cost
             target_source = "invoice"
-            comparison_currency_available = str(currency or "").upper() == "AED"
+            comparison_currency_available = invoice_currency in currency_scope
+            master_currency = str(source.get("rms_cost_currency") or "").upper() or None
             variance = None
+            comparison_reason: str | None = None
+            converted_cost: Decimal | None = None
+            rate_id: int | None = None
             unit_status = source.get("unit_status")
             # The RMS cost comparison is a HEURISTIC backstop: it never enters
             # the exported money (target cost is always the invoice cost) and
@@ -1556,12 +1947,38 @@ class InvoiceService:
             elif invoice_unit_cost is None:
                 comparison_status = "unavailable_invoice_cost"
                 review_required = True
+            elif master_currency and master_currency != invoice_currency:
+                # Different bases: convert only with an operator-entered rate,
+                # otherwise refuse and label rather than compare raw figures.
+                rate = self._applicable_rate(rates, master_currency, invoice_currency, invoice_date)
+                if rate is None:
+                    comparison_status = "currency_basis_mismatch"
+                    comparison_reason = (
+                        f"{REASON_NO_CONVERSION_RATE}:{master_currency}->{invoice_currency}"
+                    )
+                    review_required = True
+                else:
+                    rate_id = int(rate["id"])
+                    converted_cost = rms_unit_cost * _decimal(rate["rate"])
+                    variance = converted_cost - invoice_unit_cost
+                    comparison_status = (
+                        "above_tolerance"
+                        if exceeds(variance, converted_cost)
+                        else "within_tolerance"
+                    )
+                    comparison_reason = f"{REASON_CONVERTED}:{rate_id}"
+                    review_required = comparison_status == "above_tolerance"
+                    comparable.append((position, variance, converted_cost, quantity_of(source)))
             else:
                 variance = rms_unit_cost - invoice_unit_cost
                 comparison_status = (
-                    "above_tolerance" if abs(variance) > tolerance else "within_tolerance"
+                    "above_tolerance" if exceeds(variance, rms_unit_cost) else "within_tolerance"
+                )
+                comparison_reason = (
+                    REASON_SAME_CURRENCY if master_currency else REASON_MASTER_CURRENCY_UNDECLARED
                 )
                 review_required = comparison_status == "above_tolerance"
+                comparable.append((position, variance, rms_unit_cost, quantity_of(source)))
             prepared.append(
                 {
                     "id": line_id,
@@ -1588,16 +2005,45 @@ class InvoiceService:
                         str(source.get("unit_reason"))[:500] if source.get("unit_reason") else None
                     ),
                     "rms_po_number": _valid_order_number(source.get("rms_po_number")),
+                    "rms_cost_currency": master_currency,
+                    "rms_unit_cost_converted": _decimal_text(converted_cost),
+                    "conversion_rate_id": rate_id,
                     "target_unit_cost": _decimal_text(target_unit_cost),
                     "target_cost_source": target_source,
                     "target_cost_variance": _decimal_text(variance),
                     "target_cost_comparison_status": comparison_status,
+                    "target_cost_comparison_reason": comparison_reason,
                     "target_cost_review_required": review_required,
                     "match_status": status,
                     "confidence": confidence,
                     "candidates": candidates[:10],
                 }
             )
+        if tolerance_policy.get("scope") == "per_invoice" and comparable:
+            # Per-invoice scope: the tolerance is applied to the invoice-level
+            # extension (sum of quantity x variance) rather than to each unit
+            # price; every comparable line carries the invoice-level verdict.
+            if all(quantity is not None for _, _, _, quantity in comparable):
+                total_variance = sum(
+                    (variance * quantity for _, variance, _, quantity in comparable), Decimal("0")
+                )
+                total_base = sum(
+                    (base * quantity for _, _, base, quantity in comparable), Decimal("0")
+                )
+                status = "above_tolerance" if exceeds(total_variance, total_base) else "within_tolerance"
+                for position, _, _, _ in comparable:
+                    prepared[position]["target_cost_comparison_status"] = status
+                    prepared[position]["target_cost_review_required"] = status == "above_tolerance"
+                    prepared[position]["target_cost_comparison_reason"] = (
+                        f"{prepared[position]['target_cost_comparison_reason']};scope=per_invoice"
+                    )
+            else:
+                for position, _, _, _ in comparable:
+                    prepared[position]["target_cost_comparison_status"] = "unavailable_invoice_cost"
+                    prepared[position]["target_cost_review_required"] = True
+                    prepared[position]["target_cost_comparison_reason"] = (
+                        "per_invoice_scope_requires_quantity_on_every_line"
+                    )
         return prepared
 
     def _replace_lines(self, conn: Any, invoice_id: str, lines: Sequence[Mapping[str, Any]]) -> None:
@@ -1610,8 +2056,10 @@ class InvoiceService:
                  target_unit_cost,target_cost_source,target_cost_variance,
                  target_cost_comparison_status,target_cost_review_required,
                  match_status,confidence,candidates_json,
-                 rms_unit_cost_min,rms_unit_cost_max,unit_status,unit_reason)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 rms_unit_cost_min,rms_unit_cost_max,unit_status,unit_reason,
+                 rms_cost_currency,rms_unit_cost_converted,conversion_rate_id,
+                 target_cost_comparison_reason)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             [
                 (
@@ -1642,6 +2090,10 @@ class InvoiceService:
                     line.get("rms_unit_cost_max"),
                     line.get("unit_status"),
                     line.get("unit_reason"),
+                    line.get("rms_cost_currency"),
+                    line.get("rms_unit_cost_converted"),
+                    line.get("conversion_rate_id"),
+                    line.get("target_cost_comparison_reason"),
                 )
                 for line in lines
             ],
@@ -1697,6 +2149,7 @@ class InvoiceService:
             enriched["location_type"] = defaults.get("location_type")
             enriched["tax_code"] = defaults.get("tax_code")
             enriched["target_cost_policy"] = defaults["target_cost_policy"]
+            enriched["tolerance_policy"] = defaults["tolerance_policy"]
             self._complete_processing(invoice_id, enriched)
         except BaseException as error:
             permanent = error.__class__.__name__ in {
@@ -1708,10 +2161,15 @@ class InvoiceService:
     def _complete_processing(self, invoice_id: str, extracted: Mapping[str, Any]) -> None:
         now = utc_now()
         try:
+            with self.db.connection() as conn:
+                rates = self._conversion_rates(conn)
             lines = self._prepare_lines(
                 extracted.get("lines") or [],
                 target_cost_policy=extracted.get("target_cost_policy"),
                 currency=str(extracted.get("currency") or "") or None,
+                tolerance_policy=extracted.get("tolerance_policy"),
+                conversion_rates=rates,
+                invoice_date=str(extracted.get("invoice_date") or "") or None,
             )
             monetary = {
                 field: _decimal_text(extracted.get(field)) for field in ("subtotal", "tax_total", "total")
@@ -1875,13 +2333,14 @@ class InvoiceService:
                 aliases,
                 scope_supplier_id,
             )
-            policy = self._target_defaults(
-                conn, invoice.get("supplier_id")
-            )["target_cost_policy"]
+            defaults = self._target_defaults(conn, invoice.get("supplier_id"))
             prepared = self._prepare_lines(
                 enriched_lines,
-                target_cost_policy=policy,
+                target_cost_policy=defaults["target_cost_policy"],
                 currency=invoice.get("currency"),
+                tolerance_policy=defaults["tolerance_policy"],
+                conversion_rates=self._conversion_rates(conn),
+                invoice_date=invoice.get("invoice_date"),
             )
             self._replace_lines(conn, invoice_id, prepared)
             new_version = row["version"] + 1
@@ -2171,6 +2630,7 @@ class InvoiceService:
                                 "rms_item_id": selected["rms_item_id"],
                                 "rms_parent_item": selected["parent_item"],
                                 "rms_upc": selected["upc"],
+                                "rms_cost_currency": selected["cost_currency"],
                                 "rms_unit_cost": cost["rms_unit_cost"],
                                 "rms_unit_cost_min": cost["rms_unit_cost_min"],
                                 "rms_unit_cost_max": cost["rms_unit_cost_max"],
@@ -2191,13 +2651,14 @@ class InvoiceService:
                         )
                     resolved_lines.append(source)
                 try:
-                    cost_policy = self._target_defaults(
-                        conn, effective_supplier_id
-                    )["target_cost_policy"]
+                    defaults = self._target_defaults(conn, effective_supplier_id)
                     prepared_lines = self._prepare_lines(
                         resolved_lines,
-                        target_cost_policy=cost_policy,
+                        target_cost_policy=defaults["target_cost_policy"],
                         currency=updates.get("currency", row["currency"]),
+                        tolerance_policy=defaults["tolerance_policy"],
+                        conversion_rates=self._conversion_rates(conn),
+                        invoice_date=updates.get("invoice_date", row["invoice_date"]),
                     )
                 except (InvalidOperation, ValueError, TypeError):
                     raise ValidationFailure(
@@ -2216,9 +2677,7 @@ class InvoiceService:
                     "SELECT * FROM invoice_lines WHERE invoice_id=? ORDER BY position,id",
                     (invoice_id,),
                 ).fetchall()
-                cost_policy = self._target_defaults(
-                    conn, effective_supplier_id
-                )["target_cost_policy"]
+                defaults = self._target_defaults(conn, effective_supplier_id)
                 existing_lines: list[dict[str, Any]] = []
                 for line_row in existing_line_rows:
                     source_line = self._line_from_row(line_row)
@@ -2233,8 +2692,11 @@ class InvoiceService:
                     existing_lines.append(source_line)
                 prepared_lines = self._prepare_lines(
                     existing_lines,
-                    target_cost_policy=cost_policy,
+                    target_cost_policy=defaults["target_cost_policy"],
                     currency=updates["currency"],
+                    tolerance_policy=defaults["tolerance_policy"],
+                    conversion_rates=self._conversion_rates(conn),
+                    invoice_date=updates.get("invoice_date", row["invoice_date"]),
                 )
 
             if "invoice_number" in updates and "document" not in updates:
@@ -2625,6 +3087,7 @@ class InvoiceService:
                         "supplier_name": row["supplier_name"],
                         "uom": row["uom"],
                         "unit_cost": _number(row["unit_cost"]),
+                        "cost_currency": row["cost_currency"],
                         "master_po_number": row["master_po_number"],
                     }
                     for row in rows
@@ -2658,6 +3121,16 @@ class InvoiceService:
             "supplier_name": {"supplier_name", "vendor_name"},
             "uom": {"uom", "standard_uom", "unit", "unit_of_measure"},
             "unit_cost": {"unit_cost", "supplier_unit_cost", "cost", "price"},
+            # The cost currency column only.  A retail/selling currency column
+            # is a different basis and is deliberately not an alias.
+            "cost_currency": {
+                "cost_currency",
+                "unit_cost_currency",
+                "supplier_currency",
+                "supp_currency",
+                "currency",
+                "currency_code",
+            },
             "master_po_number": {
                 "po_number",
                 "purchase_order",
@@ -2741,7 +3214,37 @@ class InvoiceService:
             return
         raise UploadRejected("catalog must be CSV or XLSX")
 
-    def import_catalog(self, filename: str, content: bytes) -> dict[str, Any]:
+    def import_catalog(
+        self,
+        filename: str,
+        content: bytes,
+        *,
+        cost_currency: str | None = None,
+        declared_by: str | None = None,
+    ) -> dict[str, Any]:
+        """Import a master; returns the import counts (see import_catalog_detailed)."""
+
+        detailed = self.import_catalog_detailed(
+            filename, content, cost_currency=cost_currency, declared_by=declared_by
+        )
+        return {key: detailed[key] for key in ("imported", "skipped", "warnings")}
+
+    def import_catalog_detailed(
+        self,
+        filename: str,
+        content: bytes,
+        *,
+        cost_currency: str | None = None,
+        declared_by: str | None = None,
+    ) -> dict[str, Any]:
+        """Import a master. The cost currency of its rows is recorded, never guessed.
+
+        A ``cost_currency`` column in the file wins for the rows that carry it;
+        otherwise the operator-declared currency applies.  Rows with neither
+        stay undeclared (compared exactly as before, labelled as such) and are
+        counted in the result so the operator can declare later.
+        """
+
         filename = _clean_filename(filename)
         if Path(filename).suffix.casefold() not in CATALOG_EXTENSIONS:
             raise UploadRejected("catalog must be CSV or XLSX")
@@ -2751,18 +3254,28 @@ class InvoiceService:
             raise UploadRejected(
                 f"catalog exceeds {self.settings.max_catalog_file_bytes // (1024 * 1024)} MB limit"
             )
+        declared_currency = str(cost_currency or "").strip().upper() or None
+        if declared_currency and not ISO_CURRENCY_PATTERN.fullmatch(declared_currency):
+            raise UploadRejected("cost currency must be a three-letter ISO currency code")
+        declared_by = _identifier_text(declared_by)
+        if declared_currency and not declared_by:
+            raise UploadRejected("declare who is stating the master cost currency")
 
         imported = 0
         skipped = 0
+        undeclared_currency_rows = 0
+        column_currency_rows = 0
         warnings: list[str] = []
         occurrences: dict[tuple[str, str, str, str], int] = {}
         now = utc_now()
+        import_id = f"import:{uuid.uuid4().hex}"
         insert_sql = """
             INSERT INTO catalog_items
                 (catalog_item_id,rms_item_id,parent_item,upc,description,
                  normalized_description,supplier_id,supplier_name,uom,unit_cost,
-                 master_po_number,source_row,source_name,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                 master_po_number,source_row,source_name,created_at,updated_at,
+                 cost_currency,import_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(catalog_item_id) DO UPDATE SET
                 rms_item_id=excluded.rms_item_id,
                 parent_item=excluded.parent_item,
@@ -2776,7 +3289,9 @@ class InvoiceService:
                 master_po_number=excluded.master_po_number,
                 source_row=excluded.source_row,
                 source_name=excluded.source_name,
-                updated_at=excluded.updated_at
+                updated_at=excluded.updated_at,
+                cost_currency=excluded.cost_currency,
+                import_id=excluded.import_id
         """
         # Parse the whole file before taking the write lock. Holding BEGIN
         # IMMEDIATE across a multi-minute parse blocks every worker's job claim
@@ -2820,6 +3335,18 @@ class InvoiceService:
                     warnings.append(
                         f"row {row_number}: ignored non-order value in explicit order field"
                     )
+                row_currency = str(row.get("cost_currency") or "").strip().upper() or None
+                if row_currency and not ISO_CURRENCY_PATTERN.fullmatch(row_currency):
+                    skipped += 1
+                    if len(warnings) < 100:
+                        warnings.append(f"row {row_number}: invalid cost_currency")
+                    continue
+                if row_currency:
+                    column_currency_rows += 1
+                else:
+                    row_currency = declared_currency
+                    if row_currency is None:
+                        undeclared_currency_rows += 1
                 identity = (
                     (supplier_id or "").casefold(),
                     item_id,
@@ -2852,9 +3379,35 @@ class InvoiceService:
                         filename,
                         now,
                         now,
+                        row_currency,
+                        import_id,
                     )
                 )
                 imported += 1
+        currency_source = (
+            "column" if column_currency_rows else "operator" if declared_currency else None
+        )
+        with self.db.transaction(immediate=True) as conn:
+            conn.execute(
+                """
+                INSERT INTO catalog_imports
+                    (id,filename,imported_at,imported_rows,skipped_rows,cost_currency,
+                     cost_currency_source,declared_by,declared_at,content_sha256)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    import_id,
+                    filename,
+                    now,
+                    imported,
+                    skipped,
+                    declared_currency,
+                    currency_source,
+                    declared_by,
+                    now if declared_currency else None,
+                    hashlib.sha256(content).hexdigest(),
+                ),
+            )
         # Commit in chunks so no single write transaction approaches the busy
         # timeout; workers and uploads interleave between chunks. Every row was
         # validated above, so a mid-import failure can only be a storage error.
@@ -2865,7 +3418,111 @@ class InvoiceService:
             # SQLite's busy handler does not queue writers fairly.
             time.sleep(0.01)
         self._wake.set()
-        return {"imported": imported, "skipped": skipped, "warnings": warnings}
+        return {
+            "imported": imported,
+            "skipped": skipped,
+            "warnings": warnings,
+            "import_id": import_id,
+            "cost_currency": declared_currency,
+            "cost_currency_source": currency_source,
+            "column_currency_rows": column_currency_rows,
+            "undeclared_currency_rows": undeclared_currency_rows,
+        }
+
+    @staticmethod
+    def _catalog_import_from_row(row: Mapping[str, Any], undeclared_rows: int) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "filename": row["filename"],
+            "imported_at": row["imported_at"],
+            "imported_rows": row["imported_rows"],
+            "skipped_rows": row["skipped_rows"],
+            "cost_currency": row["cost_currency"],
+            "cost_currency_source": row["cost_currency_source"],
+            "declared_by": row["declared_by"],
+            "declared_at": row["declared_at"],
+            "undeclared_currency_rows": undeclared_rows,
+        }
+
+    def latest_catalog_import(self) -> dict[str, Any] | None:
+        items = self.list_catalog_imports()["items"]
+        return items[0] if items else None
+
+    def list_catalog_imports(self) -> dict[str, Any]:
+        with self.db.connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM catalog_imports ORDER BY imported_at DESC, rowid DESC"
+            ).fetchall()
+            undeclared = {
+                row["import_id"]: row["n"]
+                for row in conn.execute(
+                    "SELECT import_id, COUNT(*) AS n FROM catalog_items "
+                    "WHERE cost_currency IS NULL GROUP BY import_id"
+                ).fetchall()
+            }
+        return {
+            "items": [
+                self._catalog_import_from_row(row, undeclared.get(row["id"], 0)) for row in rows
+            ]
+        }
+
+    def declare_catalog_import_currency(
+        self, import_id: str, cost_currency: str, declared_by: str
+    ) -> dict[str, Any]:
+        """Operator declaration of the cost currency for an import's undeclared rows.
+
+        Rows that carried their own currency column keep it.  Lines already
+        matched keep their stored basis until they are rematched or edited.
+        """
+
+        code = str(cost_currency or "").strip().upper()
+        errors: list[dict[str, str]] = []
+        if not ISO_CURRENCY_PATTERN.fullmatch(code):
+            errors.append(
+                {
+                    "field": "cost_currency",
+                    "code": "invalid_currency",
+                    "message": "must be a three-letter ISO currency code",
+                }
+            )
+        actor = _identifier_text(declared_by)
+        if not actor:
+            errors.append({"field": "declared_by", "code": "required", "message": "declared_by is required"})
+        if errors:
+            raise ValidationFailure(errors)
+        now = utc_now()
+        with self.db.transaction(immediate=True) as conn:
+            row = conn.execute("SELECT * FROM catalog_imports WHERE id = ?", (import_id,)).fetchone()
+            if row is None:
+                raise NotFound("catalog import not found")
+            before = self._catalog_import_from_row(row, 0)
+            conn.execute(
+                """
+                UPDATE catalog_imports SET cost_currency=?,cost_currency_source=
+                    CASE WHEN cost_currency_source='column' THEN 'column' ELSE 'operator' END,
+                    declared_by=?,declared_at=? WHERE id=?
+                """,
+                (code, actor, now, import_id),
+            )
+            updated_rows = conn.execute(
+                "UPDATE catalog_items SET cost_currency=?,updated_at=? "
+                "WHERE import_id=? AND cost_currency IS NULL",
+                (code, now, import_id),
+            ).rowcount
+            row = conn.execute("SELECT * FROM catalog_imports WHERE id = ?", (import_id,)).fetchone()
+            after = self._catalog_import_from_row(row, 0)
+            after["rows_declared"] = updated_rows
+            conn.execute(
+                """
+                INSERT INTO policy_audit
+                    (policy_name,actor,changed_at,settings_version,before_json,after_json)
+                VALUES (?,?,?,NULL,?,?)
+                """,
+                (f"catalog_import_currency:{import_id}", actor, now, json_dumps(before), json_dumps(after)),
+            )
+        with self._full_catalog_lock:
+            self._full_catalog_cache = None
+        return after
 
     def import_aliases(self, filename: str, content: bytes) -> dict[str, Any]:
         filename = _clean_filename(filename)
@@ -3306,11 +3963,13 @@ class InvoiceService:
                     INSERT INTO catalog_items
                         (catalog_item_id,rms_item_id,parent_item,upc,description,
                          normalized_description,supplier_id,supplier_name,uom,unit_cost,
-                         master_po_number,source_row,source_name,created_at,updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                         master_po_number,source_row,source_name,created_at,updated_at,
+                         cost_currency,import_id)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'AED','demo')
                     ON CONFLICT(catalog_item_id) DO UPDATE SET
                         description=excluded.description,supplier_id=excluded.supplier_id,
-                        uom=excluded.uom,unit_cost=excluded.unit_cost,updated_at=excluded.updated_at
+                        uom=excluded.uom,unit_cost=excluded.unit_cost,updated_at=excluded.updated_at,
+                        cost_currency=excluded.cost_currency,import_id=excluded.import_id
                     """,
                     (
                         catalog_item_id,
@@ -3407,6 +4066,7 @@ class InvoiceService:
                     if line.get("rms_item_id"):
                         line["catalog_item_id"] = f"demo:{line['rms_item_id']}"
                         line["rms_unit_cost"] = costs[line["rms_item_id"]]
+                        line["rms_cost_currency"] = "AED"
                     prepared_demo_lines.append(line)
                 self._replace_lines(
                     conn,

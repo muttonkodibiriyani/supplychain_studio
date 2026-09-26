@@ -253,6 +253,7 @@ def match_lines(
                         "rms_parent_item": selected.get("parent_item")
                         or selected["rms_item_id"],
                         "rms_upc": selected.get("upc"),
+                        "rms_cost_currency": _cost_currency_of(selected),
                         "rms_unit_cost": cost["rms_unit_cost"],
                         "rms_unit_cost_min": cost["rms_unit_cost_min"],
                         "rms_unit_cost_max": cost["rms_unit_cost_max"],
@@ -442,6 +443,7 @@ def match_lines(
                     else None
                 ),
                 "rms_upc": selected.get("upc") if selected else None,
+                "rms_cost_currency": _cost_currency_of(selected) if selected else None,
                 "rms_unit_cost": cost["rms_unit_cost"],
                 "rms_unit_cost_min": cost["rms_unit_cost_min"],
                 "rms_unit_cost_max": cost["rms_unit_cost_max"],
@@ -911,6 +913,7 @@ def _rank_candidates(
                 "parent_item": item.get("parent_item") or item["rms_item_id"],
                 "upc": item.get("upc"),
                 "unit_cost": item.get("unit_cost"),
+                "cost_currency": item.get("cost_currency"),
                 "uom": item.get("uom"),
                 "master_po_number": item.get("master_po_number"),
                 "description": item["description"],
@@ -1214,6 +1217,21 @@ def _score_reason(score: float, exact: bool) -> str:
     return "Weak name similarity"
 
 
+
+def _cost_currency_of(row: Mapping[str, Any] | None) -> str | None:
+    """Master cost currency of a catalog row or of its public-candidate projection.
+
+    Raw catalog rows carry ``cost_currency``; ``_public_candidate`` renames it to
+    ``rms_cost_currency``.  Both shapes reach the line-update paths, so read
+    whichever key is present and never fall back to a default currency.
+    """
+    if not row:
+        return None
+    value = row.get("cost_currency")
+    if value in (None, ""):
+        value = row.get("rms_cost_currency")
+    return value if value not in (None, "") else None
+
 def _public_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
     result = {
         "rms_item_id": candidate["rms_item_id"],
@@ -1232,6 +1250,8 @@ def _public_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
             result["rms_upc"] = candidate["upc"]
         if candidate.get("unit_cost") is not None:
             result["rms_unit_cost"] = candidate["unit_cost"]
+        if candidate.get("cost_currency") is not None:
+            result["rms_cost_currency"] = candidate["cost_currency"]
     return result
 
 
