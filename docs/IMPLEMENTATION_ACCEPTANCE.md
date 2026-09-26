@@ -1406,3 +1406,51 @@ is a human numeral-by-numeral read against the stated test — does the number d
 behaviour on a sample, or the size, shape, content or cost structure of the master — and an extended grep
 found one of the three. **Those sweeps were clean and they were also uninformative about this class, and
 this record should not be read as having checked for it before this round.**
+
+## Volume: the thread-safety fix is proven, and the batch-size question has an answer
+
+**Scope.** One thousand uploads of the OCR document class through eight workers, on a shared host
+carrying four other containers at a load average between 23 and 28, against a build consisting of the
+release baseline plus a single serialising lock around the PDF rasteriser. The run was reconstructed
+from the container's own database after the driver process was lost; the container was never restarted.
+Peak memory and the queue-depth series for the final half hour were not captured and are not
+recoverable — that is a gap in the measurement and is recorded as one, not as an absence of a problem.
+
+**The fix is proven on the class it targets.** Zero of one thousand uploads hit the data-format-error
+class, against 133 of one thousand on the unpatched build with the same corpus and the same worker
+count. Predicted zero, observed zero. No retries anywhere, no worker exits, no respawns, no stall, and
+the queue drained to empty.
+
+**The batch-size question is answered, and the premise behind it was wrong.** The delivery was asked
+whether one thousand documents in a single run is viable, and if not, what smaller batch works without
+losing conversion accuracy. One thousand in a single run destabilised nothing: every row was processed
+on its first attempt, the worker pool was intact at the end, and nothing queued behind a stall. **The
+limiting factor is not batch size.** It is wall time and per-document limits, and a smaller batch
+improves neither. No batch-size ceiling is recommended, because none was found.
+
+**Failures, with both denominators, because they say different things.** By upload, 25 of 1,000 failed.
+Every one of them terminated with an explicit, specific reason and a terminal failed state: none was
+dropped, none produced a silent partial conversion. That is the behaviour the delivery was asked for —
+solve what can be solved and flag the rest for recheck — and it is the second strongest result in this
+run. By **source document**, which is the denominator that carries meaning, 48 of 50 document types
+converted on every copy; one failed on every copy against a deterministic page-size limit, being a scan
+whose raster exceeds the configured per-page ceiling; and one failed on five of its twenty copies
+against a time limit. **The upload figure is a count of copies, not a failure rate.** A rate on a
+genuinely distinct population is not estimable from fifty source documents and none is offered here.
+Of the 25, twenty are deterministic and five are not: a time limit is a property of the document *and*
+the machine it ran on, and those five were measured on a loaded shared host. The page-size ceiling is a
+configuration constant, and raising it trades memory for coverage — a change that must report peak
+memory at the raised limit before it is argued for, since a large scan admitted and then exhausting
+container memory under eight workers is a worse outcome than a clean rejection.
+
+**Throughput, and the two targets in play disagree with each other.** One thousand OCR-class documents
+reached a terminal state in 58 minutes 55 seconds, of which the intake phase was under two minutes —
+so essentially all of it is processing and none of it is an intake problem. Sustained, that is roughly
+24,400 documents per day. The programme design document sets a throughput requirement of 10,000
+invoices per day with no queue backlog older than fifteen minutes, so **this run is about 2.4 times
+ahead of the written requirement**, on the hardest document class, on a loaded shared host. The
+separately stated verbal target of one thousand invoices in twenty to thirty minutes is about 5.8 times
+that written requirement and about 2.4 times what was measured. Both readings are true simultaneously
+and neither is quoted without the other. Which target governs the launch is a decision for the
+programme owner, not one this document takes. No projection is made to a dedicated machine: that
+requires a run on such a machine, and none has been performed.
