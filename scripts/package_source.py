@@ -255,8 +255,15 @@ def pending_push_ref_line(root: Path, explicit_range: str | None = None) -> tupl
 
     Default: HEAD against its upstream, else against origin/<branch>, else a new branch (all zeros)
     with the same fallbacks as the push path. An explicit "<remote sha>..<local sha>" overrides it."""
-    inside = subprocess.run(["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
-                            capture_output=True, text=True)
+    try:
+        inside = subprocess.run(["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+                                capture_output=True, text=True)
+    except OSError as error:  # no git binary (the runtime image, an unpacked package on a bare host)
+        if (root / ".git").exists():
+            raise SystemExit("Push privacy guard could not inspect the commits being pushed and refused "
+                             f"the push: {type(error).__name__}; fix the repository state (or install git) "
+                             "and push again; do not bypass the hook") from error
+        return None
     if inside.returncode != 0 or inside.stdout.strip() != "true":
         return None
     if explicit_range:
@@ -287,7 +294,7 @@ def check_only(root: Path = ROOT, explicit_range: str | None = None) -> int:
     print(f"Repository privacy guard: {len(repository_text_files(root))} text files scanned, no listed pattern found")
     pending = pending_push_ref_line(root, explicit_range)
     if pending is None:
-        print("Push range not covered: not inside a git checkout, so there is nothing to push from here")
+        print("Push range not covered: not inside a git checkout (or git is not installed), so there is nothing to push from here")
         return 0
     ref_line, remote = pending
     commit_count, blob_count = validate_push(root, [ref_line], remote)

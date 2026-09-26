@@ -490,6 +490,21 @@ def test_check_only_passes_once_the_branch_is_pushed_and_says_so_outside_a_check
     assert 'Push range not covered: not inside a git checkout' in capsys.readouterr().out
 
 
+def test_check_only_without_git_passes_a_plain_tree_and_refuses_a_checkout(tmp_path, capsys, monkeypatch):
+    """The runtime image has no git: an unpacked package still gets the tree scan; a checkout is refused, not skipped."""
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError(2, 'No such file or directory', 'git')
+    monkeypatch.setattr(package_source.subprocess, 'run', no_git)
+    plain = _minimal_root(tmp_path)
+    assert package_source.check_only(plain) == 0
+    assert 'git is not installed' in capsys.readouterr().out
+    (plain / '.git').mkdir()
+    with pytest.raises(SystemExit) as error:
+        package_source.check_only(plain)
+    assert 'could not inspect the commits being pushed and refused the push: FileNotFoundError' in str(error.value)
+    assert 'install git' in str(error.value)
+
+
 def test_push_range_scan_refuses_on_any_git_error(tmp_path):
     origin, clone = _clone_with_bare_origin(tmp_path)
     tip = _git(clone, 'rev-parse', 'HEAD').stdout.strip()
