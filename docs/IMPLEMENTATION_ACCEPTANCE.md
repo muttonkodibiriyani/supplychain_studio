@@ -2331,3 +2331,77 @@ or at least warn, on a group whose exported identifiers differ, exactly as it al
 unit of measure — a small change to a function that already has the right shape. Until it lands, the
 export of an automatically matched line is not reproducible from the master alone, and **that claim must
 not be made to the receiving system's owner.**
+
+## The fifty-invoice gate of record ran, and it is not evaluable
+
+The batch this programme's minimum volume was set against has now been executed on the text class at a
+locked image, on a fresh database, with the supplier rule configured from a prior discovery run, and with
+the load rule satisfied at firing. Fifty distinct documents, none of them a repeat.
+
+**Nothing exported. Zero of fifty.** Every document reached a terminal state and none failed outright, so
+the run is sound; but the accuracy question the gate exists to answer was never reached, because accuracy is
+measured on exported workbooks and there were none. **The verdict is NOT EVALUABLE — not a pass, and not a
+failure.** The distinction is not a courtesy: "nothing exported" and "nothing correct" are different
+statements, and only the first is measured. The touchless and cycle-time measures remain not evaluable for
+the same reason.
+
+**Where the fifty stop.** Of 710 extracted lines the matcher decided 31 automatically, offered 456 as
+suggestions and left 223 with no candidate at all. Forty-six of the fifty documents are blocked at matching.
+Four yielded no lines at all — a short text layer where the header was found and no line table existed.
+The remaining blocks are supplier fields: **supplier identity resolved on 23 of 50**, so 27 documents stay
+blocked on supplier requirements even with a rule configured, and the rule could only ever cover the 23 it
+was derived from.
+
+**This bounds the duplicate-row finding rather than contradicting it.** The collapse that lifts lines to
+automatic only engages inside a resolved supplier scope — the caller gates it on exactly that. The
+arbitration ran on a corpus where supplier identity resolved on nearly every document; the fifty resolve
+under half. **So the mechanism that lifts the most lines has a precondition that fails on most of this
+population, which makes supplier resolution the head of the chain and the duplicate fix second.** A repair
+whose precondition fails on half the population delivers on half the population, and no figure from the
+smaller corpus forecasts this one.
+
+**The unresolved documents are two different problems and should not be one task:** those where no supplier
+name was extracted at all are an extraction failure; those where a name was read and matched nothing are a
+supplier-master coverage or normalisation failure. The second group is smaller and far more diagnostic.
+
+**A gate built from a single run cannot fail informatively.** The run's new-reason-code check reported a
+failure because its set of known codes had been sampled from one earlier run, so every new population
+produces "unknown" codes. It fails closed and noisily, which is the safe direction, but it carries no
+information. It should be built against the reason-code registry, so that "first encounter" means "not
+declared anywhere in the code".
+
+## The pricing control has never fired, and has barely been reached
+
+On the fifty, the cost-comparison status is *unavailable, no match* on 679 lines, *within tolerance* on 31 —
+exactly the automatically decided lines — and *above tolerance* on none. **The control reached about four
+per cent of lines and has not fired once on this class.**
+
+This is the second population in which that field carries match state rather than price information. It is
+**not** a tautology, and the distinction matters: on the smaller corpus the same field returned
+above-tolerance on a substantial share of machine-decided lines, so an automatic line demonstrably *can*
+come out above tolerance. What the two populations jointly support is that **the control is unexercised**,
+which is a coverage statement about the evidence, not a claim that it is incapable of firing. Two
+instruments, two populations, on the coverage claim only. The discriminating question is still what the
+master cost column is denominated in.
+
+## A single page at a common scanner setting fails the whole invoice
+
+The parser's resource bounds are a frozen structure and the pixel fields are not reachable from settings,
+unlike the file-size and page-count bounds beside them. Its own docstring is explicit that a bound **fails
+the whole document and truncates nothing**.
+
+**An A4 page rendered at 600 dpi is about 34.8 megapixels against a per-page ceiling of 30 million.** So one
+page scanned at a resolution many scanners use by default refuses the entire invoice, and there is no
+setting an operator can change. At 300, 400 and 500 dpi a page fits.
+
+**The two bounds also contradict each other.** The page ceiling advertises fifty pages, while the total-pixel
+budget permits roughly seventeen pages at 300 dpi and about six at 500. A twenty-page scan at 300 dpi is
+refused by a system that says it accepts fifty pages, and the failure is wholesale.
+
+For the installation this record is about — a from-zero install on a machine whose operator scans invoices at
+the scanner's default — this is a launch blocker and not a tuning item. The minimum fix is to make the pixel
+bounds reachable from settings as the neighbouring bounds already are. The better fix is to **downsample an
+oversized page instead of failing the document**: rendering above roughly 400 dpi buys no recognition
+accuracy, and refusing a whole invoice over one page is the wrong trade. Either way the page and pixel
+bounds must be made consistent, or the advertised page count stated as resolution-dependent, and the Windows
+procedure must name a supported scan resolution until the bounds move.
