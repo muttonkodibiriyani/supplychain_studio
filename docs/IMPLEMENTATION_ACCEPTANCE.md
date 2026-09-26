@@ -1841,3 +1841,78 @@ and the layout text is additionally handed to the parser as a second source. So 
 receives less than the count measures. The discriminator holds — byte-identical input, not merely
 consistent input — and the objection has been converted into a stated property of the pipeline rather
 than an assumption.
+
+### The guard's fail-open mode, and which platforms it is verified on
+
+The push-path guard is delivered as a repository hook, and the launchers are being changed to point git
+at the committed hook directory, which is the correct answer because git cannot install a hook on its
+own and a launcher is something an operator genuinely runs. Two conditions sit under that, and only one
+of them is dangerous:
+
+- **Fail-open, and therefore the gate.** If the hook is committed without the executable mode bit, git
+  skips it silently. The push succeeds, nothing is printed, the hook path configuration still reads back
+  correctly, and any test asserting the launcher mentions that configuration still passes. The bit must
+  be read off the git index rather than off a working tree, because the index is what a clone receives
+  and a developer's own checkout can have the bit where the index does not.
+- **Fail-closed, and therefore acceptable.** If the hook's interpreter is absent it exits non-zero and
+  the push is refused. That is noisy and safe. The only requirement is that the message name what to
+  install instead of surfacing a bare exit code.
+
+A test asserting that a launcher *contains* the configuration line is a tripwire, not evidence. A line
+can sit inside a branch the operator's path never takes, after an early return, or below a failing exit.
+The evidence is a fresh clone, the real launcher run, the configuration read back, and a planted marker's
+push refused.
+
+**Platform reach is stated, not assumed.** This system is required on two operating systems and ships two
+launchers. A guard configured by only one of them leaves every operator on the other platform with no
+protection on the publication path, which is half a guard delivered as a whole one. Both launchers set
+it. Where the refused-push check cannot be executed on a platform from this environment, this record and
+the operator documentation name the platform the guard was **verified** on and say plainly that the other
+is configured but unexercised. Verified and assumed are different words, and the reader is entitled to
+the first one.
+
+### A regression test that guards a machine nobody runs
+
+The thread-safety fix arrived with a test that passes when the lock is replaced by a no-op at the shipped
+worker count, and only distinguishes the two at roughly twice that count. The correctness of the fix is
+not in question. The test is: it does not discriminate in the configuration that ships, so it would not
+notice a future refactor removing the lock. The high-thread-count result is kept as evidence that the
+race is real — which is worth having and was not previously demonstrated — but it is not the gate.
+
+The gate is a structural assertion that no two calls into the document-reading library overlap,
+deterministic and independent of thread count, required to fail with the lock removed and pass with it at
+shipped settings. A race test asks whether the fault happened to lose a coin toss on this run; a
+structural probe asks whether the fault is possible. Only the second answers the question, and only the
+second keeps answering it a year from now.
+
+### A correct fix can remove a flag from lines that still need review
+
+Splitting the cost reason code was necessary: it had been firing on lines that had no comparison at all.
+After the split it fires only where a comparison was actually made and exceeded tolerance. That is right,
+and it raises a question the split does not answer, because the lines that lose the flag do not stop
+needing review — they were never above tolerance, but they have no master cost either, and something
+must still hold them.
+
+In this corpus they are held, and the arithmetic says why rather than an assumption: the
+no-comparison-available group is exactly the set of lines the matcher did not decide automatically, and
+those lines already block approval through the matching reason. Remove the cost flag and the matching
+flag still stands. No review coverage is lost here.
+
+**That is a property of this corpus, not of the code, and the difference is the defect.** The
+no-comparison-available state has no code path and no owner. It is reachable by a line that the matcher
+decides automatically *and* for which no master cost exists — a master row carrying no unit cost, or a
+zero one. Such a line would carry no matching flag, because it matched, and no cost flag, because the
+split correctly removed the one that used to fire. It would be approved silently with no cost check ever
+performed. The coincidence that makes this corpus safe is that every automatically decided line here
+happens to have a master cost; nothing in the code requires it.
+
+Two requirements follow. First, count the master rows carrying no unit cost or a zero one: if that count
+is greater than zero the unowned state is reachable today and this is a live defect, not a latent one.
+Second, the unowned state gets an owner — a reason code of its own that blocks approval when a decided
+line has nothing to compare against — and a test that asserts an automatically matched line with no
+master cost does not reach an approvable state. Without that test, the correct fix above is one master
+row away from becoming a silent approval.
+
+This is the fourth occurrence in this programme of the same shape: a control that loses its capability
+and returns a normal-looking result. It is the first where the capability is removed by a change that is
+itself correct, which is why it is recorded beside that change rather than against it.
