@@ -231,9 +231,22 @@ The steps below describe the current conservative application behavior pending c
 1. Calculate each invoice net unit cost after discount from the source evidence. It must reconcile with the net line amount and quantity.
 2. Use that invoice net unit cost for `Details.Unit Cost` **every time**. RMS cost never substitutes for it, whether the RMS value is higher, lower, or within tolerance.
 3. Compare the eligible supplier-scoped RMS cost with the invoice net unit cost. Do not compare a parent-item cost, another supplier's cost, or a visually similar item's cost.
-4. When the absolute difference is greater than AED 10, keep the invoice net unit cost as the target and raise the line for explicit review. Recheck the item mapping, supplier scope, RMS currency/unit, invoice discount, quantity, and UOM.
+4. When the absolute difference is greater than the tolerance in the current tolerance policy (10 in the invoice currency unless an operator has changed it), keep the invoice net unit cost as the target and raise the line for explicit review. Recheck the item mapping, supplier scope, RMS currency/unit, invoice discount, quantity, and UOM.
 5. Preserve the available invoice net unit-cost precision; do not round unit prices to two decimals. Multiply each quantity by its net unit cost, round each line extension to cents using half-up rounding, then sum those rounded extensions. That sum must reconcile with `Header.Total Cost Ex Tax` and the reviewed invoice ex-tax total. For example, `3.3333333333 × 300` rounds to `1000.00`. A mismatch is an error, not an allowed pricing choice.
 6. If the greater-than-AED-10 RMS comparison is explained after those checks, the reviewer explicitly acknowledges the warning in the approval dialog. The acknowledgement records review; it does not authorize an RMS substitution or an unreconciled Header total.
+
+### Tolerance policy and master cost currency
+
+The tolerance is versioned configuration, not a constant. **Brand setup** shows the policy with its version, owner, effective date, absolute tolerance, optional percentage tolerance, scope (per line or per invoice), and the invoice currencies it applies to. Every saved change appends a row to the policy audit (who, when, before, after); the version increases by one per change. A new workspace starts at version 1 with the absolute tolerance of 10 and no percentage; an existing workspace migrates its previous absolute value to version 1 with no change in behaviour until an operator edits the policy. A percentage tolerance only adds a second, stricter check; it never widens the absolute band.
+
+The cost currency of the item master is recorded per import and is never guessed. A file with a `cost_currency` column uses that column; otherwise state the currency on the import form. Rows imported without a currency show **Not declared** in the item master list and in the imports table, where the currency can be declared later. Undeclared rows keep the previous behaviour (direct comparison, labelled `master_cost_currency_undeclared`).
+
+Conversion rates are entered by an operator in **Brand setup** with a source, the person entering it, and an effective date. Nothing is fetched or assumed. When a master cost currency differs from the invoice currency:
+
+- with no applicable rate (none entered, or none effective on or before the invoice date), the line is classed `currency_basis_mismatch` and requires review; it is not reported as above tolerance;
+- with a rate, the master cost is converted, compared under the policy, and the rate row id is recorded on the line.
+
+Same-currency lines compare exactly as before.
 
 ### Order number
 
