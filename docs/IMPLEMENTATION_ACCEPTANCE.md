@@ -2540,3 +2540,30 @@ user on every document, and the update path does not re-run matching, so a stale
 explanation was available and plausible. It is dead: the only fields edited were the supplier site and the tax
 code, no line was edited, no alias was learned, and the matching scope keys on the supplier identifier rather
 than the site. The edits cannot move a match. A confirmation by equality rather than by counts is in flight.
+
+## The promotion defect has no trade-off to weigh
+
+Two runs of the matcher over the same documents at the same commit, identical except for whether each line
+arrived carrying its persisted selection, settle what the promotion path actually does. Both cells return the
+same suggested count and the same unmatched count. **Exactly twenty-one lines differ, and every one of them is
+the same transition: a line that would have been reported as an automatic decision is reported instead as
+confirmed.** Nothing else moves — not which line matches, not how many match, not what they match to.
+
+So the relabelling is not one effect among several; **it is the only effect.** The promotion path contributes
+nothing to matching quality and costs the line's original score and its provenance. There is no benefit to
+balance against the loss, which is the best position a fix can be in: it can be made to preserve the score and
+the provenance without anyone having to argue about what is given up. The same twenty-one-line decomposition
+has now appeared in a third harness that was not aimed at it.
+
+## The publication gate is structurally blind to history
+
+The pre-push control enumerates candidate files from the index and the working tree. **It cannot see content
+that exists only in an earlier commit**, so a value removed by a later commit is invisible to it by
+definition — the gate does not fail, it reports nothing to find.
+
+The consequence is about a decision rather than a defect. Where earlier commits carry content that a later
+commit removed, leaving it in place is not "accepting a known static risk"; it is accepting a risk **the
+automated control cannot raise its hand about**. If the repository's visibility is ever widened, the gate will
+pass at exactly the moment the risk materialises. That is a reason for a human checkpoint attached to any
+widening decision, and it is the same argument, from the other side, for doing a history rewrite *before* a
+widening rather than after one.
