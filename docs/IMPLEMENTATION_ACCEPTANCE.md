@@ -2477,3 +2477,27 @@ either way, with no way to distinguish "this file cannot be processed" from "the
 again". **Time-budget failures must be a separately named, explicitly retryable class, distinct from content
 failures**, before any of this is put in front of a user — otherwise the correct response to a transient
 condition is indistinguishable from the correct response to a permanent one.
+
+## A refusal that works, and a flag that hides what it refused
+
+Credit notes are recognised on purpose. The document-type enumeration carries a credit-note category in both
+the extraction and service layers, three separate scoring rules detect one from its title, from a phrase in
+the body and from a credit-note number field, and synthetic credit-document layouts were added as fixtures.
+Approval then refuses anything not classified exactly as an invoice, with a named reason code and a message
+saying that only records explicitly classified as invoices can be approved.
+
+**That is the correct behaviour and it should be recorded as such**: the system identifies the document,
+declines to convert it, and says why. It is an unbuilt feature behind a working refusal, which is the
+opposite of every other finding in this record, and whether credit and debit notes should be converted at all
+is a scope question for the requester rather than a defect.
+
+**The flag, however, discriminates nothing.** The refusal's condition is "document type is not invoice", so a
+single reason code covers a credit note, a purchase order, a delivery note **and a document the classifier
+could not type at all**. The count of that flag on the fifty is therefore not a count of credit notes, and
+nothing in this record may present it as one. More importantly, an operator seeing it cannot tell which of
+the four they have — and a delivery note, a credit note and an unreadable scan need three different
+responses. The reason message must name the detected type. It is a small change with a large effect on the
+only screen a human actually uses.
+
+This one was found by re-checking a claim of my own immediately after publishing it, which is rule 9 working
+as intended rather than as an apology.
