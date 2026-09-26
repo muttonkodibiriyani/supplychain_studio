@@ -125,6 +125,95 @@ def validate_repository(root: Path = ROOT) -> None:
             + ", ".join(offending) + "; inspect locally before publication"
         )
 
+# --- Push range mode: scan the commits a push carries, not only the working tree.
+
+ZERO_SHA = re.compile(r"^0{40,64}$")
+REGULAR_BLOB_MODES = {"100644", "100755", "120000"}
+
+
+def _git(root: Path, *args: str, stdin: bytes | None = None) -> bytes:
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=True, input=stdin).stdout
+
+
+def commits_in_push(root: Path, local_sha: str, remote_sha: str, remote: str = "origin") -> list[str]:
+    """Commits the remote will receive: remote..local, or for a new branch everything the remote lacks."""
+    if ZERO_SHA.match(remote_sha):
+        commits = _git(root, "rev-list", local_sha, "--not", f"--remotes={remote}").decode().split()
+        if not commits:
+            commits = _git(root, "rev-list", local_sha).decode().split()
+        return commits
+    return _git(root, "rev-list", f"{remote_sha}..{local_sha}").decode().split()
+
+
+def blobs_introduced(root: Path, commits: list[str]) -> list[tuple[str, str, str]]:
+    """(blob sha, path, commit) for every file version any commit in the range adds or changes.
+
+    Each commit is diffed against each of its parents (-m, --root), so a file added in one
+    commit and deleted in a later one is still listed: deleting it from the tip does not
+    remove it from what the push carries."""
+    seen: set[tuple[str, str]] = set()
+    found = []
+    for commit in commits:
+        raw = _git(root, "diff-tree", "-r", "-m", "--root", "--no-commit-id", "-z", commit).decode("utf-8", errors="replace")
+        fields = raw.split("\0")
+        index = 0
+        while index + 1 < len(fields) and fields[index]:
+            meta, path = fields[index], fields[index + 1]
+            index += 2
+            _src_mode, dst_mode, _src_sha, dst_sha, status = meta.lstrip(":").split(" ")[:5]
+            if status.startswith("D") or ZERO_SHA.match(dst_sha) or dst_mode not in REGULAR_BLOB_MODES:
+                continue
+            if (dst_sha, path) not in seen:
+                seen.add((dst_sha, path))
+                found.append((dst_sha, path, commit))
+    return found
+
+
+def scan_blobs(root: Path, blobs: list[tuple[str, str, str]]) -> list[str]:
+    """Names of files (with their commit) whose content or path matches a listed pattern."""
+    offending = []
+    for blob_sha, path, commit in blobs:
+        if any(pattern.search(path) for pattern in PRIVATE_CONTENT_PATTERNS):
+            offending.append(f"{path} (path, commit {commit[:12]})")
+            continue
+        content = _git(root, "cat-file", "blob", blob_sha)
+        if b"\0" in content[:8192]:
+            continue
+        if any(pattern.search(content.decode("utf-8", errors="replace")) for pattern in PRIVATE_CONTENT_PATTERNS):
+            offending.append(f"{path} (commit {commit[:12]})")
+    return offending
+
+
+def validate_push(root: Path, ref_lines: list[str], remote: str = "origin") -> tuple[int, int]:
+    """Fail closed on any listed pattern in the pushed commits, and on any error at all."""
+    commits: list[str] = []
+    try:
+        for line in ref_lines:
+            parts = line.split()
+            if len(parts) != 4:
+                continue
+            _local_ref, local_sha, _remote_ref, remote_sha = parts
+            if ZERO_SHA.match(local_sha):
+                continue  # branch deletion carries no content
+            commits.extend(c for c in commits_in_push(root, local_sha, remote_sha, remote) if c not in commits)
+        blobs = blobs_introduced(root, commits)
+        offending = scan_blobs(root, blobs)
+    except (OSError, subprocess.CalledProcessError, UnicodeDecodeError, ValueError) as error:
+        raise SystemExit("Push privacy guard could not inspect the commits being pushed and refused the push: "
+                         + type(error).__name__) from error
+    if offending:
+        raise SystemExit("Potential private content in the commits being pushed (not necessarily in the working tree): "
+                         + ", ".join(offending) + "; the push was refused. Rewrite the commits, do not just delete the file.")
+    return len(commits), len(blobs)
+
+
+def pre_push(root: Path = ROOT, remote: str = "origin", stream=None) -> int:
+    ref_lines = [line for line in (stream or sys.stdin).read().splitlines() if line.strip()]
+    commit_count, blob_count = validate_push(root, ref_lines, remote)
+    print(f"Push privacy guard: {commit_count} commits, {blob_count} file versions scanned, no listed pattern found")
+    return 0
+
+
 def check_only(root: Path = ROOT) -> int:
     """Entry point for CI and the pre-push hook: tree guard only, no archive."""
     validate_repository(root)
@@ -133,8 +222,13 @@ def check_only(root: Path = ROOT) -> int:
 
 
 def main() -> None:
-    if "--check-only" in sys.argv[1:]:
+    arguments = sys.argv[1:]
+    if "--check-only" in arguments:
         raise SystemExit(check_only(ROOT))
+    if "--pre-push" in arguments:
+        # git pre-push hook: argv is (remote name, remote url); ref lines arrive on stdin.
+        after = arguments[arguments.index("--pre-push") + 1:]
+        raise SystemExit(pre_push(ROOT, after[0] if after else "origin"))
     validate_repository(ROOT)
     for template in (ROOT / "public/templates").glob("*.csv"):
         template.with_suffix(".csv.txt").write_bytes(template.read_bytes())

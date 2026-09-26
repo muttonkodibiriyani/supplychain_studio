@@ -1,9 +1,12 @@
 #!/usr/bin/env sh
-# Whole-tree private-pattern guard before anything leaves this machine.
+# Privacy guard on the commits being pushed, before anything leaves this machine.
+# git passes the remote name and url as arguments and the ref lines on stdin;
+# scripts/package_source.py --pre-push scans every file version those commits
+# introduce (including files added and deleted again inside the range).
 # Installed by start.sh / Start-InvoiceStudio.ps1 on first run from a clone, or
 # by hand once per clone:  git config core.hooksPath .githooks
-# Limit: local and bypassable (git push --no-verify); the CI workflow is the
-# authoritative check but runs after the push has already published.
+# Limits: local and bypassable (git push --no-verify); nothing already on the
+# remote is inspected; the CI workflow (whole tree) runs after publication.
 set -e
 cd "$(git rev-parse --show-toplevel)"
 if [ -x .venv/bin/python ]; then PY=.venv/bin/python
@@ -14,4 +17,4 @@ else
     echo "pre-push privacy guard: no Python interpreter found. Install python3 (3.11 or newer) or create the project venv (.venv), then push again. The push was refused." >&2
     exit 1
 fi
-exec "$PY" scripts/package_source.py --check-only
+exec "$PY" scripts/package_source.py --pre-push "${1:-origin}"

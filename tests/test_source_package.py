@@ -1,5 +1,6 @@
 """Prevent private-data formats and credentials from entering source releases."""
 from pathlib import Path
+import os
 import shutil
 import subprocess
 
@@ -243,7 +244,7 @@ def test_ci_workflow_and_pre_push_hook_run_the_check_only_entry():
     hook = root / '.githooks/pre-push'
     assert 'scripts/package_source.py --check-only' in workflow
     assert 'pull_request' in workflow and 'push' in workflow
-    assert 'scripts/package_source.py --check-only' in hook.read_text()
+    assert 'scripts/package_source.py --pre-push' in hook.read_text()
     assert hook.stat().st_mode & 0o111, 'pre-push must be executable'
     if shutil.which('git') is not None and (root / '.git').exists():
         # git skips a hook that is not executable, silently; the index mode is what a clone gets.
@@ -302,3 +303,126 @@ def test_decoded_package_built_from_this_repository_is_clean(tmp_path, monkeypat
         text = content.decode('utf-8', errors='replace')
         for pattern in package_source.PRIVATE_CONTENT_PATTERNS:
             assert not pattern.search(text), f'{pattern.pattern!r} matched inside {name}'
+
+
+# --- Push-range guard: the hook must refuse what the push carries, not what the tree shows.
+
+def _git_env():
+    env = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@example.invalid',
+               GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@example.invalid',
+               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+    env.pop('GIT_DIR', None)
+    return env
+
+
+def _git(cwd, *args, check=True, stdin=None):
+    return subprocess.run(['git', '-C', str(cwd), *args], capture_output=True, text=True,
+                          check=check, env=_git_env(), input=stdin)
+
+
+def _clone_with_bare_origin(tmp_path):
+    """A clone of a bare origin, carrying this repository's checker and hook plus one clean commit."""
+    if shutil.which('git') is None:
+        pytest.skip('git is not installed here (the runtime image has none)')
+    origin = tmp_path / 'origin.git'
+    subprocess.run(['git', 'init', '-q', '--bare', '-b', 'main', str(origin)], check=True, env=_git_env())
+    clone = tmp_path / 'clone'
+    _git(tmp_path, 'clone', '-q', str(origin), str(clone))
+    (clone / 'scripts').mkdir()
+    (clone / '.githooks').mkdir()
+    real = package_source.ROOT
+    (clone / 'scripts/package_source.py').write_bytes((real / 'scripts/package_source.py').read_bytes())
+    (clone / '.githooks/pre-push').write_bytes((real / '.githooks/pre-push').read_bytes())
+    (clone / '.githooks/pre-push').chmod(0o755)
+    (clone / 'README.md').write_text('clean\n')
+    _git(clone, 'add', '-A')
+    _git(clone, 'commit', '-q', '-m', 'clean baseline')
+    _git(clone, 'push', '-q', '-u', 'origin', 'main')
+    return origin, clone
+
+
+def _marker():
+    # A home-directory path, assembled so this file carries none of the forms itself.
+    return 'log: ' + '/home/' + 'example-user/' + 'invoices/batch.csv\n'
+
+
+def _plant_and_commit(clone, name='notes.txt'):
+    (clone / name).write_text(_marker())
+    _git(clone, 'add', name)
+    _git(clone, 'commit', '-q', '-m', 'add ' + name)
+
+
+def test_arm_a_hook_refuses_a_marker_in_the_pushed_tip(tmp_path):
+    origin, clone = _clone_with_bare_origin(tmp_path)
+    _git(clone, 'config', 'core.hooksPath', '.githooks')
+    _plant_and_commit(clone)
+    result = _git(clone, 'push', 'origin', 'main', check=False)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert 'notes.txt' in result.stderr
+    assert 'example-user' not in result.stderr, 'the error must name the file, never the value'
+    remote_tip = _git(origin, 'rev-parse', 'main').stdout.strip()
+    assert remote_tip == _git(clone, 'rev-parse', 'HEAD~1').stdout.strip(), 'origin must still be at the clean baseline'
+
+
+def test_arm_a2_hook_refuses_a_marker_buried_under_a_clean_commit(tmp_path):
+    """Tree clean, tree checker clean, push still refused: the range carries the marker."""
+    origin, clone = _clone_with_bare_origin(tmp_path)
+    _git(clone, 'config', 'core.hooksPath', '.githooks')
+    _plant_and_commit(clone)
+    _git(clone, 'rm', '-q', 'notes.txt')
+    _git(clone, 'commit', '-q', '-m', 'remove notes again')
+    assert not (clone / 'notes.txt').exists()
+    package_source.validate_repository(clone)  # the working-tree guard sees nothing: that is the hole
+    result = _git(clone, 'push', 'origin', 'main', check=False)
+    assert result.returncode != 0, 'a marker deleted from the tip is still inside the pushed range'
+    assert 'notes.txt' in result.stderr and 'example-user' not in result.stderr
+    assert _git(origin, 'rev-parse', 'main').stdout.strip() == _git(clone, 'rev-parse', 'HEAD~2').stdout.strip()
+
+
+def test_arm_b_fresh_clone_with_nothing_run_is_not_guarded(tmp_path):
+    """Documented limit: git installs no hook on clone, so nothing refuses until core.hooksPath is set."""
+    origin, clone = _clone_with_bare_origin(tmp_path)
+    assert _git(clone, 'config', '--get', 'core.hooksPath', check=False).stdout.strip() == ''
+    _plant_and_commit(clone)
+    result = _git(clone, 'push', 'origin', 'main', check=False)
+    assert result.returncode == 0, result.stderr
+    assert _git(origin, 'rev-parse', 'main').stdout.strip() == _git(clone, 'rev-parse', 'HEAD').stdout.strip()
+
+
+def test_arm_c_hook_is_executable_in_the_index():
+    """git silently skips a hook without the exec bit; the index mode is what every clone receives."""
+    root = package_source.ROOT
+    if shutil.which('git') is None or not (root / '.git').exists():
+        pytest.skip('needs git and a checkout of this repository')
+    listing = _git(root, 'ls-files', '-s', '.githooks/pre-push').stdout
+    assert listing.startswith('100755 '), listing
+
+
+def test_push_range_scan_covers_a_file_added_then_deleted_and_a_new_branch(tmp_path):
+    origin, clone = _clone_with_bare_origin(tmp_path)
+    baseline = _git(clone, 'rev-parse', 'HEAD').stdout.strip()
+    _plant_and_commit(clone)
+    _git(clone, 'rm', '-q', 'notes.txt')
+    _git(clone, 'commit', '-q', '-m', 'remove notes again')
+    tip = _git(clone, 'rev-parse', 'HEAD').stdout.strip()
+    commits = package_source.commits_in_push(clone, tip, baseline)
+    assert len(commits) == 2
+    blobs = package_source.blobs_introduced(clone, commits)
+    assert [path for _sha, path, _commit in blobs] == ['notes.txt']
+    assert package_source.scan_blobs(clone, blobs) and 'notes.txt' in package_source.scan_blobs(clone, blobs)[0]
+    # New branch (remote sha all zeros): only what origin lacks is scanned, and a delete line is skipped.
+    zeros = '0' * 40
+    assert package_source.commits_in_push(clone, tip, zeros) == commits
+    with pytest.raises(SystemExit) as error:
+        package_source.validate_push(clone, [f'refs/heads/feature {tip} refs/heads/feature {zeros}'])
+    assert 'notes.txt' in str(error.value) and 'example-user' not in str(error.value)
+    assert package_source.validate_push(clone, [f'(delete) {zeros} refs/heads/feature {tip}']) == (0, 0)
+    assert package_source.validate_push(clone, [f'refs/heads/main {baseline} refs/heads/main {baseline}']) == (0, 0)
+
+
+def test_push_range_scan_refuses_on_any_git_error(tmp_path):
+    origin, clone = _clone_with_bare_origin(tmp_path)
+    tip = _git(clone, 'rev-parse', 'HEAD').stdout.strip()
+    with pytest.raises(SystemExit) as error:
+        package_source.validate_push(clone, [f'refs/heads/main {tip} refs/heads/main {"f" * 40}'])
+    assert 'refused' in str(error.value)
