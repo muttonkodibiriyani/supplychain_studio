@@ -186,6 +186,10 @@ class Settings:
     max_catalog_file_bytes: int = 128 * 1024 * 1024
     max_upload_files: int = 1000
     max_pages: int = 50
+    # Rasterisation bounds handed to ExtractionLimits.  Defaults equal the
+    # extractor's own constants; a page or document above them fails whole.
+    max_pixels_per_page: int = 30_000_000
+    max_total_pixels: int = 150_000_000
     max_attempts: int = 3
     poll_seconds: float = 0.25
     db_busy_timeout_seconds: float = 30.0
@@ -214,6 +218,8 @@ class Settings:
             ),
             max_upload_files=int(os.getenv("INVOICE_MAX_UPLOAD_FILES", "1000")),
             max_pages=int(os.getenv("INVOICE_MAX_PAGES", "50")),
+            max_pixels_per_page=int(os.getenv("INVOICE_MAX_PIXELS_PER_PAGE", "30000000")),
+            max_total_pixels=int(os.getenv("INVOICE_MAX_TOTAL_PIXELS", "150000000")),
             max_attempts=max(1, int(os.getenv("INVOICE_MAX_ATTEMPTS", "3"))),
             poll_seconds=max(0.05, float(os.getenv("INVOICE_POLL_SECONDS", "0.25"))),
             db_busy_timeout_seconds=max(
@@ -226,6 +232,23 @@ class Settings:
             in {"1", "true", "yes", "on"},
             enable_demo_seed=_env_flag(os.getenv("INVOICE_ENABLE_DEMO_SEED")),
         )
+
+
+def extraction_limits(settings: "Settings") -> "extraction.ExtractionLimits":
+    """Build the extractor's limits from settings.
+
+    Every bound an operator can set lives here so that settings and the
+    extractor cannot drift apart silently; ``ExtractionLimits`` keeps its own
+    defaults for the bounds that are not exposed.
+    """
+    from . import extraction
+
+    return extraction.ExtractionLimits(
+        max_file_bytes=settings.max_file_bytes,
+        max_pages=settings.max_pages,
+        max_pixels_per_page=settings.max_pixels_per_page,
+        max_total_pixels=settings.max_total_pixels,
+    )
 
 
 def _env_flag(value: str | None) -> bool:
@@ -2109,10 +2132,7 @@ class InvoiceService:
                 original_supplier_name = row["supplier_name"]
             from . import extraction, matching
 
-            limits = extraction.ExtractionLimits(
-                max_file_bytes=self.settings.max_file_bytes,
-                max_pages=self.settings.max_pages,
-            )
+            limits = extraction_limits(self.settings)
             extracted = extraction.extract_document(source_path, filename, limits=limits)
             supplier_name = original_supplier_name or extracted.get("supplier_name")
             with self.db.connection() as conn:
