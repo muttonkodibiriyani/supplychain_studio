@@ -1568,9 +1568,14 @@ take the path — is why it is recorded rather than closed.
 
 **An independent reconciliation.** The duplicate-row finding above rests on one instrument, which is a
 reason to distrust it. It reconciles exactly with a figure derived by a different worker on a different
-harness: 141 automatic lines measured here, plus the 21 lines the corpus already carried as confirmed,
+harness: 141 automatic lines measured here, plus the 21 lines the matcher had already decided,
 is 162, and 162 is the automatic-decision count recorded from the duplicate-collapse branch's own
-evidence. Two harnesses, one number, neither built from the other. That does not make the classification
+evidence. The phrase first written here was "the 21 lines the corpus already carried as confirmed",
+and it was wrong in a way worth preserving rather than quietly overwriting: the stored corpus holds
+**zero** confirmed lines, all 21 are stored as automatic, and the confirmed label appears only when the
+matcher is re-run. No human has touched any line in this corpus. "Already confirmed" imported a
+reviewer who does not exist, and a later reader would have turned it into "21 lines were
+human-reviewed" — which is precisely the kind of claim this document is supposed to stop. Two harnesses, one number, neither built from the other. That does not make the classification
 correct, but it removes the most likely way for it to be wrong.
 
 **Cost comparison is starved, not inert.** 336 of 357 lines carry an unavailable-comparison status with
@@ -1721,3 +1726,118 @@ near-empty recognition result can be given its own reason and a failed terminal 
 the frozen extraction module. It is two documents in fifty and still worth doing promptly, because the
 defect — reporting a document that could not be read as one that was read and found empty — is one the
 requester will meet on their own scans and will have no way to diagnose.
+
+## A label that manufactures human review, and the cost stage's first real numbers
+
+**A machine decision is relabelled as a reviewed one.** The matcher revalidates any line that already
+carries a persisted catalog selection and, on revalidation, stamps it confirmed at a confidence of
+100.0 without asking where the selection came from. The proof is set equality rather than a count: the
+lines that come back confirmed are *exactly* the lines that were stored as automatic — not a set of the
+same size, the same set — and every one of them carries 100.0 afterwards. Three consequences, in
+increasing order of seriousness:
+
+1. The first-time-match metric documents a confirmed line as one a human touched. That documentation is
+   false for every line in this corpus, so the metric's own definition misdescribes its data.
+2. The metric's numerator counts automatic lines only, so re-running the matcher *lowers* the reported
+   first-time-match rate with no human action anywhere. The number moves because of a relabelling.
+3. The original score is overwritten with 100.0. The evidence for the decision is destroyed by the act
+   of re-checking it, which means an audit that re-runs the matcher to see what it decided has already
+   erased what it wanted to look at.
+
+The third is the one that outlives this corpus. The first two are wrong numbers; the third is a lost
+record, and a lost record cannot be recomputed later.
+
+The reach is one route, a re-match endpoint, reached today only by an API client because no user
+interface offers the action. That bounds the present blast radius and does not reduce the defect: the
+first re-match button added to the interface makes it routine. The same call also records the actor as
+a person, so a single re-match depresses both headline metrics at once, and a test encodes that
+mislabelling as expected behaviour — so the test is to be corrected, not deleted.
+
+**Confirmed lines in this record from here on mean a machine decision unless a human decision is named.**
+
+**A prediction in the previous section executed, and produced a number nobody had seen.** That section
+argued the cost stage was starved rather than inert, and that it would execute on real documents for the
+first time once automatic matching produced master costs to compare against. It has now been run on the
+real corpus. The comparison statuses move from one status on almost every line to three: the
+unavailable-no-master-cost group falls sharply, a within-tolerance group appears at 103 lines, and an
+above-tolerance group appears at **59** lines where before there were none. 59 plus 103 is 162, the
+machine-decided line count exactly, which is the arithmetic that says the cost stage now sees every
+line matching made available to it and no others.
+
+Three things follow, and the third is the one that matters for launch:
+
+- The starvation reading was correct. The cost machinery was never broken; it had nothing to compare.
+- The reason code that flagged lines as priced above tolerance was, as recorded earlier, firing on
+  lines that had no comparison at all. After re-matching it still conflates: the flag covers both the
+  genuine above-tolerance lines and the still-unavailable ones, and at invoice level it fires on every
+  invoice. Splitting it remains necessary and remains insufficient.
+- **Touchless processing has a second ceiling, and it is not a defect.** Fixing duplicate master rows
+  and phantom rows cannot deliver a touchless invoice if that invoice also carries a genuine cost
+  variance, because a cost-variance flag requires review by design. Before this run, every
+  above-tolerance count was zero and the variance question was invisible. It is now visible and
+  non-zero. Any forecast of the touchless rate that counts only matching fixes is therefore an
+  overestimate, including forecasts made earlier in this document.
+
+No variance magnitude, tolerance value, item, supplier or price appears above. The counts recorded are
+flag outcomes — what the software did to a sample — on the same footing as the review-required count
+already in this record. What the prices actually are stays out.
+
+## Launch blocker: the extraction module is frozen and the authority that froze it has gone
+
+The module that reads documents was placed under a rule that nothing touching it merges until the
+implementation owner ruled on three queued changes. That owner's session has ended without ruling on
+any of them. The rule as written therefore became a condition that can never be satisfied — the
+unsatisfiable twin of the self-satisfying gate this document has objected to repeatedly, and just as
+capable of producing a wrong outcome through nobody doing anything.
+
+**This is recorded as a launch blocker in its own right, independent of whether the queued changes are
+good.** A module nobody is authorised to change is not a maintainable module, and an operator who is
+handed this system needs to know that its document reader has no owner.
+
+Two decisions were taken rather than left to expire, and both are recorded here as the coordinator's,
+not the absent owner's, so that a later reader can see who decided and on what basis:
+
+- A change measured neutral on the real corpus may proceed. Neutral means demonstrated: no line's
+  status, candidate, score, quantity, price or total differs across the whole corpus, with the named
+  failing test passing and the test file provably untouched.
+- A change that alters any extracted **value** waits for the person whose invoices these are. That
+  boundary is not procedural caution. A neutral change cannot silently corrupt data; a value-changing
+  one is exactly the class where a wrong call ships a wrong quantity or a wrong price with a terminal
+  state and no flag, and the decision belongs to the data's owner.
+
+One measurement was added to the first queued change that had not been asked for: it serialises the
+document-reading hot path across parallel workers to fix a thread-safety fault. The correctness case is
+accepted. The throughput cost had been nobody's question, which is the same omission this document has
+charged elsewhere — a correctness fix whose cost is unmeasured becomes an unexplained slowdown later.
+It is being measured with and without the lock on the same tree at comparable load, and the cost will be
+stated in the release record whichever way it falls. The fix lands either way; thread safety outranks
+speed on a data-corruption fault.
+
+## Three instruments, one split, and a residual that resolved against this document
+
+The re-matching figures in this record were produced on three independent harnesses. Two agree on every
+count. The one that disagreed is the one used here, and it disagreed by exactly 21 lines in the boundary
+between suggested and unmatched. The other two reproduce the stored unmatched count exactly; this one
+does not. **The two agreeing harnesses are the record; the split reported here earlier was wrong and is
+corrected.** The automatic count, which is the figure every conclusion in this document rests on, is
+identical on all three.
+
+Publishing an uncertainty band obliges publishing its resolution even when it resolves against the
+publisher, and this one did. The structural finding built on the same harness survives for a reason
+that is worth stating rather than assuming: it rests on two master rows sharing one item identifier,
+and no narrowing of a catalog scope can invent a duplicate row. A scope error can hide candidates; it
+cannot manufacture the ones that are there. An independent re-run of that classification is still
+outstanding and is the arbiter.
+
+**A challenged measurement discipline, applied to this document's own discriminator.** The test used to
+separate "recognition failed" from "recognition worked and the line parser could not read it" counts
+characters of recognised text, and the objection raised against it was precise: that count discriminates
+only if it is measured on the same text the line parser was handed, not on whatever an earlier stage
+produced. The objection is correct in principle and does not apply here, and the reason is checkable in
+four lines of the module. The stored text column is assigned from the extraction result; the extraction
+result assigns it from the same value that is passed as the parser's first argument; no transformation
+sits between them. For scanned pages the stored text is a concatenation that *contains* the layout text,
+and the layout text is additionally handed to the parser as a second source. So the parser never
+receives less than the count measures. The discriminator holds — byte-identical input, not merely
+consistent input — and the objection has been converted into a stated property of the pipeline rather
+than an assumption.
