@@ -1597,3 +1597,53 @@ packager, and the historic leak travelled by push. The remedy is a check on the 
 with its limits stated rather than implied: a local hook prevents but is bypassable, and a
 publish-triggered check detects after the fact rather than preventing. Neither makes exposure
 impossible, and the record should not say otherwise.
+
+## The launch gate was pointed at the wrong class, and a reason code that has never once meant what it says
+
+**A premise error in the gate defined earlier in this record, and it is mine.** That gate required fifty
+distinct documents on the stated ground that fifty distinct coincided with the corpus breadth and with
+the requester's stated minimum. The coincidence does not exist. Fifty is the OCR-class subset of the
+corpus — scans without a text layer, plus photographs — and the corpus holds 179 distinct documents
+across two extraction classes, the other 129 being text-class. The requester's own invoices are mostly
+text-class. So the gate was aimed at the minority class, and measurement has now shown that class cannot
+reach the gate's hardest criterion at all: supplier resolution succeeds on 0 of 50 OCR-class documents
+against 18 of 20 on the text-class replay corpus, and an unresolved supplier blocks approval, so export
+can never be attempted there. The gate would have passed its first three criteria honestly and left the
+fourth unevaluated — the self-satisfying shape this record rules against, reached through a premise
+rather than through a criterion.
+
+**Amended gate.** Two fifty-distinct batches, reported separately and never summed. The text-class batch,
+with settings and supplier rules configured from the repository's fictional placeholders, is the gate of
+record, because it is the requester's actual population and the only class where export runs. The
+OCR-class batch is a characterisation run establishing that class's baseline, and is not to be described
+as the launch gate. An evaluability floor applies to both: if export is 0 of 50 on both classes, or if
+workbook reconciliation goes unevaluated for any reason, the verdict is **not evaluable**, never passed.
+
+**A new criterion, because a document can be scored as converted while being empty.** In the
+stress-window observation, 48 OCR-class documents reached a review state and produced 100 product lines
+between them — 2.08 per document, against a text-class mean of 14.4 real product lines per document,
+median 10, with no text-class document yielding zero. Different documents explain part of a sevenfold
+gap; they do not explain a mean of two lines on commercial invoices, and none of the 100 lines is
+automatic. The reading to rule out is that OCR-class extraction is losing most line items while the
+documents still terminate as successes. So product lines per document are reported as a distribution
+rather than a total, the count of documents yielding **zero** product lines is stated explicitly, and a
+document yielding no product lines is flagged with a reason rather than counted as terminal success. It
+has not been read, whatever state its row carries.
+
+**A reason code that has never fired for its stated meaning.** An independent check established by set
+equality, not by comparing counts, that the 336 lines flagged as priced above tolerance are exactly the
+union of the low-confidence and unmapped sets, and that the flag fires on no automatic line. Zero lines
+are above tolerance. The code is a re-encoding of "not automatic" wearing the name of a pricing
+exception, and it would tell a reviewer that every invoice has a price problem when none does. Splitting
+it is necessary and not sufficient: the unavailable arm must also stop being presented as an exception
+owned by a named role, because a reason code has to name a condition its owner can act on, and no
+item-master owner can act on an unmatched line by examining a price. Relatedly, four of the fourteen
+invoices in that owner's queue have nothing unmapped except discount rows, so the phantom-row defect has
+reached a real person's workload; those counts are not a workload figure until non-product rows carry
+their own code.
+
+**A metric pinned to one value is not a measurement.** The touchless numerator considers only invoices
+already ready or exported, and export has never executed. Its zero therefore cannot distinguish "nothing
+is touchless" from "nothing has been approved yet". Until the gate of record runs, it is reported as not
+evaluable with that reason, or against a denominator restricted to invoices that reached approval, and
+the same test applies to the cycle-time metric at n=0.
