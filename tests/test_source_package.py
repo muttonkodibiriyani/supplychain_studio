@@ -168,6 +168,25 @@ def test_decoded_package_excludes_measurement_docs_and_every_private_pattern(tmp
             assert not pattern.search(text), f'{pattern.pattern!r} matched inside {name}'
 
 
+START_SCRIPTS = ['start.sh', 'Start-InvoiceStudio.command', 'Start-InvoiceStudio.ps1']
+
+
+def test_start_scripts_ship_with_the_package_and_keep_their_mode(tmp_path, monkeypatch):
+    """README and the setup guides tell the operator to run these from the unzipped folder."""
+    root = _minimal_root(tmp_path)
+    for name in ['start.sh', 'Start-InvoiceStudio.command']:
+        (root / name).chmod(0o755)
+    _point_packager_at(monkeypatch, root)
+    package_source.main()
+    from zipfile import ZipFile
+    with ZipFile(root / 'public/invoice-studio-source.zip') as archive:
+        modes = {info.filename: (info.external_attr >> 16) & 0o777 for info in archive.infolist()}
+    for name in START_SCRIPTS:
+        assert f'invoice-studio/{name}' in modes
+    assert modes['invoice-studio/start.sh'] & 0o111
+    assert modes['invoice-studio/Start-InvoiceStudio.command'] & 0o111
+
+
 def test_decoded_package_built_from_this_repository_is_clean(tmp_path, monkeypatch):
     """Build the real package into a temp location, decode it, and grep the result.
 
