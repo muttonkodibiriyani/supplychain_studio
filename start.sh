@@ -40,6 +40,21 @@ if ! printf '%s' "$PORT" | grep -Eq '^[0-9]+$' || [ "$PORT" -lt 1024 ] || [ "$PO
     fail "Port must be a number between 1024 and 65535."
 fi
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$script_dir"
+
+# Development clones only: point git at the in-repo pre-push privacy guard so a
+# push from this clone runs scripts/package_source.py --pre-push (the commits
+# being pushed; --check-only is the manual pre-flight of the same range). Git never
+# installs hooks on clone, so this is done here, on the first start. Idempotent,
+# silent when already set, skipped in an unpacked source package (no .git).
+if [ -d .git ] && command -v git >/dev/null 2>&1; then
+    if [ "$(git config --get core.hooksPath 2>/dev/null || true)" != ".githooks" ]; then
+        git config core.hooksPath .githooks
+        echo "Installed the pre-push privacy guard for this clone (git config core.hooksPath .githooks)."
+    fi
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
     fail "Docker was not found. Follow docs/MAC_SETUP.md (macOS) or install Docker Engine (Linux), then open a new terminal."
 fi
@@ -54,9 +69,6 @@ fi
 if ! docker compose version >/dev/null 2>&1; then
     fail "'docker compose' is not available. Update Docker Desktop, or install the docker-compose-plugin on Linux."
 fi
-
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$script_dir"
 
 export INVOICE_HOST_PORT="$PORT"
 

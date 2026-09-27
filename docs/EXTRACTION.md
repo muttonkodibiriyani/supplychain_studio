@@ -85,21 +85,25 @@ Raster PNG, JPEG, TIFF, BMP, and WEBP files go directly through OCR. Multi-frame
 
 Exact default bounds from `ExtractionLimits` are:
 
-| Bound | Default |
-| --- | ---: |
-| Upload size | 50 MiB |
-| Pages or image frames | 50 |
-| Pixels per rasterized page | 30,000,000 |
-| Pixels across a document | 150,000,000 |
-| OCR per page | 45 seconds |
-| OCR across a document | 180 seconds |
-| Spreadsheet rows | 20,000 |
-| Spreadsheet columns | 100 |
-| ZIP members inside DOCX/XLSX | 10,000 |
-| Expanded DOCX/XLSX bytes | 100 MiB |
-| Large-member compression ratio | 200:1 |
+| Bound | Default | Setting |
+| --- | ---: | --- |
+| Upload size | 50 MiB | `INVOICE_MAX_FILE_BYTES` (the service default is 25 MiB) |
+| Pages or image frames | 50 | `INVOICE_MAX_PAGES` |
+| Pixels per rasterized page | 30,000,000 | `INVOICE_MAX_PIXELS_PER_PAGE` |
+| Pixels across a document | 150,000,000 | `INVOICE_MAX_TOTAL_PIXELS` |
+| OCR per page | 45 seconds | not exposed |
+| OCR across a document | 180 seconds | not exposed |
+| Spreadsheet rows | 20,000 | not exposed |
+| Spreadsheet columns | 100 | not exposed |
+| ZIP members inside DOCX/XLSX | 10,000 | not exposed |
+| Expanded DOCX/XLSX bytes | 100 MiB | not exposed |
+| Large-member compression ratio | 200:1 | not exposed |
+
+The pixel bounds decide how many scanned pages a document may hold, so the page bound is an upper limit, not a promise. A PDF page rasterises at 2 pixels per point (144 dpi against the page box), so an A4 page box (595 x 842 pt) costs 1190 x 1684 = 2,003,960 pixels and 50 such pages fit the document bound. Some scanners write the scan's pixel size as the page box (1 pt per pixel): a 300 dpi A4 scan stored that way is 2480 x 3508 pt, rasterises at 4960 x 7016 = 34,799,360 pixels and exceeds the per-page bound; its 200 dpi equivalent (1654 x 2339 pt, 15,474,824 pixels) passes, and nine such pages fit the document bound. An image upload counts its own pixels: A4 at 300 dpi (2480 x 3508 = 8,699,840) allows 17 pages within the document bound, at 400 dpi (3307 x 4677 = 15,466,839) 9 pages, at 500 dpi (4134 x 5846 = 24,167,364) 6 pages, and at 600 dpi (4961 x 7016 = 34,806,376) a single page fails. Raise `INVOICE_MAX_PIXELS_PER_PAGE` and `INVOICE_MAX_TOTAL_PIXELS` together with the memory available to the OCR workers: the rendered RGB page alone is 3 bytes per pixel, and OCR holds a grayscale copy beside it.
 
 Crossing a bound rejects the file. There is no partial-page or partial-row success. DOCX and XLSX ZIP containers are checked before their parsers run. XLSX formulas are never executed (`data_only=True`, external links disabled). Encrypted and corrupt PDFs return explicit errors.
+
+Two kinds of bound fail a document. A content bound (upload size, pages, pixels, rows, columns, archive members) describes the document itself, so the failure is final: the job records it as `ExtractionLimitError` and does not retry it. The OCR time budgets bound the host's work, not the document: the same scan can clear them on a quiet machine and miss them on a busy one. A missed time budget therefore fails as `ExtractionTimeBudgetError`, whose message ends "try again when the host is quieter", and the job treats it like any transient error: it is re-queued automatically with back-off up to `INVOICE_MAX_ATTEMPTS` (default 3), and after that an operator can re-queue it with `POST /api/invoices/{id}/retry`. Neither budget moves; only the classification does.
 
 For thousands of uploads, the job service should store files first, queue one job per file, and run a bounded worker pool. Tesseract and PDF rendering are CPU and memory intensive, so worker concurrency should be sized from measured page latency and resident memory rather than the HTTP request count. The extractor itself has no shared mutable state and can run in separate worker processes.
 

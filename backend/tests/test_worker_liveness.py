@@ -139,6 +139,9 @@ def test_uploads_during_large_catalog_import_drain_without_restart(tmp_path: Pat
         importer.join()
         assert "error" not in outcome, outcome
         assert outcome["result"]["imported"] == 80_000  # type: ignore[index]
+        # Calibration only, not a lock-hold guarantee: post-fix the parse runs
+        # outside any lock, so this just confirms the catalog is large enough
+        # that an import outlasts the busy timeout and uploads overlap it.
         assert outcome["elapsed"] > service.settings.db_busy_timeout_seconds, outcome  # type: ignore[operator]
 
         alive = [thread.is_alive() for thread in service._threads]
@@ -263,6 +266,8 @@ def test_worker_count_is_bounded_by_cores(monkeypatch) -> None:
     assert _bounded_workers("16") == 16
     assert _bounded_workers("64") == 16
     assert _bounded_workers("0") == 0
+    assert _bounded_workers("auto") == 8
+    assert _bounded_workers("") == 8
 
 
 def test_start_creates_workers_even_when_recovery_hits_a_locked_database(tmp_path: Path) -> None:
