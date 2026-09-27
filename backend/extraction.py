@@ -646,6 +646,7 @@ def _parse_facturx_tree(root: ElementTree.Element) -> dict[str, Any] | None:
             "paired_adjustment_rows": 0,
             "unpaired_adjustment_rows": 0,
             "source_data_rows": len(lines) + rejected_lines,
+            "non_product_rows": 0,
         },
         "warnings": warnings,
     }
@@ -1403,6 +1404,7 @@ def _extract_structured_rows(
                 "paired_adjustment_rows": 0,
                 "unpaired_adjustment_rows": 0,
                 "source_data_rows": len(lines),
+                "non_product_rows": 0,
             },
             "source_filename": source_name,
             "raw_text": _clean_source_text(raw_text),
@@ -1986,6 +1988,7 @@ def _extract_lines(
     paired_adjustment_rows = 0
     unpaired_adjustment_rows = 0
     source_data_rows = 0
+    non_product_rows = 0
     header_schemas: list[str] = []
     for page in pages:
         (
@@ -1998,6 +2001,7 @@ def _extract_lines(
             page_paired_adjustments,
             page_unpaired_adjustments,
             page_source_rows,
+            page_non_product_rows,
         ) = _extract_layout_page_lines(
             str(page.get("text") or ""),
             page_number=int(page.get("page") or 1),
@@ -2011,6 +2015,7 @@ def _extract_lines(
         paired_adjustment_rows += page_paired_adjustments
         unpaired_adjustment_rows += page_unpaired_adjustments
         source_data_rows += page_source_rows
+        non_product_rows += page_non_product_rows
 
     warnings: list[str] = []
     if extracted:
@@ -2022,7 +2027,7 @@ def _extract_lines(
             )
         if unpaired_adjustment_rows:
             warnings.append(
-                f"{unpaired_adjustment_rows} explicit discount adjustment row(s) could not be paired one-to-one and require review."
+                f"{unpaired_adjustment_rows} explicit adjustment row(s) could not be paired with a product row and require review."
             )
         return extracted, "layout_header", warnings, {
             "recognized_table_sections": header_sections,
@@ -2035,6 +2040,7 @@ def _extract_lines(
             "paired_adjustment_rows": paired_adjustment_rows,
             "unpaired_adjustment_rows": unpaired_adjustment_rows,
             "source_data_rows": source_data_rows,
+            "non_product_rows": non_product_rows,
         }
 
     legacy_allowed = header_sections > 0 or all(
@@ -2055,6 +2061,7 @@ def _extract_lines(
             "paired_adjustment_rows": paired_adjustment_rows,
             "unpaired_adjustment_rows": unpaired_adjustment_rows,
             "source_data_rows": source_data_rows,
+            "non_product_rows": non_product_rows,
         }
     if header_sections:
         warnings.append(
@@ -2071,6 +2078,7 @@ def _extract_lines(
         "paired_adjustment_rows": paired_adjustment_rows,
         "unpaired_adjustment_rows": unpaired_adjustment_rows,
         "source_data_rows": source_data_rows,
+        "non_product_rows": non_product_rows,
     }
 
 
@@ -2078,7 +2086,7 @@ def _extract_layout_page_lines(
     text: str,
     *,
     page_number: int,
-) -> tuple[list[dict[str, Any]], int, int, int, int, list[str], int, int, int]:
+) -> tuple[list[dict[str, Any]], int, int, int, int, list[str], int, int, int, int]:
     source_lines = [line.rstrip() for line in text.splitlines()]
     headers = _find_table_headers(source_lines)
     extracted: list[dict[str, Any]] = []
@@ -2089,6 +2097,7 @@ def _extract_layout_page_lines(
     paired_adjustment_rows = 0
     unpaired_adjustment_rows = 0
     source_data_rows = 0
+    non_product_rows = 0
     for header_index, (start, end, anchors) in enumerate(headers):
         header_schemas.append(
             "|".join(
@@ -2104,6 +2113,7 @@ def _extract_layout_page_lines(
             section_paired_adjustments,
             section_unpaired_adjustments,
             section_source_rows,
+            section_non_product_rows,
         ) = _parse_layout_section(
             source_lines,
             start=end + 1,
@@ -2120,6 +2130,7 @@ def _extract_layout_page_lines(
         paired_adjustment_rows += section_paired_adjustments
         unpaired_adjustment_rows += section_unpaired_adjustments
         source_data_rows += section_source_rows
+        non_product_rows += section_non_product_rows
     return (
         extracted,
         len(headers),
@@ -2130,6 +2141,7 @@ def _extract_layout_page_lines(
         paired_adjustment_rows,
         unpaired_adjustment_rows,
         source_data_rows,
+        non_product_rows,
     )
 
 
@@ -2235,6 +2247,7 @@ def _parse_layout_section(
     last_data_row: int | None = None
     possible_unparsed_rows = 0
     continuation_lines = 0
+    non_product_rows = 0
     annotation_block = False
     for row_index in range(start, end):
         raw_line = lines[row_index]
@@ -2397,6 +2410,45 @@ def _parse_layout_section(
                 "derived_fields": derived_fields,
                 "confidence": 0.94 if unit_price is not None and line_total is not None else 0.87,
             }
+            if _is_contact_footer(full_description):
+                # The numeric cells came from a telephone number: keep the
+                # row as non-product text without any quantity or amount.
+                line.update(
+                    {
+                        field: None
+                        for field in (
+                            "quantity",
+                            "quantity_source",
+                            "uom",
+                            "unit_price",
+                            "net_unit_price",
+                            "gross_unit_price",
+                            "printed_unit_price",
+                            "printed_unit_price_basis",
+                            "unit_price_basis",
+                            "unit_price_source",
+                            "line_total",
+                            "line_total_basis",
+                            "line_total_source",
+                            "gross_line_total",
+                            "tax_rate",
+                            "tax_amount",
+                            "discount_rate",
+                            "discount_amount",
+                            "upc",
+                            "item_code",
+                            "source_sequence",
+                        )
+                    }
+                )
+                line["non_product"] = True
+                line["review_reasons"] = [NON_PRODUCT_REASON]
+                line["extraction_method"] = "layout_header+non_product"
+                line["derived_fields"] = []
+                line["confidence"] = 0.5
+                non_product_rows += 1
+                extracted.append(line)
+                continue
             extracted.append(line)
             last_data_row = row_index
             continue
@@ -2514,6 +2566,7 @@ def _parse_layout_section(
         paired_adjustments,
         unpaired_adjustments,
         source_data_rows,
+        non_product_rows,
     )
 
 
@@ -2634,52 +2687,92 @@ def _slice_right_aligned_numeric_cells(
     return cells
 
 
+ADJUSTMENT_UNPAIRED_REASON = "adjustment_unpaired"
+NON_PRODUCT_REASON = "non_product"
+
+
 def _pair_explicit_discount_rows(
     lines: Sequence[Mapping[str, Any]],
 ) -> tuple[list[dict[str, Any]], int, int]:
-    """Pair a directly adjacent explicit non-positive discount with one product.
+    """Pair explicit adjustment rows with the product row they adjust.
 
-    Pairing requires equal source quantity, compatible tax rate and explicit
-    net/ex-tax line amounts on both rows.  The consumed adjustment is retained
-    on the emitted product line so no source row silently disappears.
+    Suppliers print adjustment rows (discounts, price overrides) as their own
+    numbered table rows, before or after the product, sometimes several in a
+    run.  Each adjustment is folded into the nearest product row it is
+    contiguous with (through other adjustment rows only) whose source
+    quantity, tax rate and explicit net/ex-tax amounts satisfy the same
+    checks as before; the preceding product is tried first.  An adjustment
+    that fits neither neighbour is kept as its own line and flagged
+    ``adjustment_unpaired``.  A consumed adjustment is retained on the
+    emitted product line, so no source row silently disappears and no row
+    carrying an amount is ever dropped.
     """
+
+    count = len(lines)
+    is_adjustment = [_is_explicit_discount_adjustment(line) for line in lines]
+    owner: list[int | None] = [None] * count
+    for index in range(count):
+        if not is_adjustment[index]:
+            continue
+        previous = index - 1
+        while previous >= 0 and is_adjustment[previous]:
+            previous -= 1
+        following = index + 1
+        while following < count and is_adjustment[following]:
+            following += 1
+        for candidate in (previous, following):
+            if 0 <= candidate < count and _discount_pair_is_safe(lines[candidate], lines[index]):
+                owner[index] = candidate
+                break
 
     paired: list[dict[str, Any]] = []
     paired_adjustments = 0
     unpaired_adjustments = 0
-    index = 0
-    while index < len(lines):
-        current = dict(lines[index])
-        following = dict(lines[index + 1]) if index + 1 < len(lines) else None
-        product: dict[str, Any] | None = None
-        adjustment: dict[str, Any] | None = None
-        if following is not None:
-            if _is_explicit_discount_adjustment(current) and not _is_explicit_discount_adjustment(following):
-                adjustment, product = current, following
-            elif not _is_explicit_discount_adjustment(current) and _is_explicit_discount_adjustment(following):
-                product, adjustment = current, following
-        if product is not None and adjustment is not None and _discount_pair_is_safe(product, adjustment):
-            paired.append(_combine_discount_pair(product, adjustment))
-            paired_adjustments += 1
-            index += 2
+    for index, line in enumerate(lines):
+        if is_adjustment[index]:
+            if owner[index] is None:
+                current = dict(line)
+                current["unpaired_adjustment"] = True
+                current["review_reasons"] = _with_review_reason(current, ADJUSTMENT_UNPAIRED_REASON)
+                unpaired_adjustments += 1
+                paired.append(current)
             continue
-
-        if _is_explicit_discount_adjustment(current):
-            current["unpaired_adjustment"] = True
-            unpaired_adjustments += 1
-        paired.append(current)
-        index += 1
+        adjustments = [lines[other] for other in range(count) if owner[other] == index]
+        if adjustments:
+            paired.append(_combine_discount_pair(line, adjustments))
+            paired_adjustments += len(adjustments)
+        else:
+            paired.append(dict(line))
     return paired, paired_adjustments, unpaired_adjustments
 
 
+def _with_review_reason(line: Mapping[str, Any], reason: str) -> list[str]:
+    reasons = [str(item) for item in (line.get("review_reasons") or []) if str(item) != reason]
+    return [*reasons, reason]
+
+
 def _is_explicit_discount_adjustment(line: Mapping[str, Any]) -> bool:
-    description = _normalized_words(str(line.get("description") or ""))
+    """Recognise an adjustment row by its structure, not by its wording.
+
+    An adjustment row is a table data row whose explicit line amount is
+    non-positive and whose printed unit price, when present, is also
+    non-positive: it has nothing to sell, only a value (possibly zero) to
+    apply against a product row.  Wording such as "discount" or "override"
+    is not required, so a supplier changing or correcting its label does not
+    silently switch the rule off.  Summary labels (subtotal, total, tax) are
+    excluded; they are never table data rows.
+    """
+
     line_total = line.get("line_total")
-    return bool(
-        re.search(r"\bdiscount(?:ed)?\b", description)
-        and line_total is not None
-        and float(line_total) <= 0
-    )
+    if line_total is None or float(line_total) > 0:
+        return False
+    printed_unit_price = line.get("printed_unit_price")
+    if printed_unit_price is not None and float(printed_unit_price) > 0:
+        return False
+    if line.get("non_product"):
+        return False
+    description = str(line.get("description") or "")
+    return bool(description.strip()) and not _is_summary_label(description)
 
 
 def _numbers_equal(left: Any, right: Any, tolerance: float = 1e-8) -> bool:
@@ -2719,12 +2812,26 @@ def _add_money(left: Any, right: Any) -> float | None:
     return float(value)
 
 
+def _sum_money(values: Sequence[Any]) -> float | None:
+    total: Any = 0.0
+    for value in values:
+        total = _add_money(total, value)
+        if total is None:
+            return None
+    return total
+
+
 def _combine_discount_pair(
     product: Mapping[str, Any],
-    adjustment: Mapping[str, Any],
+    adjustment: Mapping[str, Any] | Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    adjustments: list[Mapping[str, Any]] = (
+        [adjustment] if isinstance(adjustment, Mapping) else list(adjustment)
+    )
     combined = dict(product)
-    net_line_total = _add_money(product.get("line_total"), adjustment.get("line_total"))
+    net_line_total = _add_money(
+        product.get("line_total"), _sum_money([item.get("line_total") for item in adjustments])
+    )
     quantity = product.get("quantity")
     net_unit_price = (
         _divide_money_by_quantity(net_line_total, quantity)
@@ -2746,15 +2853,20 @@ def _combine_discount_pair(
             "line_total": net_line_total,
             "line_total_basis": "net_after_explicit_discount",
             "gross_line_total": _add_money(
-                product.get("gross_line_total"), adjustment.get("gross_line_total")
+                product.get("gross_line_total"),
+                _sum_money([item.get("gross_line_total") for item in adjustments]),
             ),
-            "tax_amount": _add_money(product.get("tax_amount"), adjustment.get("tax_amount")),
-            "discount_line_total": adjustment.get("line_total"),
-            "discount_tax_amount": adjustment.get("tax_amount"),
-            "discount_gross_line_total": adjustment.get("gross_line_total"),
+            "tax_amount": _add_money(
+                product.get("tax_amount"), _sum_money([item.get("tax_amount") for item in adjustments])
+            ),
+            "discount_line_total": _sum_money([item.get("line_total") for item in adjustments]),
+            "discount_tax_amount": _sum_money([item.get("tax_amount") for item in adjustments]),
+            "discount_gross_line_total": _sum_money(
+                [item.get("gross_line_total") for item in adjustments]
+            ),
             "source_adjustments": [
                 {
-                    field: adjustment.get(field)
+                    field: item.get(field)
                     for field in (
                         "description",
                         "quantity",
@@ -2768,19 +2880,23 @@ def _combine_discount_pair(
                         "source_sequence",
                     )
                 }
+                for item in adjustments
             ],
-            "paired_source_line_count": 2,
+            "paired_source_line_count": 1 + len(adjustments),
             "extraction_method": "layout_header+paired_discount",
             "derived_fields": ["line_total", "unit_price", "net_unit_price"],
-            "confidence": min(float(product.get("confidence") or 0), float(adjustment.get("confidence") or 0)),
+            "confidence": min(
+                float(product.get("confidence") or 0),
+                *[float(item.get("confidence") or 0) for item in adjustments],
+            ),
         }
     )
     product_rows = product.get("source_rows") or []
-    adjustment_rows = adjustment.get("source_rows") or []
-    if product_rows and adjustment_rows:
+    adjustment_rows = [item.get("source_rows") or [] for item in adjustments]
+    if product_rows and all(adjustment_rows):
         combined["source_rows"] = [
-            min(int(product_rows[0]), int(adjustment_rows[0])),
-            max(int(product_rows[-1]), int(adjustment_rows[-1])),
+            min(int(product_rows[0]), *[int(rows[0]) for rows in adjustment_rows]),
+            max(int(product_rows[-1]), *[int(rows[-1]) for rows in adjustment_rows]),
         ]
     return combined
 
@@ -3059,6 +3175,30 @@ def _join_description_parts(parts: Sequence[str]) -> str | None:
     if not cleaned:
         return None
     return re.sub(r"\s+", " ", " ".join(cleaned)).strip()
+
+
+_INTERNATIONAL_PHONE_PATTERN = re.compile(r"\+\s?\d{1,3}(?:[\s().-]*\d){6,}")
+_CONTACT_LABEL_PATTERN = re.compile(
+    r"\b(?:tel|telephone|phone|fax|mob|mobile)\b\.?\s*(?:no\.?|number)?\s*[:.]?\s*\+?\(?\d",
+    re.I,
+)
+
+
+def _is_contact_footer(value: str) -> bool:
+    """A contact line: an international phone number, or a contact label with its number.
+
+    Page footers of this shape land inside a table section when a page ends
+    mid-table.  Their digits are telephone numbers, so the row carries no
+    quantity or amount and is non-product text.  The row is kept and
+    flagged, never dropped.  A bare long digit run is not enough (product
+    codes and barcodes look like that); a "+" country prefix or a contact
+    label is required.
+    """
+
+    normalized = unicodedata.normalize("NFKC", value)
+    return bool(
+        _INTERNATIONAL_PHONE_PATTERN.search(normalized) or _CONTACT_LABEL_PATTERN.search(normalized)
+    )
 
 
 def _is_table_summary(value: str) -> bool:
