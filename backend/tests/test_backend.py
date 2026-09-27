@@ -250,7 +250,7 @@ def test_exception_csv_is_separate_safe_and_explains_noninvoice_and_unresolved(
     empty = service.create_exception_report()
     assert empty["count"] == 0
     assert empty["content"].decode("utf-8-sig").splitlines() == [
-        "Invoice ID,Filename,Document Type,Status,Reasons"
+        "Invoice ID,Filename,Document Type,Status,Reasons,Reason Codes,Owner Roles"
     ]
 
     service.seed_demo()
@@ -271,11 +271,18 @@ def test_exception_csv_is_separate_safe_and_explains_noninvoice_and_unresolved(
         "Document Type",
         "Status",
         "Reasons",
+        "Reason Codes",
+        "Owner Roles",
     ]
     by_id = {row["Invoice ID"]: row for row in rows}
     review_reasons = by_id[changed["id"]]["Reasons"]
     assert "[document_type.not_invoice]" in review_reasons
     assert "[lines.0.rms_item_id.unmapped]" in review_reasons
+    review_codes = by_id[changed["id"]]["Reason Codes"].split(" | ")
+    assert "document_type_not_invoice" in review_codes
+    assert {"line_unmapped", "line_low_confidence"} & set(review_codes)
+    assert "brand_operator" in by_id[changed["id"]]["Owner Roles"].split(" | ")
+    assert by_id[queued["id"]]["Reason Codes"] == ""
     assert by_id[queued["id"]]["Filename"] == "'=FORMULA.txt"
     assert by_id[queued["id"]]["Reasons"] == "[status_queued] awaiting extraction"
 
