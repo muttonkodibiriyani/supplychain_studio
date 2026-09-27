@@ -4,18 +4,29 @@ Run a local invoice workspace for a brand: import its RMS item master, upload su
 
 Source: [muttonkodibiriyani/supplychain_studio](https://github.com/muttonkodibiriyani/supplychain_studio). Sign in to an account with repository access, then choose **Code → Download ZIP**.
 
-## Start on a new Windows computer
+## Start on a new computer: one command
 
-Follow [Windows setup from zero](docs/WINDOWS_SETUP.md) for Windows, WSL 2, Docker Desktop, download, first launch, backups and troubleshooting. You do not need to install Python, Node or an AI API key on Windows when using Docker.
+You do not need Python, Node, Tesseract or an AI API key. Docker Desktop builds everything inside a Linux container.
 
-After Docker Desktop is running and you have extracted the source, open PowerShell in the application folder:
+**Windows** (follow [Windows setup from zero](docs/WINDOWS_SETUP.md) for WSL 2 and Docker Desktop first, then open PowerShell in the extracted application folder):
 
 ```powershell
-Copy-Item .env.example .env
-docker compose --project-name invoice-studio up --build --detach
+.\Start-InvoiceStudio.ps1
 ```
 
-Open **http://localhost:8000**. Keep the same project name on later starts so you reconnect to the same stored invoices and mappings. The optional `Start-InvoiceStudio.ps1` helper checks Docker and starts this workflow.
+**Mac, Apple Silicon or Intel** (follow [Mac setup from zero](docs/MAC_SETUP.md) for Docker Desktop first, then double-click `Start-InvoiceStudio.command`, or in Terminal inside the application folder):
+
+```bash
+./start.sh
+```
+
+Both helpers check Docker, build and start the `invoice-studio` Compose project, wait for the health check and open **http://localhost:8000**. They are thin wrappers around the canonical command, which works on any platform with Docker:
+
+```bash
+docker compose --project-name invoice-studio up --build --detach --wait
+```
+
+Keep the same project name on later starts so you reconnect to the same stored invoices and mappings. Use `--project-name` and `--port` (`-ProjectName`/`-Port` on Windows) to run a second brand side by side.
 
 ## First brand and daily operation
 
@@ -29,6 +40,8 @@ The [operator training guide](docs/OPERATOR_TRAINING.md) walks through setup, re
 4. Upload invoice files or a folder. The browser limits concurrent uploads; accepted documents enter a durable queue. One invoice per file, with multiple pages supported.
 5. Compare the source against captured header, quantities, net prices, tax and totals. Confirm document type, supplier, target codes and every item mapping. Missing or uncertain rows require correction; an invoice is not partially exported.
 6. Use **Download exceptions** to save the excluded-document list and review reasons separately from the target workbook. Approve reviewed invoices, select them and download the consolidated workbook. Use **Select all approved matching search** for batches across pages (maximum 5,000 invoices per export). Check the receiving system's import result before treating the handoff as accepted.
+
+If uploads sit in **Queued** with nothing in **Processing**, open `http://localhost:8000/api/health`. It reports `"status": "degraded"` with a `problems` list when fewer extraction workers than configured are alive or when the queue has had no worker activity for two minutes (`INVOICE_WORKER_STALL_SECONDS`). The `workers` block shows configured/alive counts, the last error and the last claim time. Dead workers are respawned automatically on the next health check; the log line `extraction worker error` names the cause.
 
 The target contains **exactly `Header`, `Tax_Breakdown`, and `Details`**, joined by Transaction Number. It excludes unapproved invoices and documents classified as credit notes, purchase orders, delivery notes or unknown. The application generates the file; it does not submit it, confirm a GRN or release payment.
 
@@ -49,7 +62,7 @@ Current release checks are in [RELEASE_VALIDATION.md](docs/RELEASE_VALIDATION.md
 | CSV, XLSX | Structured invoice fields and lines |
 | DOCX, TXT | Text/table extraction |
 
-The supplied Compose configuration permits **64 MiB per invoice file**, with page/frame and decompression limits. The browser sends files individually, so a selection can exceed 1,000 files. Two processing workers are configured by default. Corrupt, encrypted, empty, unsupported and oversized files produce explicit errors. ZIP archives, HEIC, legacy XLS/DOC, HTML and SVG are not invoice inputs.
+The supplied Compose configuration permits **64 MiB per invoice file**, with page/frame and decompression limits. The browser sends files individually, so a selection can exceed 1,000 files. One extraction worker per CPU core is configured by default (`INVOICE_WORKERS=auto`); set a number in `.env` to override. Scanned invoices need OCR at roughly 20-30 seconds each per worker, so a 1,000-invoice batch needs the core count to finish in the target window. Corrupt, encrypted, empty, unsupported and oversized files produce explicit errors. ZIP archives, HEIC, legacy XLS/DOC, HTML and SVG are not invoice inputs.
 
 ## Separate brands and persistent data
 
@@ -79,6 +92,8 @@ npm run build
 
 For UI development run `npm run dev`; Vite proxies `/api`. API documentation is at `/docs`.
 
+The pre-push privacy guard is installed the first time you run the start script from a clone: `start.sh` (also via `Start-InvoiceStudio.command`) and `Start-InvoiceStudio.ps1` run `git config core.hooksPath .githooks` when a `.git` directory is present, once, and skip it otherwise. To enable it without starting the application run that command yourself. Git does not install hooks on clone and a repository cannot set `core.hooksPath` for itself, so a fresh clone on which nothing has been run pushes without any guard. Once set, the hook runs `python scripts/package_source.py --pre-push` before every push: it takes the ref lines git hands the hook, enumerates every commit the remote does not yet have (`remote..local`, or for a new branch everything not reachable from that remote's refs, falling back to all reachable commits) and scans the content and path of every file version those commits add or change, including a file added in one commit and deleted in a later one. It does not inspect history already on the remote, it does not run on `--no-verify`, and a scan error of any kind refuses the push. The first push of this repository to an empty remote is refused while the history carries previously removed content: that is the guard doing its job, and the remedy is rewriting history (the repository owner's decision), not bypassing the guard. This installation is verified on the Unix launcher; the Windows launcher sets the same configuration but has not been exercised here.
+
 ```bash
 python3 -m pytest -q
 npm run build
@@ -92,4 +107,4 @@ The labelled static preview uses fictional browser-local data. Real OCR, persist
 
 ## Source distribution
 
-The source package and GitHub repository contain code, documentation and synthetic examples. Real invoices, item masters, learned mappings, local databases and credentials remain private. The package builder uses an explicit file selection rather than copying the working directory. Open-source component notes are in [OPEN_SOURCE.md](docs/OPEN_SOURCE.md).
+The source package and GitHub repository contain code, documentation and synthetic examples. Real invoices, item masters, learned mappings, local databases and credentials remain private. The package builder uses an explicit file selection rather than copying the working directory, and `scripts/package_source.py --check-only` scans every tracked text file for listed private-content patterns (secrets, coordination ids, share links, home-directory paths) and then the commits the next `git push` would carry (HEAD against its upstream, else `origin/<branch>`, else everything the remote lacks; `--range <remote sha>..<local sha>` overrides the pair), refusing with the same message the hook prints, so a clean `--check-only` is a true pre-flight of the push. That scan runs in three places with different limits: in the package build; in the local pre-push hook (`.githooks/pre-push` runs `scripts/package_source.py --pre-push`), which inspects the commits being pushed (not only the working tree, so a marker buried under a later clean commit is still caught), prevents the push once the start script (or `git config core.hooksPath .githooks`) has been run in that clone, fires on nothing in a fresh clone where nothing has been run, does not cover history already on the remote, and is bypassable with `--no-verify`; and in the GitHub Actions workflow, which is authoritative but runs after the push has already published, so it detects rather than prevents. The CI half is committed under `.github/workflows.pending/` because the automation token cannot create workflows; the repository owner moves it to `.github/workflows/` (web editor, edit file, change the path) to activate it. Until moved, only the local pre-push hook runs. Patterns catch only what has a shape. A private filename, a count or a size has none, so every diff still gets a human read of its numerals before it is pushed. Open-source component notes are in [OPEN_SOURCE.md](docs/OPEN_SOURCE.md).

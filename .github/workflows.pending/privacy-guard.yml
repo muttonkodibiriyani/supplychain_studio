@@ -1,0 +1,28 @@
+# Runs the private-pattern guard on every push and pull request: the whole
+# tree, then the same range scan the pre-push hook runs, over the exact pair
+# of commits the event carried (before..after for a push, base..merge for a
+# pull request). fetch-depth 0 because the range scan reads history.
+# Limits: this fires after a push has already reached GitHub, so on a public
+# repository it detects rather than prevents. The local pre-push hook in
+# .githooks/ is the preventive half and is bypassable with --no-verify. A
+# push that creates a branch scans everything the remote lacks and, while the
+# history carries previously removed content, is refused until the owner
+# rewrites history; that is the guard doing its job.
+name: privacy-guard
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  privacy-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Scan the tree and the pushed commit range for listed private-content patterns
+        run: python scripts/package_source.py --check-only --range "${{ github.event.before || github.event.pull_request.base.sha }}..${{ github.sha }}"

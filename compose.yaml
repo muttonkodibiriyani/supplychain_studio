@@ -5,10 +5,12 @@ services:
       - "127.0.0.1:${INVOICE_HOST_PORT:-8000}:8000"
     environment:
       INVOICE_DATA_DIR: /app/data
-      INVOICE_WORKERS: "${INVOICE_WORKERS:-4}"
+      INVOICE_WORKERS: "${INVOICE_WORKERS:-auto}"
       INVOICE_MAX_FILE_BYTES: "${INVOICE_MAX_FILE_BYTES:-67108864}"
       INVOICE_MAX_UPLOAD_FILES: "1000"
       INVOICE_MAX_PAGES: "50"
+      # Fictional demo data via POST /api/demo. Off by default; never enable on a real workspace.
+      INVOICE_ENABLE_DEMO_SEED: "${INVOICE_ENABLE_DEMO_SEED:-false}"
       OMP_THREAD_LIMIT: "1"
     volumes:
       - invoice-data:/app/data

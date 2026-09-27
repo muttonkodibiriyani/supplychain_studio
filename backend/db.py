@@ -26,18 +26,50 @@ def json_dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+DEFAULT_ABSOLUTE_TOLERANCE = 10
+DEFAULT_INVOICE_CURRENCY_SCOPE = ["AED"]
+TOLERANCE_SCOPES = ("per_line", "per_invoice")
+LEGACY_CATALOG_IMPORT_ID = "legacy"
+
+
+def default_tolerance_policy(
+    absolute_tolerance: float | int = DEFAULT_ABSOLUTE_TOLERANCE,
+    *,
+    effective_date: str | None = None,
+) -> dict:
+    """Version 1 of the tolerance policy: today's behaviour expressed as configuration.
+
+    The absolute tolerance is applied per line in the invoice currency; the
+    policy only applies to invoices whose currency is in ``invoice_currency_scope``
+    (other invoices report ``unavailable_currency`` exactly as before).
+    """
+
+    return {
+        "version": 1,
+        "owner": "",
+        "effective_date": effective_date or utc_now()[:10],
+        "absolute_tolerance": absolute_tolerance,
+        "percentage_tolerance": None,
+        "scope": "per_line",
+        "invoice_currency_scope": list(DEFAULT_INVOICE_CURRENCY_SCOPE),
+    }
+
+
 class Database:
     """Small SQLite wrapper with one connection per operation/thread."""
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, busy_timeout_seconds: float = 30.0):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.busy_timeout_seconds = max(0.05, float(busy_timeout_seconds))
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        conn = sqlite3.connect(
+            self.path, timeout=self.busy_timeout_seconds, isolation_level=None
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute(f"PRAGMA busy_timeout = {int(self.busy_timeout_seconds * 1000)}")
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
         return conn
@@ -137,6 +169,10 @@ class Database:
                 CHECK (match_status IN ('unmatched','suggested','auto','confirmed')),
             confidence REAL NOT NULL DEFAULT 0 CHECK (confidence >= 0 AND confidence <= 100),
             candidates_json TEXT NOT NULL DEFAULT '[]',
+            rms_cost_currency TEXT,
+            rms_unit_cost_converted TEXT,
+            conversion_rate_id INTEGER,
+            target_cost_comparison_reason TEXT,
             PRIMARY KEY (invoice_id, id)
         );
         CREATE INDEX IF NOT EXISTS idx_invoice_lines_invoice_position
@@ -157,7 +193,9 @@ class Database:
             source_row INTEGER,
             source_name TEXT,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            cost_currency TEXT,
+            import_id TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_catalog_description ON catalog_items(description);
         CREATE INDEX IF NOT EXISTS idx_catalog_supplier ON catalog_items(supplier_id);
@@ -228,8 +266,47 @@ class Database:
             target_cost_policy_json TEXT NOT NULL DEFAULT
                 '{{"maximum_absolute_difference_aed":10,"mode":"invoice_only"}}',
             version INTEGER NOT NULL DEFAULT 1,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            tolerance_policy_json TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS policy_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            policy_name TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            changed_at TEXT NOT NULL,
+            settings_version INTEGER,
+            before_json TEXT,
+            after_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_policy_audit_name ON policy_audit(policy_name, id DESC);
+
+        CREATE TABLE IF NOT EXISTS catalog_imports (
+            id TEXT PRIMARY KEY,
+            filename TEXT NOT NULL,
+            imported_at TEXT NOT NULL,
+            imported_rows INTEGER NOT NULL DEFAULT 0,
+            skipped_rows INTEGER NOT NULL DEFAULT 0,
+            cost_currency TEXT,
+            cost_currency_source TEXT,
+            declared_by TEXT,
+            declared_at TEXT,
+            content_sha256 TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_catalog_imports_time ON catalog_imports(imported_at DESC);
+
+        CREATE TABLE IF NOT EXISTS conversion_rates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_currency TEXT NOT NULL,
+            to_currency TEXT NOT NULL,
+            rate TEXT NOT NULL,
+            source TEXT NOT NULL,
+            entered_by TEXT NOT NULL,
+            entered_at TEXT NOT NULL,
+            effective_date TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_conversion_rates_pair
+            ON conversion_rates(from_currency, to_currency, effective_date DESC, id DESC);
         """
         with self.connection() as conn:
             catalog_columns = {
@@ -329,6 +406,14 @@ class Database:
                 "target_cost_variance": "TEXT",
                 "target_cost_comparison_status": "TEXT",
                 "target_cost_review_required": "INTEGER NOT NULL DEFAULT 0",
+                "rms_unit_cost_min": "TEXT",
+                "rms_unit_cost_max": "TEXT",
+                "unit_status": "TEXT",
+                "unit_reason": "TEXT",
+                "rms_cost_currency": "TEXT",
+                "rms_unit_cost_converted": "TEXT",
+                "conversion_rate_id": "INTEGER",
+                "target_cost_comparison_reason": "TEXT",
             }
             for name, definition in line_additions.items():
                 if name not in line_columns:
@@ -353,6 +438,8 @@ class Database:
                     "ALTER TABLE app_settings ADD COLUMN "
                     "include_upc_in_export INTEGER NOT NULL DEFAULT 0"
                 )
+            if "tolerance_policy_json" not in settings_columns:
+                conn.execute("ALTER TABLE app_settings ADD COLUMN tolerance_policy_json TEXT")
             conn.execute(
                 """
                 INSERT OR IGNORE INTO app_settings
@@ -364,12 +451,93 @@ class Database:
                     json_dumps(
                         {
                             "mode": "invoice_only",
-                            "maximum_absolute_difference_aed": 10,
+                            "maximum_absolute_difference_aed": DEFAULT_ABSOLUTE_TOLERANCE,
                         }
                     ),
                     utc_now(),
                 ),
             )
+            self._migrate_tolerance_policy(conn)
+            self._migrate_catalog_imports(conn)
+
+    @staticmethod
+    def _migrate_tolerance_policy(conn: sqlite3.Connection) -> None:
+        """Express an existing bare tolerance as policy version 1, once.
+
+        The absolute value is carried over unchanged, so a workspace behaves
+        exactly as before until an operator edits the policy.  The migration
+        itself is recorded in policy_audit with a system actor.
+        """
+
+        row = conn.execute(
+            "SELECT version,updated_at,target_cost_policy_json,tolerance_policy_json "
+            "FROM app_settings WHERE id = 1"
+        ).fetchone()
+        if row is None or row["tolerance_policy_json"]:
+            return
+        try:
+            legacy = json.loads(row["target_cost_policy_json"] or "{}")
+        except (TypeError, ValueError):
+            legacy = {}
+        absolute = legacy.get("maximum_absolute_difference_aed") if isinstance(legacy, dict) else None
+        if not isinstance(absolute, (int, float)) or isinstance(absolute, bool) or absolute < 0:
+            absolute = DEFAULT_ABSOLUTE_TOLERANCE
+        policy = default_tolerance_policy(
+            absolute, effective_date=str(row["updated_at"] or "")[:10] or None
+        )
+        now = utc_now()
+        conn.execute(
+            "UPDATE app_settings SET tolerance_policy_json = ? WHERE id = 1",
+            (json_dumps(policy),),
+        )
+        conn.execute(
+            """
+            INSERT INTO policy_audit
+                (policy_name,actor,changed_at,settings_version,before_json,after_json)
+            VALUES ('tolerance_policy','system:migration',?,?,NULL,?)
+            """,
+            (now, row["version"], json_dumps(policy)),
+        )
+
+    @staticmethod
+    def _migrate_catalog_imports(conn: sqlite3.Connection) -> None:
+        """Attach catalog rows imported before cost currency was recorded to one
+        'legacy' import record whose cost currency is undeclared (never guessed)."""
+
+        catalog_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(catalog_items)").fetchall()
+        }
+        if "cost_currency" not in catalog_columns:
+            conn.execute("ALTER TABLE catalog_items ADD COLUMN cost_currency TEXT")
+        if "import_id" not in catalog_columns:
+            conn.execute("ALTER TABLE catalog_items ADD COLUMN import_id TEXT")
+        orphaned = conn.execute(
+            "SELECT COUNT(*), MIN(created_at), MAX(source_name) FROM catalog_items "
+            "WHERE import_id IS NULL"
+        ).fetchone()
+        if not orphaned or not orphaned[0]:
+            return
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO catalog_imports
+                (id,filename,imported_at,imported_rows,skipped_rows,cost_currency,
+                 cost_currency_source,declared_by,declared_at,content_sha256)
+            VALUES (?,?,?,?,0,NULL,NULL,NULL,NULL,NULL)
+            """,
+            (
+                LEGACY_CATALOG_IMPORT_ID,
+                orphaned[2] or "imported before cost currency was recorded",
+                orphaned[1] or utc_now(),
+                orphaned[0],
+            ),
+        )
+        conn.execute(
+            "UPDATE catalog_items SET import_id = ? WHERE import_id IS NULL",
+            (LEGACY_CATALOG_IMPORT_ID,),
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_catalog_import ON catalog_items(import_id)"
+        )
 
     def recover_interrupted_jobs(self) -> int:
         """Move jobs left in processing back to queued after a process restart."""

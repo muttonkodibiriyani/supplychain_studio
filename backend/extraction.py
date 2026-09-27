@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import unicodedata
 import zipfile
@@ -29,6 +30,8 @@ from xml.etree import ElementTree
 class DocumentExtractionError(RuntimeError):
     """A document could not be safely or credibly extracted."""
 
+    retryable = False
+
 
 class UnsupportedDocumentError(DocumentExtractionError):
     """The file type is outside the deliberately supported set."""
@@ -36,6 +39,21 @@ class UnsupportedDocumentError(DocumentExtractionError):
 
 class ExtractionLimitError(DocumentExtractionError):
     """A document exceeded a configured resource bound."""
+
+
+class ExtractionTimeBudgetError(ExtractionLimitError):
+    """OCR ran out of its time budget.
+
+    The time budget bounds the host's work, not the document's content: the
+    same document can clear it on a quiet host and miss it on a busy one.  The
+    failure is therefore retryable, unlike the content bounds (bytes, pages,
+    pixels, rows), which stay plain ``ExtractionLimitError`` and are final.
+    """
+
+    retryable = True
+
+
+_RETRY_HINT = "; try again when the host is quieter."
 
 
 @dataclass(frozen=True)
@@ -667,6 +685,13 @@ def _explicit_po_token(reference: Any) -> str | None:
     return None
 
 
+# PDFium is not thread-safe.  Extraction workers are threads in one process,
+# so every pypdfium2 call (load, page access, render, close) is serialised
+# here and no PDFium-owned memory is accessed outside the lock; Tesseract
+# runs outside the lock on a copied image so OCR still parallelises.
+_PDFIUM_LOCK = threading.Lock()
+
+
 def _ocr_pdf_pages(
     path: Path, page_indices: Sequence[int], limits: ExtractionLimits
 ) -> dict[int, tuple[str, str, float | None]]:
@@ -691,16 +716,19 @@ def _ocr_pdf_pages(
     # reviewable page coverage within the same resource limits.
     use_enhancement_passes = len(page_indices) <= 12
     try:
-        document = pdfium.PdfDocument(str(path))
+        with _PDFIUM_LOCK:
+            document = pdfium.PdfDocument(str(path))
         for index in page_indices:
             page_started = time.monotonic()
             remaining = limits.ocr_timeout_seconds_total - (time.monotonic() - started)
             if remaining <= 0:
-                raise ExtractionLimitError(
-                    f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit."
+                raise ExtractionTimeBudgetError(
+                    f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit"
+                    + _RETRY_HINT
                 )
-            page = document[index]
-            width, height = page.get_size()
+            with _PDFIUM_LOCK:
+                page = document[index]
+                width, height = page.get_size()
             render_scale = 2.0
             pixels = int(width * render_scale) * int(height * render_scale)
             _check_page_pixels(pixels, index + 1, limits)
@@ -709,9 +737,13 @@ def _ocr_pdf_pages(
                 raise ExtractionLimitError(
                     f"PDF rasterization would exceed the {limits.max_total_pixels} total pixel limit."
                 )
-            bitmap = page.render(scale=render_scale)
-            image = bitmap.to_pil()
+            with _PDFIUM_LOCK:
+                bitmap = page.render(scale=render_scale)
+                # to_pil() shares memory with the PDFium-owned bitmap buffer;
+                # copy so nothing outside the lock touches PDFium memory.
+                image = bitmap.to_pil().copy()
             page_budget = min(limits.ocr_timeout_seconds_per_page, remaining)
+            budget_message = _ocr_budget_message(page_budget, limits)
             # Preserve the former OCR path and its full timeout first.  The
             # enhancement passes may use only time that remains; a slow
             # enhancement can never turn a formerly readable page into a
@@ -723,6 +755,7 @@ def _ocr_pdf_pages(
                 psm=6,
                 autocontrast=False,
                 dpi=round(72 * render_scale),
+                timeout_message=budget_message,
             )
             enhanced_text, enhanced_confidence = baseline_text, baseline_confidence
             page_remaining = page_budget - (time.monotonic() - page_started)
@@ -736,6 +769,7 @@ def _ocr_pdf_pages(
                         psm=4,
                         autocontrast=True,
                         dpi=round(72 * render_scale),
+                        timeout_message=budget_message,
                     )
                     enhancement_completed = True
                 except ExtractionLimitError:
@@ -757,6 +791,7 @@ def _ocr_pdf_pages(
                         psm=11,
                         autocontrast=True,
                         dpi=round(72 * render_scale),
+                        timeout_message=budget_message,
                     )
                 except ExtractionLimitError:
                     sparse_text = ""
@@ -770,8 +805,9 @@ def _ocr_pdf_pages(
             results[index] = (raw_text, layout_text, confidence)
             try:
                 image.close()
-                bitmap.close()
-                page.close()
+                with _PDFIUM_LOCK:
+                    bitmap.close()
+                    page.close()
             except Exception:
                 pass
     except (DocumentExtractionError, ExtractionLimitError):
@@ -780,7 +816,8 @@ def _ocr_pdf_pages(
         raise DocumentExtractionError(f"Could not rasterize scanned PDF pages: {exc}") from exc
     finally:
         try:
-            document.close()  # type: ignore[possibly-undefined]
+            with _PDFIUM_LOCK:
+                document.close()  # type: ignore[possibly-undefined]
         except Exception:
             pass
     return results
@@ -850,15 +887,18 @@ def _extract_image(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
                     )
                 remaining = limits.ocr_timeout_seconds_total - (time.monotonic() - started)
                 if remaining <= 0:
-                    raise ExtractionLimitError(
-                        f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit."
+                    raise ExtractionTimeBudgetError(
+                        f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit"
+                        + _RETRY_HINT
                     )
+                page_budget = min(limits.ocr_timeout_seconds_per_page, remaining)
                 text, confidence = _run_tesseract(
                     frame,
-                    min(limits.ocr_timeout_seconds_per_page, remaining),
+                    page_budget,
                     limits.max_pixels_per_page,
                     psm=4,
                     autocontrast=True,
+                    timeout_message=_ocr_budget_message(page_budget, limits),
                 )
                 page_evidence.append(
                     {
@@ -897,6 +937,21 @@ def _extract_image(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
     }
 
 
+def _ocr_budget_message(page_budget: float, limits: ExtractionLimits) -> str:
+    """Name the budget an OCR pass ran under.
+
+    A page runs under ``min(per-page limit, remaining document budget)``.  When
+    the document budget clips the page, the number that ran out is the
+    document limit; reporting the clipped remainder ("exceeded its 0 second
+    limit") is the 180 second document budget wearing another face.
+    """
+    if page_budget < limits.ocr_timeout_seconds_per_page:
+        return (
+            f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit."
+        )
+    return f"OCR page exceeded its {limits.ocr_timeout_seconds_per_page:.0f} second limit."
+
+
 def _run_tesseract(
     image: Any,
     timeout: float,
@@ -905,6 +960,7 @@ def _run_tesseract(
     psm: int = 6,
     autocontrast: bool = False,
     dpi: int | None = None,
+    timeout_message: str | None = None,
 ) -> tuple[str, float | None]:
     from PIL import ImageOps
 
@@ -956,7 +1012,13 @@ def _run_tesseract(
                 timeout=max(1.0, timeout),
             )
         except subprocess.TimeoutExpired as exc:
-            raise ExtractionLimitError(f"OCR page exceeded its {timeout:.0f} second limit.") from exc
+            # main names the budget that actually ran out (the document budget can
+            # clip the page); PR #24 makes a missed time budget retryable.  Keep
+            # both: main's message, stripped of its full stop, plus the hint.
+            raise ExtractionTimeBudgetError(
+                (timeout_message or f"OCR page exceeded its {timeout:.0f} second limit.").rstrip(".")
+                + _RETRY_HINT
+            ) from exc
         if completed.returncode != 0:
             detail = (completed.stderr or "unknown Tesseract error").strip().replace("\n", " ")[:500]
             raise DocumentExtractionError(f"Tesseract OCR failed: {detail}")
@@ -2230,10 +2292,12 @@ def _parse_layout_section(
             continue
 
         cells = _slice_layout_cells(raw_line, anchors)
-        tail_cells = _slice_right_aligned_numeric_cells(raw_line, anchors)
-        if tail_cells is not None and (
-            "uom" not in fields or not _layout_cells_are_plausible(cells, anchors)
-        ):
+        tail_cells = _slice_right_aligned_numeric_cells(
+            raw_line,
+            anchors,
+            allow_uom=_layout_cells_misaligned(raw_line, anchors, cells),
+        )
+        if tail_cells is not None:
             cells.update(tail_cells)
         description = _clean_description(cells.get("description"))
         quantity, embedded_uom = _parse_quantity_cell(cells.get("quantity"))
@@ -2476,6 +2540,25 @@ def _parse_layout_section(
     )
 
 
+# A pack or size token printed inside a description ("250ml", "1kg", "33cl",
+# "6x330ml", "6 x 330") describes the product, never the quantity ordered.  A
+# bare number followed by a unit word ("2 EA", "8 KG") is a quantity.  Size
+# tokens are masked before numeric cells are located so they stay in the
+# description text.
+_SIZE_UNIT = r"(?:ml|cl|dl|l|ltr|litre|liter|g|gm|gr|kg|mg|oz|lb|lbs)"
+_SIZE_TOKEN_PATTERN = re.compile(
+    rf"(?<![A-Za-z0-9])(?:\d+\s*[xX\u00d7]\s*)?\d[\d.,]*{_SIZE_UNIT}(?![A-Za-z0-9])"
+    rf"|(?<![A-Za-z0-9])\d+\s*[xX\u00d7]\s*\d[\d.,]*(?![A-Za-z0-9])",
+    re.I,
+)
+
+
+def _mask_size_tokens(line: str) -> str:
+    """Blank pack/size tokens with spaces so character offsets are preserved."""
+
+    return _SIZE_TOKEN_PATTERN.sub(lambda match: " " * len(match.group()), line)
+
+
 _LAYOUT_NUMERIC_FIELDS = {
     "quantity",
     "unit_price",
@@ -2491,17 +2574,25 @@ _LAYOUT_NUMERIC_FIELDS = {
 def _slice_right_aligned_numeric_cells(
     line: str,
     anchors: Sequence[_ColumnAnchor],
+    *,
+    allow_uom: bool = False,
 ) -> dict[str, str] | None:
     """Recover tables whose centered headings do not align with overflow rows.
 
     The fallback is deliberately limited to a description plus numeric tail.
-    Tables with UPC, item-code or UOM columns continue to use fixed positions.
+    Tables with UPC or item-code columns continue to use fixed positions.  A
+    UOM column is accepted only when the caller passes ``allow_uom`` (fixed
+    positions cut through a token on this row); the unit word must then sit
+    alone in the UOM column's position between the numeric cells.
     """
 
     nonnumeric_fields = {
         anchor.field for anchor in anchors if anchor.field not in _LAYOUT_NUMERIC_FIELDS
     }
-    if not nonnumeric_fields.issubset({"row_number", "description", "uom"}):
+    allowed_nonnumeric = {"row_number", "description"}
+    if allow_uom:
+        allowed_nonnumeric.add("uom")
+    if not nonnumeric_fields.issubset(allowed_nonnumeric):
         return None
     numeric_anchors = [
         anchor for anchor in anchors if anchor.field in _LAYOUT_NUMERIC_FIELDS
@@ -2511,47 +2602,34 @@ def _slice_right_aligned_numeric_cells(
     matches = list(
         re.finditer(
             r"(?<![A-Za-z0-9])(?:N\s*/\s*A|N\.?\s*A\.?|\(?-?\d[\d,.']*\)?%?)(?![A-Za-z0-9])",
-            line,
+            _mask_size_tokens(line),
             re.I,
         )
     )
     if len(matches) < len(numeric_anchors):
         return None
     selected = matches[-len(numeric_anchors) :]
-    uom_cell: str | None = None
+    uom_text: str | None = None
     if "uom" in nonnumeric_fields:
-        # The UOM column sits between two numeric columns (or after all of
-        # them).  The text in that gap must be a quantity unit or empty;
-        # anything else means the row does not follow the heading order.
-        uom_index = next(index for index, anchor in enumerate(anchors) if anchor.field == "uom")
-        previous_numeric = next(
-            (anchor for anchor in reversed(anchors[:uom_index]) if anchor.field in _LAYOUT_NUMERIC_FIELDS),
-            None,
-        )
-        following_numeric = next(
-            (anchor for anchor in anchors[uom_index + 1 :] if anchor.field in _LAYOUT_NUMERIC_FIELDS),
-            None,
-        )
-        if previous_numeric is None:
-            return None
-        left = selected[numeric_anchors.index(previous_numeric)].end()
-        right = (
-            selected[numeric_anchors.index(following_numeric)].start()
-            if following_numeric is not None
-            else len(line)
-        )
-        gap = line[left:right].strip()
-        # A spaced unit between the quantity and the price is the UOM column
-        # value, whether it counts pieces (EA) or weighs goods (KG).
-        if gap and not (_is_quantity_uom(gap) or _is_size_unit(gap)):
-            return None
-        uom_cell = gap or None
-    # Apart from the UOM token, the gaps between the trailing numeric
-    # columns must be blank; otherwise the tail is not the numeric row.
-    for left_match, right_match in zip(selected, selected[1:]):
-        between = line[left_match.end() : right_match.start()].strip()
-        if between and not (uom_cell and between == uom_cell):
-            return None
+        ordered = [
+            anchor for anchor in anchors if anchor.field not in {"row_number", "description"}
+        ]
+        uom_position = next(index for index, anchor in enumerate(ordered) if anchor.field == "uom")
+        if uom_position == 0:
+            # UOM printed before the quantity: only a known unit word at the
+            # end of the description prefix is taken; anything else stays in
+            # the description.
+            prefix_match = re.search(rf"\s({_UOM})\s*$", line[: selected[0].start()], re.I)
+            uom_text = prefix_match.group(1) if prefix_match else ""
+        else:
+            span_start = selected[uom_position - 1].end()
+            span_end = (
+                selected[uom_position].start() if uom_position < len(selected) else len(line)
+            )
+            between = line[span_start:span_end].strip()
+            if between and not re.fullmatch(r"[A-Za-z]{1,8}\.?", between):
+                return None
+            uom_text = between
     for anchor, match in zip(numeric_anchors, selected):
         if _parse_cell_number(match.group()) is None and anchor.field not in {
             "tax_rate",
@@ -2566,45 +2644,17 @@ def _slice_right_aligned_numeric_cells(
         for anchor, match in zip(numeric_anchors, selected)
     }
     prefix = line[: selected[0].start()].strip()
+    if uom_text is not None:
+        cells["uom"] = uom_text
+        if uom_text and prefix.upper().endswith(uom_text.upper()):
+            prefix = prefix[: -len(uom_text)].strip()
     if "row_number" in nonnumeric_fields:
         sequence = re.match(r"^\s*(\d{1,6})[.)]?\s+", prefix)
         if sequence:
             cells["row_number"] = sequence.group(1)
             prefix = prefix[sequence.end() :].strip()
     cells["description"] = prefix
-    if "uom" in nonnumeric_fields:
-        cells["uom"] = uom_cell or ""
     return cells
-
-
-def _layout_cells_are_plausible(
-    cells: Mapping[str, str],
-    anchors: Sequence[_ColumnAnchor],
-) -> bool:
-    """Fixed-position cells are trusted only when each column reads cleanly.
-
-    A row that is narrower than its heading smears tokens across cell
-    boundaries ("ml 2" in the UOM column, "EA 10.00 20" in the price column).
-    Such rows are handed to the right-aligned token fallback instead.
-    """
-
-    for anchor in anchors:
-        cell = cells.get(anchor.field, "")
-        if not cell:
-            continue
-        if anchor.field == "uom":
-            if re.search(r"\d", cell) or not (_is_quantity_uom(cell) or _is_size_unit(cell)):
-                return False
-        elif anchor.field == "quantity":
-            number, embedded_uom = _parse_quantity_cell(cell)
-            if number is None or (embedded_uom and not _is_quantity_uom(embedded_uom)):
-                return False
-        elif anchor.field in _LAYOUT_NUMERIC_FIELDS:
-            if _parse_cell_number(cell) is None and not re.fullmatch(
-                r"(?i)N\s*/\s*A|N\.?\s*A\.?|-+", cell.strip()
-            ):
-                return False
-    return True
 
 
 def _pair_explicit_discount_rows(
@@ -2758,10 +2808,7 @@ def _combine_discount_pair(
     return combined
 
 
-def _slice_layout_cells(
-    line: str,
-    anchors: Sequence[_ColumnAnchor],
-) -> dict[str, str]:
+def _layout_cell_boundaries(line: str, anchors: Sequence[_ColumnAnchor]) -> list[int]:
     boundaries = [0]
     for left, right in zip(anchors, anchors[1:]):
         if left.field in {"description", "upc", "item_code"} or (
@@ -2774,10 +2821,43 @@ def _slice_layout_cells(
             boundary = int(round((left.end + right.start) / 2))
         boundaries.append(boundary)
     boundaries.append(max(len(line), anchors[-1].end + 1))
+    return boundaries
+
+
+def _slice_layout_cells(
+    line: str,
+    anchors: Sequence[_ColumnAnchor],
+) -> dict[str, str]:
+    boundaries = _layout_cell_boundaries(line, anchors)
     return {
         anchor.field: line[boundaries[index] : boundaries[index + 1]].strip()
         for index, anchor in enumerate(anchors)
     }
+
+
+def _layout_cells_misaligned(
+    line: str,
+    anchors: Sequence[_ColumnAnchor],
+    cells: Mapping[str, str],
+) -> bool:
+    """True when fixed-position slicing evidently did not land on this row's cells.
+
+    Rows typed as space-separated text under a heading are not column
+    aligned; slicing them at heading offsets cuts "250ml" into a quantity
+    cell "250" and a UOM cell "ml", which is how a size token became a
+    quantity.  A boundary inside a printed token, or a quantity cell holding
+    letters instead of a number, are both evidence of misalignment.
+    """
+
+    for boundary in _layout_cell_boundaries(line, anchors)[1:-1]:
+        if 0 < boundary < len(line) and not line[boundary - 1].isspace() and not line[boundary].isspace():
+            return True
+    quantity_cell = cells.get("quantity") or ""
+    return bool(
+        quantity_cell
+        and _parse_cell_number(quantity_cell) is None
+        and re.search(r"[A-Za-z]", quantity_cell)
+    )
 
 
 def _parse_cell_number(value: Any) -> float | None:
@@ -2967,6 +3047,11 @@ def _parse_quantity_cell(value: Any) -> tuple[float | None, str | None]:
     if value in (None, ""):
         return None, None
     candidate = unicodedata.normalize("NFKC", str(value)).strip()
+    if re.fullmatch(rf"(?:\d+\s*[xX\u00d7]\s*)?{_NUM}{_SIZE_UNIT}", candidate, re.I) or re.fullmatch(
+        rf"\d+\s*[xX\u00d7]\s*{_NUM}", candidate, re.I
+    ):
+        # "250ml", "1kg", "6x330ml": a size or pack token, not a quantity.
+        return None, None
     match = re.fullmatch(
         rf"(?P<number>{_NUM})\s*(?P<uom>{_UOM})",
         candidate,
@@ -3079,7 +3164,6 @@ _QUANTITY_UOM = (
     r"(?:EA|EACH|PC|PCS|PIECE|PIECES|UNIT|UNITS|PK|PKG|PACK|PACKS|BX|BOX|CS|CASE|"
     r"CTN|CARTON|CARTONS|BTL|BOTTLE|BOTTLES|DZ|DOZ|DOZEN|SET|SETS|ROLL|ROLLS|BAG|BAGS|TUB|TUBS|JAR|JARS|TIN|TINS|CAN|CANS|SACHET|SACHETS|TRAY|TRAYS|PAIR|PAIRS|NOS?)"
 )
-_SIZE_UNIT = r"(?:ML|L|LTR|LITRE|LITER|CL|G|GM|GR|KG|MG|OZ|LB|LBS)"
 _UOM = rf"(?:{_QUANTITY_UOM}|{_SIZE_UNIT})"
 _SIZE_TOKEN = rf"\d+(?:[.,]\d+)?\s*{_SIZE_UNIT}"
 _PACK_SIZE_TOKEN = rf"(?:\d+\s*[xX×]\s*)?{_SIZE_TOKEN}"
