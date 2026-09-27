@@ -2317,7 +2317,14 @@ class InvoiceService:
             from . import extraction, matching
 
             limits = extraction_limits(self.settings)
-            extracted = extraction.extract_document(source_path, filename, limits=limits)
+            extracted = dict(
+                extraction.extract_document(source_path, filename, limits=limits)
+            )
+            # A plain printed rate with no gross/tax-inclusive indication is
+            # the net unit cost the target workbook needs.
+            extracted["lines"] = extraction.resolve_net_unit_prices(
+                extracted.get("lines") or []
+            )
             supplier_name = original_supplier_name or extracted.get("supplier_name")
             with self.db.connection() as conn:
                 resolution = self._resolve_supplier(

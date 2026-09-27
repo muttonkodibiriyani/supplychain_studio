@@ -318,6 +318,137 @@ class ExtractionTests(unittest.TestCase):
         self.assertTrue(all(len(line["source_adjustments"]) == 1 for line in result["lines"]))
         self.assertTrue(all(line["paired_source_line_count"] == 2 for line in result["lines"]))
 
+    def _extract_text_rows(self, header: str, rows: list[str]) -> list[dict]:
+        content = (
+            "Supplier name: Fictional Text Supplier\n"
+            "Invoice number: SIZE-TOKEN-1\n"
+            "Invoice date: 2026-09-24\n"
+            "Currency: AED\n\n"
+            + header
+            + "\n"
+            + "\n".join(rows)
+            + "\n\nSubtotal 0.00\nTotal 0.00\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invoice.txt"
+            path.write_text(content, encoding="utf-8")
+            return extract_document(path)["lines"]
+
+    def test_pack_size_tokens_stay_in_description_with_uom_column(self) -> None:
+        rows = [
+            "Fictional Widget 250ml 2 EA 10.00 20.00",
+            "Fictional Cream 500g 3 PCS 4.50 13.50",
+            "Fictional Tonic 1.5L 6 BTL 2.25 13.50",
+            "Fictional Water 12x250ml 4 CTN 12.00 48.00",
+            "Fictional Cola 24x330ML 1 CASE 30.00 30.00",
+            "Fictional Serum 100 ml 5 EA 8.00 40.00",
+        ]
+        lines = self._extract_text_rows(
+            "Item Description Qty UOM Unit Price Amount", rows
+        )
+
+        self.assertEqual(
+            [line["description"] for line in lines],
+            [
+                "Fictional Widget 250ml",
+                "Fictional Cream 500g",
+                "Fictional Tonic 1.5L",
+                "Fictional Water 12x250ml",
+                "Fictional Cola 24x330ML",
+                "Fictional Serum 100 ml",
+            ],
+        )
+        self.assertEqual(
+            [line["quantity"] for line in lines], [2.0, 3.0, 6.0, 4.0, 1.0, 5.0]
+        )
+        self.assertEqual(
+            [line["uom"] for line in lines], ["EA", "PCS", "BTL", "CTN", "CASE", "EA"]
+        )
+        self.assertEqual(
+            [line["unit_price"] for line in lines], [10.0, 4.5, 2.25, 12.0, 30.0, 8.0]
+        )
+        self.assertEqual(
+            [line["line_total"] for line in lines], [20.0, 13.5, 13.5, 48.0, 30.0, 40.0]
+        )
+        self.assertTrue(all(line["extraction_method"] == "layout_header" for line in lines))
+
+    def test_pack_size_tokens_stay_in_description_without_uom_column(self) -> None:
+        rows = [
+            "Fictional Widget 250ml 2 10.00 20.00",
+            "Fictional Cream 500g 3 4.50 13.50",
+            "Fictional Tonic 1.5L 6 2.25 13.50",
+            "Fictional Water 12x250ml 4 12.00 48.00",
+        ]
+        lines = self._extract_text_rows("Description Qty Unit Price Amount", rows)
+
+        self.assertEqual(
+            [line["description"] for line in lines],
+            [
+                "Fictional Widget 250ml",
+                "Fictional Cream 500g",
+                "Fictional Tonic 1.5L",
+                "Fictional Water 12x250ml",
+            ],
+        )
+        self.assertEqual([line["quantity"] for line in lines], [2.0, 3.0, 6.0, 4.0])
+        self.assertEqual([line["uom"] for line in lines], [None, None, None, None])
+        self.assertEqual([line["unit_price"] for line in lines], [10.0, 4.5, 2.25, 12.0])
+
+    def test_weight_quantity_with_separate_uom_column_is_still_a_quantity(self) -> None:
+        lines = self._extract_text_rows(
+            "Item Description Qty UOM Unit Price Amount",
+            ["Fictional Loose Beans 2 KG 15.00 30.00"],
+        )
+
+        self.assertEqual(lines[0]["description"], "Fictional Loose Beans")
+        self.assertEqual(lines[0]["quantity"], 2.0)
+        self.assertEqual(lines[0]["uom"], "KG")
+        self.assertEqual(lines[0]["unit_price"], 15.0)
+        self.assertEqual(lines[0]["line_total"], 30.0)
+        self.assertEqual(lines[0]["extraction_method"], "layout_header")
+
+    def test_glued_size_token_alone_is_not_a_quantity(self) -> None:
+        from backend.extraction import _parse_quantity_cell
+
+        self.assertEqual(_parse_quantity_cell("250ml"), (None, None))
+        self.assertEqual(_parse_quantity_cell("1.5L"), (None, None))
+        self.assertEqual(_parse_quantity_cell("12x250ml"), (None, None))
+        self.assertEqual(_parse_quantity_cell("2 KG"), (2.0, "KG"))
+        self.assertEqual(_parse_quantity_cell("3 EA"), (3.0, "EA"))
+        self.assertEqual(_parse_quantity_cell("4EA"), (4.0, "EA"))
+        self.assertEqual(_parse_quantity_cell("7"), (7.0, None))
+
+    def test_plain_printed_rate_resolves_to_net_unit_price_for_costing(self) -> None:
+        from backend.extraction import resolve_net_unit_prices
+
+        lines = self._extract_text_rows(
+            "Item Description Qty UOM Unit Price Amount",
+            ["Fictional Widget 250ml 2 EA 10.00 20.00"],
+        )
+        self.assertIsNone(lines[0]["net_unit_price"])
+        self.assertEqual(lines[0]["derived_fields"], [])
+
+        resolved = resolve_net_unit_prices(lines)
+
+        self.assertEqual(resolved[0]["net_unit_price"], 10.0)
+        self.assertEqual(resolved[0]["unit_price"], 10.0)
+        self.assertEqual(resolved[0]["unit_price_basis"], "net")
+        self.assertEqual(
+            resolved[0]["unit_price_source"],
+            "printed_unit_price_without_tax_inclusive_indication",
+        )
+        self.assertEqual(resolved[0]["derived_fields"], ["net_unit_price"])
+        # The extraction output itself is left untouched.
+        self.assertIsNone(lines[0]["net_unit_price"])
+
+        gross = resolve_net_unit_prices(
+            [{"unit_price": 10.5, "gross_unit_price": 10.5, "net_unit_price": None,
+              "printed_unit_price_basis": "gross", "unit_price_basis": "gross",
+              "line_total_basis": None, "derived_fields": []}]
+        )
+        self.assertIsNone(gross[0]["net_unit_price"])
+        self.assertEqual(gross[0]["derived_fields"], [])
+
     def test_missing_values_are_not_calculated_or_invented(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "partial.txt"

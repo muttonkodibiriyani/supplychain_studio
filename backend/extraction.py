@@ -3064,7 +3064,14 @@ def _parse_quantity_cell(value: Any) -> tuple[float | None, str | None]:
             re.I,
         )
     if not match:
+        if re.fullmatch(_PACK_SIZE_TOKEN, candidate, re.I):
+            return None, None
         return _parse_layout_number(candidate), None
+    if _is_size_unit(match.group("uom")) and not re.search(r"\d\s+[A-Za-z]", candidate):
+        # "250ml" alone is a pack size that spilled out of the description,
+        # not a quantity of 250 millilitres.  A spaced "2 KG" is still read
+        # as a printed quantity with its unit.
+        return None, None
     return _parse_number(match.group("number")), _clean_uom(match.group("uom"))
 
 
@@ -3150,7 +3157,26 @@ def _extract_legacy_lines(text: str) -> list[dict[str, Any]]:
 
 _NUM = r"-?\(?\d[\d,.']*\)?"
 _MONEY = rf"(?:[A-Z]{{3}}\s*)?{_NUM}(?:\s*[A-Z]{{3}})?"
-_UOM = r"(?:EA|EACH|PC|PCS|PIECE|UNIT|PK|PACK|BOX|CASE|CTN|CARTON|BTL|BOTTLE|ML|L|G|KG)"
+# Quantity units describe how many of an item were supplied.  Pack-size
+# units (250ml, 500g, 1.5L) describe the item itself and belong to the
+# description; a size unit glued to a number is never a quantity on its own.
+_QUANTITY_UOM = (
+    r"(?:EA|EACH|PC|PCS|PIECE|PIECES|UNIT|UNITS|PK|PKG|PACK|PACKS|BX|BOX|CS|CASE|"
+    r"CTN|CARTON|CARTONS|BTL|BOTTLE|BOTTLES|DZ|DOZ|DOZEN|SET|SETS|ROLL|ROLLS|BAG|BAGS|TUB|TUBS|JAR|JARS|TIN|TINS|CAN|CANS|SACHET|SACHETS|TRAY|TRAYS|PAIR|PAIRS|NOS?)"
+)
+_UOM = rf"(?:{_QUANTITY_UOM}|{_SIZE_UNIT})"
+_SIZE_TOKEN = rf"\d+(?:[.,]\d+)?\s*{_SIZE_UNIT}"
+_PACK_SIZE_TOKEN = rf"(?:\d+\s*[xX×]\s*)?{_SIZE_TOKEN}"
+
+
+def _is_quantity_uom(value: Any) -> bool:
+    cleaned = _clean_uom(value)
+    return bool(cleaned and re.fullmatch(_QUANTITY_UOM, cleaned, re.I))
+
+
+def _is_size_unit(value: Any) -> bool:
+    cleaned = _clean_uom(value)
+    return bool(cleaned and re.fullmatch(_SIZE_UNIT, cleaned, re.I))
 
 
 def _parse_line_candidate(line: str, *, in_table: bool) -> dict[str, Any] | None:
@@ -3355,6 +3381,44 @@ def _is_summary_label(value: str) -> bool:
             normalized,
         )
     )
+
+
+_NET_UNIT_PRICE_ASSUMPTION_SOURCE = "printed_unit_price_without_tax_inclusive_indication"
+
+
+def resolve_net_unit_prices(lines: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Carry a usable net unit price on every line that printed a plain rate.
+
+    Extraction records exactly what the document says: a "Unit Price" column
+    has basis ``unit`` and no net price is asserted.  Downstream costing needs
+    a net unit price, so when the document gives no gross or tax-inclusive
+    indication the printed rate is treated as net.  The derivation is recorded
+    in ``derived_fields`` and ``unit_price_source`` so it stays auditable.
+    Lines that already carry a net price, or that printed a gross rate, are
+    returned unchanged.
+    """
+
+    resolved: list[dict[str, Any]] = []
+    for source in lines:
+        line = dict(source)
+        unit_price = line.get("unit_price")
+        if (
+            line.get("net_unit_price") is None
+            and unit_price is not None
+            and line.get("gross_unit_price") is None
+            and line.get("printed_unit_price_basis") not in {"gross", "pre_discount"}
+            and line.get("unit_price_basis") not in {"gross", "pre_discount"}
+            and line.get("line_total_basis") != "gross"
+        ):
+            line["net_unit_price"] = unit_price
+            line["unit_price_basis"] = "net"
+            line["unit_price_source"] = _NET_UNIT_PRICE_ASSUMPTION_SOURCE
+            derived = [str(field) for field in (line.get("derived_fields") or [])]
+            if "net_unit_price" not in derived:
+                derived.append("net_unit_price")
+            line["derived_fields"] = derived
+        resolved.append(line)
+    return resolved
 
 
 def _line_id(index: int, line: Mapping[str, Any]) -> str:
