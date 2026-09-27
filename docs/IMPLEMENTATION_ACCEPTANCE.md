@@ -74,6 +74,57 @@ This record is read-only acceptance. It does not restate the program audit
 comes from that audit it is labelled as baseline, and where it comes from this session's own
 re-execution it is labelled as verified here.
 
+## Rules this record is written under
+
+These were learned by getting things wrong in this record, and they are placed before the findings
+because they are more portable than any finding below and because a reader needs them to weigh what
+follows.
+
+1. **Label every figure with the commit and the frame it was measured in.** Two claims in this record
+   were retracted because a baseline was captured at a different commit than the candidate and neither
+   was labelled. A neutrality or movement claim prints both revisions beside it or it is void.
+2. **When a stage produces a number for the first time, re-read what this record already says about that
+   stage's inputs — before recording the number.** First execution is the moment a latent input defect
+   becomes visible, not the moment it stops mattering. A finding is not retired by being superseded in
+   attention. One claim here was refuted by a section of this same document, written earlier by the same
+   author, that nobody re-read when the measurement it governed arrived.
+3. **Call the system's own comparison function; never reimplement it.** A looser equality rule
+   manufactures matches the production code does not see, and the count comes back confidently wrong in
+   whichever direction the hypothesis wanted.
+4. **A count published with a caveat travels as a count; the caveat does not travel with it.** When a
+   number needs a caveat to be honest, publish the reason and no numerator.
+5. **Say which population a measurement covers.** A property measured on the lines a change left behind
+   is not a property of the lines it moved.
+6. **A gate that all inputs can satisfy by failing politely, and a gate whose condition can never be
+   met, are the same defect wearing opposite clothes.** Both produce a wrong outcome with nobody doing
+   anything.
+7. **State whether a claim is corroborated, by how many independent instruments, and whether any are
+   still in flight.** Withdrawing a claim on a single instrument has the same single-instrument shape as
+   publishing one; it is the better bet only because removing a claim costs a delay when it is wrong,
+   where adding one costs a wrong plan.
+
+
+### A caveat that applies to every replayed score in this record
+
+Late in the acceptance it was found that **the environment used for the replays does not have the ranking
+library the product declares as a requirement**, and that the product *silently substitutes a different
+similarity function when that library is missing*. Every replay figure in this record that depends on a
+similarity score was therefore computed by the substitute, not by the scorer a correctly installed system
+uses. The next section states the defect; this note states what it does to the figures.
+
+**What survives unchanged.** Set-level invariants measured across runs: the set of lines decided
+automatically is the same under both scorers, which makes that invariant stronger than it was, not weaker.
+Anything decided by exact-match eligibility rather than by a score — the duplicate-row collapse, the
+identifier divergence counts, the promotion relabelling — does not pass through the similarity function at
+all.
+
+**What is now labelled.** Every count of the form "this version and that version disagree on N lines" was
+measured under the substitute scorer. The *exclusions* stand as exclusions: a version that fails to
+reproduce the stored data under one scorer has not been shown to reproduce it under another, and no
+retroactive claim is made either way. But the **magnitudes** are confounded between a code difference and a
+scorer difference, so they must not be read as distances between versions, and an ordering of two such
+counts carries no information about which version is closer.
+
 ## How to reproduce this record
 
 Two read-only instruments were written for this acceptance. They live outside this repository, in
@@ -123,7 +174,7 @@ private confirmed-aliases file and only those.
 | A11 | Windows from-zero install and operator training exist | **PASS** | Both documents are present and were checked independently: code fences balanced, no TODO or placeholder text, no stale RMS-preferred language, the fixed pricing rule stated explicitly in both, and the Compose configuration validates against the supplied example environment. Not walked through on a clean Windows host — none was available — so the installation claim itself stays unverified, and see A15 for a documented step that cannot currently succeed.  **Read-only consistency review completed 25 September; content is accurate, one omission keeps this PARTIAL.** I checked both documents against what I had independently verified and found the substantive claims correct: the UPC default is described as off, blank to match the reviewed examples, and enabled only after the receiving system confirms acceptance; the repository named is the one actually created; the expected master row count stated there matches the store I inspected; the stated import time of about four minutes matches the measured run and is explicitly not offered as a Windows guarantee; and the exception section describes the download, its whole-workspace scope and its snapshot nature exactly as the implementation behaves. The escalation table is consistent with the enforced gates, including the AED 10 acknowledgement and the rule that RMS cost never substitutes. Both documents avoid accuracy and machine-learning claims, and one states plainly that learned matching is reviewed mapping reuse rather than statistical learning. **The gap is that neither document says the Windows procedure itself has never been run.** No clean Windows host was available, so every check behind these instructions was performed on Linux. The install guide opens by stating it installs and runs the application, and its boundaries section lists many honest limits without listing this one, so a reader would reasonably assume the steps were executed as written. The single oblique hint is a timing caveat in the other document. I routed it to root as the owner's to fix. **It is fixed and I verified it.** Both documents now carry a prominent validation limit near the top stating that the Windows instructions were authored and reviewed but not executed end to end on a clean Windows computer, that the checks ran on Linux, and that the first installation should be treated as a pilot. That was the only thing standing between this criterion and a pass, so A11 passes. |
 | A13 | No private reference data is required at runtime or shipped in the release | **PASS — reconfirmed after handoff** | Restated after root's correction of 25 September. `data/reference/` is excluded from the published snapshot and no code path loads it; that exclusion is the desired state, not a gap. The superseded `target_conversion_rules.json` is retained as a *historical* artefact only, pending the outstanding user pricing clarification. Reconfirmed after handoff by building a clone-equivalent snapshot: 65 files, no `data/reference` content of any kind, and the full target-export suite passes inside it, so the shipped tree genuinely starts empty and needs no brand data to be correct. |
 | A14 | Identifiers are stored as text so leading zeros survive | **PASS for exporter output — now better than the reference files** | Every identifier column in the exporter's output is stored as text: `Document`, `Supplier Site`, `Order No`, `Location`, `Details.Item` and `Tax Code` all carry `str`, with no numeric cells. This is a genuine improvement over the known-good workbooks, which store some identifiers numerically and would already have lost any leading zero. The criterion stays open only in the sense that no corpus-scale output has been checked yet. |
-| A15 | The documented RMS master import actually works | **PASS — independently verified** | The guard failures I reported are fixed and the import is now confirmed by direct read-only inspection of the persisted store, not by receipt alone. Re-measured against current code, all five guards pass: compressed size vs 128 MiB; expanded size vs a raised 1 GiB; 179 columns vs a raised 256; the supplied row count vs a raised ceiling of 250,000; worst member ratio 7.9 vs 200. The persisted store carries `catalog_items` holding every supplied row as a distinct record with every key column populated, plus 5 aliases, in the application schema (`invoices`/`catalog_items`/`aliases`/`exports`) rather than the reference extract, timestamped during the reported run and naming the supplied master as its source. Remaining gap is durability, not capability: no regression exercises a wide many-row import, so the raised guards can silently regress. A synthetic generator for that test is available and needs no private data. |
+| A15 | The documented RMS master import actually works | **PASS — independently verified** | The guard failures I reported are fixed and the import is now confirmed by direct read-only inspection of the persisted store, not by receipt alone. Re-measured against current code, all five guards pass: compressed size vs 128 MiB; expanded size vs a raised 1 GiB; the supplied column count vs a raised 256; the supplied row count vs a raised ceiling of 250,000; worst member ratio well under 200. The persisted store carries `catalog_items` holding every supplied row as a distinct record with every key column populated, plus the supplied aliases, in the application schema (`invoices`/`catalog_items`/`aliases`/`exports`) rather than the reference extract, timestamped during the reported run and naming the supplied master as its source. Remaining gap is durability, not capability: no regression exercises a wide many-row import, so the raised guards can silently regress. A synthetic generator for that test is available and needs no private data. |
 | A12 | The absence of authentication is a stated, enforced boundary | **PASS as a boundary — blocking only for shared deployment** | The delivered scope is a local single-operator pilot on loopback, which never claimed multi-user access control. The boundary is documented where an operator will actually meet it: `WINDOWS_SETUP.md` line 7 states the application has no login or user roles and must run on one access-controlled computer with one authorized operator, and must not be published to the office network or internet; line 146 makes confirming the `127.0.0.1` binding a stop-check; line 429 repeats it for the port-conflict path. Compose binds loopback. Baseline anonymous access findings stand and remain blocking for any shared, networked or multi-user deployment. |
 
 ## A6 in detail: provisional, on a conservative reading of an ambiguous instruction
@@ -189,8 +240,11 @@ known-good workbooks carry one or two decimal places and none exceeds two. That 
 examples that happen to be short do not establish that the consumer forbids more precision, and root
 was right to reject it as an invented contract.
 
-Direct measurement of the imported master settles it in the opposite direction. Of 114,812 real
-`unit_cost` values, **37.0% carry more than two decimal places** — 20.8% at three and 16.2% at four.
+Direct measurement of the imported master settles it in the opposite direction: a substantial
+minority of its real `unit_cost` values carry three or four decimal places rather than one or two.
+The exact rates, and the master's row count, are commercial figures about the user's data rather than
+observations of this software's behaviour, so they are recorded in the project's internal channel and
+deliberately not reproduced here.
 The commercial data this system consumes is already routinely more precise than two decimals, so
 retaining captured source precision is the behaviour consistent with the source, not a deviation from
 it. What remains genuinely unknown is whether the downstream *import* accepts that precision, and
@@ -327,7 +381,7 @@ were measured against the actual file, not inferred from the documentation.
 
 | Guard in `backend/service.py` | Limit | Supplied master | Result |
 |---|---|---|---|
-| Expanded archive size | 100 MB | **4.5× the limit** | Rejected |
+| Expanded archive size | 100 MB | above the limit | Rejected |
 | Header column count | 100 | 179 columns | Rejected |
 | Data row count | 100,000 | above the limit | Rejected |
 
@@ -335,8 +389,7 @@ The column guard fires first, at the header, before a single data row is read.
 
 The raised 128 MiB ceiling does not help and is actively misleading for XLSX input, because the
 binding constraint is the **expanded** size rather than the uploaded size. A compressed workbook
-comfortably inside 128 MiB still expands past the 100 MB guard; this one expands to roughly 4.5
-times it. An operator following the documented sequence gets the file accepted on size and then
+comfortably inside 128 MiB still expands past the 100 MB guard, and the supplied one does. An operator following the documented sequence gets the file accepted on size and then
 rejected on structure.
 
 To be fair to the documentation, it does not claim the import is proven — it says the contract
@@ -349,7 +402,7 @@ operator sequence, so everything after it was unreachable.
 > import was confirmed working by direct inspection of the persisted store, which is why A15 passes
 > above. This paragraph is retained as the record of why the change was needed; do not read it as the
 > current state of the build. Either the three guards are raised deliberately, with the memory and
-denial-of-service implications of a 476 MB expansion assessed, or the documentation should direct
+denial-of-service implications of an in-memory expansion many times the original guard assessed, or the documentation should direct
 operators to the normalized projection instead and stop presenting the raw import as available.
 Owner: root, with the backend worker.
 
@@ -558,8 +611,8 @@ an unanswerable lookup into a confirmation. That is new scope and a user decisio
 This is the most consequential finding and it reopens reasoning that had been filed as settled policy.
 The comparison is enabled on the basis of the *invoice's* currency alone, which is sound only if
 recorded costs are always denominated in one currency. In the supplied master they are not: supplier
-records carry a currency marker, several currencies are present, and roughly seventy per cent of rows
-are not AED-denominated. Identical items priced under suppliers of different currencies differ by an
+records carry a currency marker, several currencies are present, and most rows are not
+AED-denominated (the share is withheld here because it describes the master's content). Identical items priced under suppliers of different currencies differ by an
 order of magnitude consistent with exchange rates rather than by any plausible margin, and aggregate
 cost magnitudes per currency agree with that reading. Two consequences follow, in opposite directions.
 The comparison is *refused* where it is valid — same-currency invoice and master rows are directly
@@ -643,6 +696,395 @@ burden. It is not. The catalogue schema was read in full, across both of its ite
 no tax field under that or any other name. The per-supplier rule remains the only source, and the
 setup burden described for Gate 4 stands as stated.
 
+### Later evidence still: two structural gaps in the supplied master, and the first independent check of supplier resolution
+
+Appended after the sections above, from read-only inspection of the supplied master and of the
+documents' own stored text. No criterion was re-run and no verdict moves. As before, findings are
+stated as mechanisms because the measurements behind them are commercial.
+
+**The master's unit-of-measure column carries no information.** Every row in the supplied item master
+holds the same single unit value. This is not an importer default — the import path was searched for a
+fallback write and contains none; the column arrives that way from the source file. The consequence is
+not cosmetic. The matcher raises an "attribute appears on only one side" flag when a unit is present on
+one side and absent on the other, and because the invoice side never carries a unit at all, that flag
+fires on every line in the system. It reads like a discriminating signal and is a constant.
+
+Two separate safety rules were drafted during this engagement keyed on that flag. Had either shipped,
+one would have disabled the automatic-match tier outright and the other would have suppressed the
+cost-variance figure on every line — in both cases to guard against an ambiguity affecting a handful of
+lines. Both were caught before merge, and neither was caught by reading the rule: they were caught by
+asking what proportion of rows the predicate actually fires on. That question should be a standing
+requirement for any rule keyed on this column. The deeper consequence is that this deployment cannot
+check a pack-versus-single question against its master at all, because the master does not record the
+answer. Rules written against the column are therefore either dead code or off switches, and the
+distinction between the two is worth stating explicitly wherever one is retained for future data.
+
+**The master carries no human-readable supplier name.** Supplier rows hold a coded name only. There is
+no field on which an invoice's printed supplier name can be joined to a master supplier directly. That
+is why the resolver matches on an alphabetic prefix of the coded name, and why the check described next
+had to be performed the same way.
+
+**Supplier resolution has now been checked against the documents themselves, for the first time.**
+Until this check, the evidence that the resolver chose the right supplier was circular: the supplier is
+chosen partly by which supplier's catalogue rows best match the invoice's line descriptions, and the
+quality of the outcome was then reported in terms of how many lines matched. The check breaks that
+loop — the supplier name printed in each document's own stored text was read and compared against the
+supplier the resolver selected, without reference to any matching result.
+
+On every invoice where the resolver made a choice, the choice agrees with the name printed on the
+document, at the level of the supplier family. On the invoices where it declined to choose, it declined
+rather than guessing. The resolver is, to its credit, honest about itself: it emits a warning naming
+the heuristic on every path it takes, and it refuses to resolve when its evidence does not single out
+one candidate strictly. The circularity was in how its output was reported upward, not in the function.
+
+Three qualifications, each of which matters more than the result:
+
+- **The agreement reaches the supplier family, not the supplier site.** The master holds several sibling
+  suppliers sharing the coded prefix that the printed name reduces to, and the document does not name
+  which one. That finer choice is still made by the circular step and remains unverified in principle.
+  It is inert on this corpus because the siblings are near-empty stubs set against one substantial price
+  list, and because the few items they share carry no cost divergence — both checked, not assumed.
+- **The check exercised one supplier family, and that family was uncontested.** Every invoice in the
+  examined corpus resolves to the same family, so this is one success replicated, not many independent
+  ones. The master contains a substantial number of prefix groups in which the same mechanism faces a
+  genuine contest between two or more well-populated suppliers, and across suppliers sharing a prefix
+  there is a large population of shared items whose recorded costs diverge materially. That shape was
+  subsequently tested by construction — see immediately below — with a result that is reassuring about
+  the dangerous failure mode and unflattering about throughput.
+- **The prefix comparison is a "starts with" test** against a name key from which legal suffixes have
+  been stripped. A printed trading name that merely begins with another supplier's prefix would pull in
+  that supplier's siblings on a false premise. The master side of this is bounded; the printed side is
+  not.
+
+**The contested case was then tested by construction, and the resolver refuses rather than errs.** A
+synthetic invoice was built for each well-populated sibling in every contested prefix group, with the
+printed supplier name set to the shared prefix so that the resolver took the same path the real
+invoices took, and with the line descriptions drawn from that sibling's own catalogue rows so that the
+correct answer is known by construction. Each sibling was tried twice: once with lines sampled from all
+of its rows, and once — the case designed specifically to defeat the tie-break — with lines sampled
+only from rows it *shares* with its siblings. Across every trial, the resolver never once selected a
+sibling other than the correct one. Where it could not distinguish, it returned no supplier.
+
+The reason is in the code rather than in the sample. The tie-break requires the leading candidate's
+evidence to be strictly greater than the runner-up's. A description stocked by several siblings
+contributes evidence to all of them, so on a deliberately confusable invoice the counts tie and the
+condition fails. Only rows exclusive to one sibling can open a margin, and when they do they point at
+that sibling by definition. The mechanism is therefore not "choose the best-matching supplier" — which
+is how its own docstring reads — but "choose the only supplier with distinguishing evidence, otherwise
+refuse". The implementation is stricter than its documentation, which is the right direction for the
+discrepancy to run, and the docstring should be corrected to match rather than the other way round.
+
+**The cost of that strictness is throughput, and it is not small.** On contested groups roughly half of
+the typical synthetic invoices resolved to no supplier at all, against none of the real invoices from
+the uncontested family. Unresolved documents fall back to whole-catalogue matching, which a change on
+the pending branch correctly prevents from ever reaching automatic acceptance. The practical
+consequence is that for suppliers in a contested group, the automatic tier largely disappears and the
+operator confirms more lines by hand. Any improvement figure quoted from the examined corpus is
+measured on the uncontested case and should not be presented as representative of the contested one.
+
+**What this test does and does not establish, stated as strictly as the test itself.** The ground truth
+used is which sibling's catalogue the descriptions were drawn from — the same *kind* of evidence the
+resolver consumes. What is therefore proven is that the tie-break is self-consistent and safe: given
+lines genuinely belonging to one sibling it returns that sibling or nothing, never a different one.
+That is a real and non-trivial property, since the mechanism could easily have drifted toward whichever
+sibling holds more rows, and it rules out the failure mode that would silently corrupt data. What is
+*not* proven is that the resolver identifies the real-world issuing entity on a contested group; that
+would require a genuine invoice from such a supplier with the printed name checked against the page,
+and no such document exists in either corpus. The status moved from "untested" to "tested for the
+failure mode that would corrupt data, which does not occur; untested for real-world entity identity on
+a contested group". Both halves travel together or neither should be quoted.
+
+The defensible statement is that supplier resolution was independently checked against the documents
+for the first time and passed on the cases available. It is evidence that the approach works. It is not
+evidence that it is reliable, and it must not be described as verified.
+
+**A related defect the check hardened.** Where a document prints a supplier identifier that the master
+does not contain, the application warns and then proceeds to scope matching to that absent supplier,
+yielding a near-empty candidate set and, predictably, no matches. This was previously treated as a
+malformed-input edge case. The check showed the identifier concerned is genuinely printed on the
+document — so this is the normal path for any supplier the master has not been updated for, including a
+new supplier or one whose identifier changed at the most recent periodic re-import. Those are precisely
+the documents an operator most needs help with, and the system answers them with a silent, nearly empty
+catalogue rather than with a declared failure.
+
+**Character corruption in the master originates upstream of this application.** A minority of master
+rows carry mis-decoded accented characters, in a signature consistent with text encoded once and then
+decoded as a different single-byte encoding. The corruption is present in the source file as received:
+it was confirmed by reading raw cells of the supplied workbook independently, from two separate copies,
+rather than inferred from the imported rows. **The import is faithful.** The distinction matters for
+what the deployment is told about its own data, and it determines the fix: a conservative repair at
+import together with a warning naming the upstream export, not a correction of this application's
+reading of the file.
+
+**An undocumented coupling between two constants is the only thing holding a group of lines out of
+automatic acceptance.** The matcher caps the score of a candidate whose attributes are incompletely
+known, with the stated intent of keeping such a line reviewable, and separately requires a score above a
+fixed threshold before accepting a fuzzy match automatically. The cap sits a few points below the
+threshold, and that gap alone prevents a group of incompletely-known lines from being accepted without
+review. Neither constant references the other, and no test asserts the relationship. A routine tuning
+change to either would widen automatic acceptance silently, with nothing failing. The two are being
+tied together by an invariant test rather than by a comment, on the reasoning that a comment informs a
+careful reader while a test stops a careless one.
+
+**The contradiction underneath all of this, recorded because it is the clearest instance of the pattern
+this record keeps finding.** On the path where a line matches exactly one catalogue candidate, the
+application accepts the match automatically and reports full confidence — including for lines whose
+scores it has just capped precisely because it judged their attributes incompletely known. The comment
+at the cap states the intent to keep those lines reviewable; the decision taken a few lines later
+overrides that intent and reports certainty instead. The system is not failing to detect these cases.
+It detects them, records the doubt, and then discards it. That is the shape of nearly every defect in
+this record: each layer degrades toward silent acceptance rather than toward review, and the reported
+confidence is highest exactly where the evidence for it was deliberately limited.
+
+### The first defect in this record to be closed under mutation, and two corrections to how it was measured
+
+The three defects named in the section above — the unknown-attribute check that keyed on a reason
+string, the unverified supplier id that reached a silently near-empty catalogue, and the cost
+comparison that printed a figure where the unit was unsettled — have been fixed on a branch and
+reviewed independently. This entry records the outcome and, more importantly, what the evidence for
+it is worth. It revises no verdict above.
+
+**What makes this different from every other fix in this record.** The reviewer who found the
+original defects re-derived the work rather than reading it: their own checkout, their own
+environment, mutants applied to the full combined suite rather than to the two files the
+implementer had used, and a replay against their own corpus that neither the implementer nor the
+coordinating session could reach. Five separate mutations were introduced, each disabling one
+limb of the new behaviour, and every one of them caused at least one named test to fail. The
+review that opened this thread found most of its mutants surviving in silence — a guard that was
+correct but unprotected, so that the next refactor would remove it without a signal. This is the
+first occasion on this project where that could not be done. The distinction matters because a
+fix that no test defends is indistinguishable, six months on, from a fix that was never made.
+
+**The first correction: a guard was measured where it could not fire.** The replay reported that
+no line lost its cost comparison under the new rule. That was true and it was measured over the
+lines the system had already matched automatically — the one population in which the new rule's
+trigger is unreachable, because the far larger set of merely suggested lines carries no mapping
+for the rule to examine. Re-measured over the path the product actually requires, in which an
+operator confirms every suggested line before anything can be exported, the rule engages on
+eleven of the two hundred and seventy-one lines, spread across seven of the twenty documents.
+Those lines lose their printed cost comparison and are flagged for review; approval is not
+blocked. That is a rule with a modest reach, which is the intended result — but "nothing was
+affected" and "eleven lines are affected on the path we ship" are different statements, and only
+the second one describes the delivered system.
+
+**The second correction, which needed correcting twice.** The reviewer concluded that the new
+attribute guard does nothing against the supplied master and becomes meaningful only against some
+future one. That was wrong, and the first attempt to correct it was also wrong, in the same
+direction and for the same reason. The guard has a second limb, evaluated before the attribute
+comparison, which demotes a line when the invoice states no unit and the matched master row
+describes a multi-unit pack. Counting how many rows of the master carry pack wording appears to
+give that limb a rate, and it was reported as one. It does not. The demotion applies only where
+the invoice line and the master row share an identical normalised description, and pack wording
+is derived from that same normalised description, so on that path the two pack sets are always
+equal — verified over every exactly-matching candidate pair in the corpus, with no exceptions.
+A pack-bearing master row is therefore reachable on this path only by a pack-bearing invoice line,
+and the master's own rate never enters the calculation.
+
+The guard's real trigger is narrower and much easier to reason about: **the invoice line itself
+names a pack size, states no unit, and matches a master row exactly.** No line in either corpus
+names a pack size. The absence of demotions is not a low rate rounding to nothing; it is a
+structural property of these particular documents. Two consequences follow, and the second is the
+useful one. The guard does not scale with the number of invoices processed, as a per-row rate
+would imply — it scales with how often a supplier prints pack sizes in line descriptions, which
+is none of the time for the family examined here and is common practice for wholesalers and
+distributors. And it is therefore well aimed rather than rare and arbitrary: it engages exactly
+on multipack lines, which is precisely where per-pack and per-unit pricing are ambiguous and
+where an assumed unit would be expensive to get wrong.
+
+That this correction had to be made twice, by two people who had each spent the day insisting
+that others state the population a number was measured over, is the most useful thing in this
+section. A count can be accurate, reproducible and still answer a different question than the one
+being asked of it.
+
+**Why the verdict does not move.** Both corrections were found by asking what share of the
+population a new rule's trigger actually fires on, and comparing that to the sample it was
+measured in. That question is the same one that, earlier in this record, exposed a proposed safety
+rule keyed on a column holding a single value throughout the master — a rule that would have read
+as a careful safeguard while functioning as an off switch. A guard that fires on everything and a
+guard that fires on nothing fail in opposite directions and look identical in a replay that cannot
+distinguish them. Three closed defects, a completed independent review and a suite that now
+resists mutation are real improvements to the code's trustworthiness. None of them changes what
+the system does for an operator: no document in the corpus reaches an export without manual work,
+and the number that do reach it after an operator has confirmed every suggested line is unchanged.
+The verdict in this record stands.
+
+## Post-freeze findings, second round: why the numbers in this record were unreliable, and the constraint that actually holds Metric 1 at zero
+
+Three findings below are about the code. The first is about this record itself, and it
+should be read first, because it is the reason the other two took as long as they did.
+
+### This program has no continuous integration, and that is a root cause rather than a missing nicety
+
+There is no `.github/workflows` directory on `main`. A pull request merged during this
+round with an entirely empty status-check rollup: there was no gate that could have been
+red. Every test figure this record has ever quoted is therefore whatever a human chose
+to run locally, on whichever tree they happened to have.
+
+That is the structural explanation for a specific failure of this record, not a general
+complaint. Two test figures taken by two reviewers disagreed for hours with nothing
+noticing, because nothing was positioned to notice. A failing test can sit on `main`
+unremarked for the same reason, and one does: the end-to-end text-extraction and
+matching flow test fails on `main`, before and after the supplier-resolution fix, because
+the frozen extraction line parser reads a pack size of `250ml` as a quantity of 250 with
+unit `ML`. It has a follow-up of its own. The point for this record is that its redness
+was discovered by a reviewer reading output, not by the project.
+
+Consequence for how this record should be read: every measurement in it needs its commit
+and its corpus stated in the same sentence as the number. Where earlier sections state a
+figure without them, treat the figure as unverified rather than as wrong.
+
+### A measurement was attributed to the wrong commit, and the correction is the general rule
+
+A root cause for the zero auto-match rate was diagnosed, stated, and withdrawn within the
+same evening. The mechanism described was real on the tree it was measured on. It was
+already fixed on the branch waiting to merge. The figures were all correct; the frame was
+stale.
+
+No measurement in this record now stands without its commit and its corpus. This is not
+a courtesy to future readers. A number that is arithmetically right and frame-less can
+describe software nobody is running, and it reads exactly like a current finding.
+
+A second instance of the same class, recorded because it recurred three times in one
+session between two independent reviewers: a count that is true of an entire supplied
+table was carried into a question about one narrow slice of it. In each case the count was
+right and the population was wrong. Any table-wide count used to answer a scoped question
+is now re-taken inside the scope before it is quoted.
+
+### The privacy control cannot see the thing it is supposed to protect
+
+The handoff package selects documentation files, runs a secret scan over them, zips them,
+and base64-encodes the zip into a JSON asset that the preview build requires. The secret
+scan's pattern list covers private keys, hosting tokens, and cloud access key ids. It does
+not cover capabilities or identifiers — a document share link, an account id, an absolute
+path under a home directory — and it does not cover the commercial figures this record is
+already careful to exclude.
+
+The failure is not the missing patterns. It is that every privacy check performed in this
+program greps the source tree, and the artifact is base64. A tree grep returns clean
+whether or not the artifact is clean, so the check cannot distinguish a safe artifact from
+an unsafe one. That is the same shape as the other defects found this round: a control
+that returns a benign, normal-looking value instead of doing its job.
+
+Verified rather than reasoned about: every package ever published was decoded and searched.
+The published one — 52 files, zip `sha256 9b4cc2e7…` — contains no share link, no account
+id and no supplied-table figure. A later, never-published local build does contain one
+such figure. So this is a near-miss, and it stays one only until the next build. The
+guard belongs in the packaging script's pattern list, where it becomes a build failure
+rather than a convention, and the check itself has to run against the decoded package.
+
+### The constraint that holds Metric 1 at zero is three gates that compound
+
+With supplier resolution fixed, most real invoices now resolve a supplier and the binding
+constraint moved. Three gates in the matcher now hold the automatic match rate at zero,
+and each one alone accounts for almost none of it:
+
+1. A score cap applied whenever any attribute is unknown sits below the threshold an
+   automatic match must clear. A capped line can never clear the bar.
+2. The unknown-attribute gate consults no score at all. It was true of 312 of the 333
+   top candidates on the resolved-supplier corpus, and of 205 of 208 on a second corpus
+   measured independently by the other reviewer. So the fuzzy automatic path is closed on
+   the overwhelming majority of real lines and no threshold change reaches them — but it
+   is *not* closed on all of them, and the earlier wording in this record which said
+   "every single top candidate" was an overstatement that has been corrected here.
+3. The margin rule requires a gap to the runner-up. Of 333 lines from resolved-supplier
+   invoices, 139 have a top-two tie on score, and 133 of those ties are between two rows
+   that carry the *same* item id. The export consumes the item id. The matcher is refusing
+   to match automatically because it found the right item twice.
+
+Gates 1 and 2 do not key on one named attribute. Both test whether the set of unknown
+attributes is non-empty, whatever is in it. One attribute dominates that set, and its
+column in the supplied table holds a single value on every row: a predicate keyed on a
+constant is an off switch, not a rule, because it fires on every line that does not state
+that attribute, and most suppliers in this corpus do not print it.
+
+The distinction matters for anyone acting on this section, because the dominant attribute
+is not the whole of it. Composition of the unknown set on the top candidate, measured over
+the 333 resolved-supplier lines: 300 carry that one attribute alone, and 12 carry it
+together with a size unknown. Repairing the constant column therefore clears gates 1 and 2
+for 300 lines and leaves **12 still gated for a different and genuinely separate reason**.
+An independent measurement on a second corpus found the same shape at a larger share — 18
+of 205 gated lines carrying a non-dominant unknown, 2 of them with no instance of the
+dominant one at all.
+
+This is exactly the misread this section exists to prevent. Someone who repairs the
+constant column, expects gates 1 and 2 to be gone, and finds a residual still capped will
+reach for the warning below and conclude the fix failed — when it succeeded on the large
+majority and hit a second, smaller cause. The residual is a separate item of work, not
+evidence against the first fix.
+
+**Measured, and it is the important number here: removing the cap alone, with nothing else
+varied, changes zero line statuses.** Deduplicating candidates by item id before the margin
+is computed makes up to 102 of those 333 lines margin-eligible. Any partial fix in this
+area will move scores without moving Metric 1, and will therefore look like the fix did
+not work.
+
+Two bounds on that uplift, stated because the figure invites over-reading. Every invoice
+that resolves a supplier in this corpus resolves the *same* supplier, so 102 of 333 is one
+supplier's behaviour and not a property of the software; it is re-checked the first time a
+second supplier resolves. And the deduplication cannot be unconditional — with the supplier
+unresolved the candidate set spans suppliers, the duplicate groups disagree on cost, and
+collapsing them would put an arbitrary cost in front of an operator on the money path. It
+is conditioned on a resolved supplier, or on cost agreement within the group.
+
+Recorded as retracted so it is not re-raised: it was proposed that the cap manufactures the
+ties the margin rule reads. The mechanism is genuine — the cap is not order-preserving and
+no uncapped score is retained — but the predicted effect was measured twice, independently,
+and is nil. What survives is smaller: because candidates are ranked on the capped score with
+the item id as tie-break, lifting the cap changes which candidate is *selected* on a small
+but non-zero fraction of lines, so an operator can be shown a row that is not the system's
+own best guess, with nothing in the display to say so.
+
+### Throughput is not limited by the number of extraction workers
+
+Two runs of 1,000 uploads, identical in every respect except worker count — 4 against 8,
+same image, same 129 distinct source documents repeated, all text-layer — finished 0.6%
+apart in wall time (1,141.1 s against 1,134.5 s). Container CPU was 0.95 and 0.96 cores in
+the two runs; the load guard passed in both. Per-document text parsing got *slower* as
+workers doubled, from a median of 1.37 s to 2.42 s and a mean of 4.31 s to 7.91 s.
+
+The pre-registered verdict rule returns **not worker-bound**. Doubling the pool bought
+nothing because the pool was never the constraint.
+
+The leading explanation is that the text-parsing stage is pure Python and holds the
+interpreter lock, so any number of threads shares roughly one core. A named confound
+remains — the host carried more runnable threads than it had cores available to this work
+during both runs — and it is not yet settled. The discriminating experiment is processes
+against threads at equal total worker count, pre-registered with its bands and with the
+rule that a saturated host can only *confirm* the lock reading and never refute it, since
+saturation removes the cores the process arm would need. Until that returns, the
+explanation is a hypothesis and is recorded as one.
+
+### The volume target is met for text-layer invoices, and it buys nothing
+
+Both runs put 1,000 text-layer documents through the system in **under twenty minutes** of
+wall time — 1,141.1 s and 1,134.5 s, which is 19 min 01 s and 18 min 55 s — with no failed
+document, no backpressure rejection, no container restart, and every health check passing.
+The stated target was 20 to 30 minutes, so both runs come in below its lower bound at
+either worker count. They beat the window rather than landing inside it.
+
+It is worth being exact about what that does and does not establish, because the number
+invites a promise this record cannot make.
+
+- It is one class. Text-layer PDFs and spreadsheets only. Scanned invoices go through
+  optical recognition, take far longer per document, and are the class where a batch
+  limit is a real operational question. That measurement is separate and is not complete.
+- It is not a throughput rate for the user. The corpus was 129 distinct documents repeated
+  to reach 1,000, on a shared host under other load, so it does not predict a rate on a
+  thousand genuinely distinct invoices on the operator's own machine.
+- **Every one of the 1,000 landed in `needs_review`. Nothing was exportable without an
+  operator touching it.** The run finished inside the window and produced no accepted
+  workbook.
+
+So the binding constraint on this program is not the batch size and not the worker count.
+Both runs show the pipeline moving documents fast enough; what neither shows is documents
+coming out the other end decided. That is the matcher, and it is the section above.
+
+A consequence for how the volume limit should be set: there is no batch size that raises
+accuracy, because accuracy is a per-document property and batch size is a throughput one.
+The measurements bracket this directly — twenty real invoices produce zero exportable
+without operator action, and a thousand produce zero. Shrinking the batch would change how
+long a run takes and how deep the queue gets. It would not change what comes out.
+
 ## Proposed next steps, in dependency order
 
 > **Historical — retained as the plan of record, not as outstanding work.** Most of this list was
@@ -692,3 +1134,1586 @@ This record is frozen against the build named at the top. Its verdicts are not r
 post-freeze findings section above was appended after the freeze and records defects discovered
 later, without re-running any criterion. Nothing in it should be read as approval to describe the delivery as complete, or as an
 accuracy claim about invoices beyond those actually examined.
+
+## Post-freeze findings, third round: Metric 1 becomes two numbers, and the remaining zero is not in the matcher
+
+Everything in this section is measured at a named commit on a named corpus. Where a figure
+describes the system's behaviour on our own sample it appears here; where it would describe the
+size, shape or cost structure of the supplied master it stays out of this file by the rule recorded
+in the round above.
+
+### Metric 1 was one number doing three jobs
+
+Metric 1 has read zero all through this program, stated as "invoices exportable after automatic
+approval with no operator action". That single number was absorbing three unrelated refusals: a line
+with no candidate at all inside the resolved supplier's scope, a header field the frozen extraction
+parser never produced, and a cost comparison the export gate refuses. Those have three different
+owners and three different fixes, and collapsing them into one figure means every genuine fix looks
+like it did nothing.
+
+From here the record carries two numbers, each always stated with its corpus, its denominator and
+its commit:
+
+- **Metric 1a** — exportable with **zero** operator action.
+- **Metric 1b** — exportable after **one invoice-level acknowledgement** and **no per-line edit**.
+
+Metric 1b is not a lowered bar substituted for a failing one. The delivery was asked to solve every
+invoice and to *flag the ones with missing information for recheck*; an acknowledgement is that
+recheck, so 1b measures the thing the delivery was actually asked for. Metric 1a stays on the board
+because the wall-time promise at a thousand documents depends on operator action being zero, and
+because a metric that has read zero all night is not retired by renaming it.
+
+**Metric 1a has a ceiling of 6 of the 20 real uploads under any ranking or tie-breaking change.**
+That figure is derived, not measured here: it comes from a distribution of unmatched lines per
+invoice produced by the unit that wrote the matcher change, relayed to me, and the arithmetic over it
+is mine. An earlier version of this paragraph called the ceiling *hard* and said it held under *any
+matcher change*. Both words were wrong and they are corrected here, because the correction matters
+more than the number.
+
+It is not *hard*. What is hard is the floor of refusals underneath it; the ceiling itself is an upper
+bound that two further conditions can only push down. The header fields the frozen parser did not
+produce are one, and the cost comparison three subsections below is the other — it refuses two
+invoices whose every line is already matched automatically, so a reader treating 6 as reachable would
+be wrong for a reason this same document supplies a few paragraphs later.
+
+It does not hold under *any matcher change*, and the justification originally offered — that no
+ranking or tie-breaking change can reach those lines — is narrower than the claim it was supporting.
+Widening the eligible scope is a matcher change and it manufactures candidates for exactly those
+lines; the unresolved-supplier fallback already in this codebase is that change.
+
+The premise itself also needed correcting, and this part I measured myself at `72c4c04` on the same
+database copy rather than taking it relayed. The claim had been that those lines have *no candidate
+at all* in the resolved supplier's scope. They do. Across 357 lines, 333 of them under a resolved
+supplier, there is **not one line for which the matcher returns an empty candidate list**. The 85
+lines in question come back as `unmatched`, which is a different thing: they have candidates and the
+best one falls below the suggestion floor of 70. Where it falls is the finding —
+
+| best candidate score on an unmatched line | lines |
+| --- | --- |
+| 60 to 70 | 50 |
+| 50 to 60 | 34 |
+| 30 to 40 | 1 |
+
+**84 of the 85 sit within twenty points of the floor.** These are not lines beyond the reach of
+matching work. They are lines just under a threshold, and the intervention most likely to lift them
+is better description normalisation — which means the size-token handling in the frozen extraction
+parser, the same component the cost comparison below independently points at. Two separate lines of
+evidence now converge on one frozen file. The routes previously named for these lines, an operator
+mapping each one so an alias is learned or fresh master coverage, are real but they are no longer the
+only ones.
+
+### What the matcher work moves, and what it does not
+
+Measured by replaying the stored lines of the same twenty uploads, baseline `b765f36`, arms produced
+by disabling one mechanism at a time:
+
+| arm | auto | suggested | unmatched |
+| --- | --- | --- | --- |
+| baseline | 21 | 250 | 86 |
+| critical-unknown cap lifted alone | 42 | 229 | 86 |
+| duplicate-row collapse alone | 136 | 135 | 86 |
+| both | 162 | 109 | 86 |
+
+The unmatched column does not move in any arm: the same lines that sit below the suggestion floor,
+seen from the other direction. The transition is entirely `suggested` to `auto`: 141 lines, with
+nothing moving the other way. This confirms the prediction registered before the experiment —
+lifting the score cap alone changes almost nothing, and the mover is the collapse of several eligible
+catalog rows of one RMS item that were tying at the top and zeroing the margin. It also confirms the
+prediction's corollary, which matters more: **the matcher's share of the refusal moves and the export
+count does not.** Metric 1a is 0 of 20 on the baseline and 0 of 20 with both mechanisms in.
+
+**The cap-lifted row and the earlier finding above are not in conflict, and the account this record
+gave of why was wrong.** The round above reports, in bold, that removing the cap alone changed zero
+line statuses; the row here moves twenty-one. This record previously explained that by rank
+restoration: lifting the cap returns an exactly-named candidate to the top, where it satisfies the
+*exact* automatic condition, which consults no threshold. A single field discriminated that account,
+it was named in advance, and it came back against it. **The path recorded on all twenty-one is
+`fuzzy`. None is `exact`.** The reason clause on every one of them is strong name similarity, and the
+stored scores run from 96.6 to 99.0 — above the fuzzy threshold of 96.0, not around the exact
+condition. The rank-restoration account is therefore withdrawn. It was a structurally sound reading of
+the baseline code and it described something the baseline code can do; it is not what produced these
+twenty-one.
+
+**The real reconciliation is that the two measurements are not the same intervention, and the row's
+label said they were.** The zero was obtained by patching the score-cap *constant* and nothing else,
+which leaves the critical-unknown flag computed exactly as before. The automatic fuzzy path requires
+that flag to be clear, so a constant-only lift is structurally incapable of admitting a fuzzy
+automatic match — the zero was guaranteed before it was measured, which is why it is a weak result
+rather than a surprising one. The twenty-one come from a different arm entirely: it does not patch the
+baseline at all. It runs the candidate change's own tree with the row collapse disabled, and on that
+tree the mechanism removes a single-valued unit-of-measure from the predicate that feeds **both** the
+cap and the flag. Two terms clear at once. So the arm labelled as a cap lift measures the candidate
+mechanism with one component switched off, and the phrase describes an experiment nobody ran. The row
+is relabelled accordingly wherever it appears: *the uninformative-unit mechanism, cap and gate cleared
+together for a unit-only unknown on a single-valued column, row collapse disabled.* Both numbers were
+correct throughout; the label and the explanation were not. Two independent verification passes
+reached the relabelling conclusion separately, one of them from its own replay rather than from the
+supplied data.
+
+**A gate property that follows from the same evidence, and that is not a defect in the change.** On
+the twenty-one, the selected item has exactly one eligible row in scope. The margin test compares the
+best candidate against the strongest runner-up, so with one eligible row the runner-up score is zero
+and the eight-point margin clears automatically. The margin therefore contributes no discrimination on
+those lines, and the automatic decision rests on the similarity score alone clearing 96.0 — in the
+closest case by 0.6. This is a property of the gate rather than a regression: it is equally true at the
+baseline, where the automatic set also contains single-candidate lines, and no change under review
+introduced it. What the change does is **enlarge the population that leans on it**, which is the
+reason the automatic decisions outside the independently checked subset were verified one by one by two
+parties rather than accepted on the arm counts. Recorded here so that a later reader does not count
+three conditions on the automatic gate where, on a single-candidate line, there is effectively one.
+
+A change of this shape moves 141 lines from operator-reviewed to machine-decided, which is the
+population where a ranking error stops being a suggestion somebody rejects and becomes an export
+nobody looked at. Trading a measured refusal for an unmeasured acceptance is not progress even when
+the arrow points the right way, so the automatic decisions falling outside the independently checked
+subset are verified item by item before that work merges, and any one of them wrong is a blocker
+rather than a caveat.
+
+### The remaining refusal is a cost comparison whose cause is not yet attributed
+
+With every matcher mechanism enabled, the export gate still refuses all twenty. Two invoices now
+have every line automatically matched and are refused for a different reason: the gate also requires
+each line's price to sit within an absolute per-unit tolerance of the master's cost for the matched
+item, and those lines do not. Across the corpus the comparison puts 59 of 357 lines outside that
+tolerance and 103 inside it.
+
+The item identities are not in doubt for the lines concerned — they are exact-name matches that were
+independently checked — so the discrepancy is between the master's cost column and the invoice's
+price basis, and the tolerance value is not the question until the cause is known. Three candidate
+mechanisms were registered in advance, and their signatures are stated here rather than merely
+claimed, because a pre-registration nobody wrote down is not a pre-registration — it is an assertion
+of having had one, and it leaves no way to check afterwards that the signature was not chosen to fit
+the answer. The signatures describe our software, not anyone's commercial values, so they belong in
+this record:
+
+- **A pack or case basis.** The discrepancy tracks a pack or case count: it lands on small whole
+  numbers, and for a given item it is the same number on every invoice that carries it.
+- **A quantity or column misread by the frozen extraction parser.** The discrepancy tracks the row's
+  *own* parsed quantity, varies line to line with no relation to anything in the master, and
+  disappears when the line total is compared instead of the unit price. This is the same component,
+  and very nearly the same fault, as the extraction test that fails on `main`.
+- **A scale or currency factor.** The discrepancy is one constant, the same on every affected line
+  regardless of item or invoice.
+
+**One of the three is our own defect**, and it is the one the evidence already favours: the extraction
+test that fails on `main` fails precisely because the frozen parser reads a size token in a
+description as a quantity. The discriminating measurement is being run before any
+question about the master's cost basis is put to anyone, for the general reason that a question you
+can answer yourself in minutes should not be escalated at all, and certainly not when one of its
+possible answers is that the defect is ours.
+
+No tolerance value fixes any of the three mechanisms. Retuning the threshold would only stop the
+gate reporting them.
+
+### Two controls landed
+
+The publication path is now guarded at `9eed4a7`. Documentation is packaged from an explicit
+allowlist rather than a directory walk, so a document is excluded until it is named; measurement
+records of customer data and of our own process no longer ship at all; and the content check covers
+identifier and capability forms — sharing links, account and user identifiers, absolute home
+directory paths on all three platforms — alongside the credential patterns it already carried. The
+check runs inside the build over exactly the file list the archive is written from, so it is
+build-time and fail-closed rather than a test that only runs when someone remembers to run it; the
+archive is additionally decoded and re-scanned, because the archive is base64-encoded inside its
+manifest and a scan of the source tree returns clean whether or not the published artifact is clean.
+That last point is the general lesson: every privacy check in this program had been reading the tree,
+and the published thing is not the tree.
+
+Verified independently by building the package from the tree that still contained the offending link,
+decoding the manifest, confirming the receipt digest against the decoded bytes, and finding no
+pattern hit inside the archive. Two narrow gaps in the new patterns are recorded as hardening rather
+than holes: a placeholder exemption terminated by a word boundary also exempts a real name that
+merely begins with the placeholder, and UNC paths are not covered.
+
+The demo-seed endpoint is gated at `72c4c04`. It wrote fictional catalog rows and invoices whose
+lines were stored as matched, with full confidence, without the matcher running — from an
+unauthenticated endpoint that nothing in the application or the documentation ever called. It is now
+off unless explicitly enabled, refuses inside the same transaction as its own write when the database
+already holds non-demo rows, flags its rows in the statistics endpoint so a seeded database cannot be
+read as a measurement, and the corpus evaluator refuses an input set containing seeded sources
+outright. One gap remains filed: the statistics endpoint reports the flag and the interface does not
+yet read it.
+
+## Post-freeze findings, fourth round: the ceiling was a claim about the wrong metric
+
+Three claims from the round above are revised here. Two are withdrawn and one is confirmed by
+measurement after being challenged. All figures in this section are recomputed at the release-candidate
+baseline commit against the twenty real uploads, with the catalog scope and the alias set stated.
+
+**The threshold that the sub-floor lines are short of is the suggestion floor, not the automatic bar,
+and that makes the finding about a different metric than the ceiling it was offered as a replacement
+for.** A line lifted from the 60s to just above 70.0 becomes a *suggestion*. A suggestion is an
+operator touch. Metric 1a counts invoices exportable with **zero** operator action, so lifting every
+one of the eighty-four lines within twenty points of the floor moves Metric 1b and Metric 2 and leaves
+Metric 1a exactly where it is. The ceiling in the round above was a statement about 1a; the distribution
+offered in its place is a statement about 1b and 2. The premise of the original ceiling was false — that
+correction stands — but its conclusion was never reachable by the evidence that replaced it, in either
+direction. The only route from a sub-floor score to an automatic decision is the exact condition, which
+requires the normalised strings to be *identical* rather than merely closer; the fuzzy route needs 96.0
+with a clear unknown flag, which is not reachable from the 60s by any normalisation of this kind.
+
+**The distribution itself was challenged as an artefact and it survives, verified.** The challenge was
+that the published bands were the stored confidence column read back rather than a measurement, that
+the column was written by older code, and that the stored values exceeded a recomputation by a median of
+more than twenty points in one direction. Recomputed at the baseline commit over the eighty-five
+sub-floor lines in the resolved-supplier scope: the highest-scoring candidate is the first element on
+eighty-five of eighty-five, so the figure is not an ordering artefact; and **the stored column equals
+the recomputation exactly on all eighty-five** — median, minimum and maximum difference all zero, with
+the stored value higher on none of them. The bands are 50 in 60–70, 34 in 50–60, and 1 in 30–40; eighty-
+four of eighty-five sit within twenty points of the floor. The column is live, and it agrees with the
+recomputation because the code that wrote it is the code that recomputes it. The alias table carries no
+rows at all, so the empty alias list used in every recomputation is the system's actual state rather
+than a simplification, and cannot account for a discrepancy in either direction. One recomputation of
+the baseline disagrees with the stored state on six lines; two independent recomputations, one of them
+inside a container built from the delivery image, reproduce it exactly. The disagreement is being
+located as a harness difference and no figure in this record rests on it.
+
+**The size-token hypothesis is withdrawn, and it was this document's own suggestion.** The round above
+named asymmetric size tokens between invoice descriptions and catalog descriptions as the intervention
+most likely to lift the sub-floor block. Three measurements, designed independently and pointing the
+same way, refuse it. First, the touched population on the invoice side is empty: none of the sub-floor
+lines carries a size token at all, against an instrument verified to fire on the suggestion population,
+on the automatic population and on the catalog side before the zero was accepted. Second, on the catalog
+side the population is one line by the direct reading — the single line in the lowest band — and
+seventeen under the most generous reading that counts any currently-stored near-candidate. Third, an
+independent test that strips size and pack tokens from *both* sides of every sub-floor line and its
+strongest fifty candidates produces no string identity, nothing reaching the fuzzy threshold, and
+nothing reaching even the suggestion floor. That test deletes tokens rather than parsing them, which is
+a crude proxy, but the crudeness runs one way only: had these descriptions differed mainly by a size
+token, deleting it on both sides would have produced high similarity, and it produced none. **What
+separates these descriptions from the master's is therefore not a size token, and naming it is open work
+rather than a finding.** No claim is made here about what would lift them.
+
+**One metric has moved on real uploads, for the first time in this programme.** Metric 1b is 0 of 20 at
+the baseline and 2 of 20 with the candidate matching change in, measured by rematching the same twenty
+uploads through the service. Metric 1a is 0 of 20 in both. The two invoices that move are single-line
+invoices whose one line becomes automatic. They do **not** pass the cost tolerance — they fail it, and
+failing it is precisely why they land in 1b rather than 1a: an above-tolerance cost is an
+invoice-level flag an operator can acknowledge without editing a line, which is what 1b measures.
+The flag they require is itself an artefact of the currency defect recorded below, so the movement in
+the matcher is real and the acknowledgement it still costs the operator is spurious. This is recorded with both
+numbers in one sentence deliberately: a change that moves 1b from zero to two while leaving 1a at zero
+is a real improvement to the matcher's share of the work and **not** a step toward the acceptance
+criterion, and the two readings must not be separated in later quotation. The refusal classes behind the
+remaining eighteen, counted per invoice and overlapping, are a sub-floor line, a suggested line, a
+missing subtotal or tax total, an above-tolerance cost line, and an unresolved supplier. The programme
+verdict is unchanged: **not accepted.**
+
+## Post-freeze findings, fifth round: two defects change owner, and one of them is not a matching defect
+
+**The cost-comparison block is a master-data defect, and this record's extraction parser is cleared of
+it.** Three signatures were pre-registered before the discriminator ran: a pack-or-case basis, a
+quantity-or-column misread by our own frozen parser, and a scale-or-currency factor. The ratio of
+invoice unit price to master unit cost was then computed on every above-tolerance line. It is a single
+constant, the *same* constant on all of them, and constant per item across different lines and different
+invoices. That decides it: a repeated constant is a basis difference, not a scatter of errors. The
+pack-basis signature fits the arithmetic but the master refuses it — the pack fields are unit-valued on
+every row of every item involved, with one unit cost per item. The parser-misread signature is measured
+at **zero**: line total equals quantity times invoice price on every one of these lines, and the size
+token survived into the description on every line that carries one, so the known frozen-parser defect
+did not fire here. The scale-or-currency signature as originally worded, a factor near one hundred,
+is also zero. The mechanism is the fourth possibility, which this record's own Gate 5 already names:
+**the master holds cost in more than one currency, the comparison assumes one, and the constant is a
+rate.** The fix is the standing Gate 5 design — record currency at import and require equality before
+comparing — and the absolute cost tolerance is not well-posed until that lands. **The convergence
+argument of the third round is withdrawn in full.** It rested on two lines of evidence pointing at the
+frozen extraction parser; one was the size-token hypothesis, refuted above, and the other was this cost
+block, which belongs to master data. Neither leg survives.
+
+**Sixty-eight of the eighty-five sub-floor lines are not product lines at all, and that is the real
+finding in this block.** A token-class characterisation of what actually differs on them returns two
+dominant classes that are not products: footer and contact text carrying a page marker, and
+pricing-adjustment label rows carrying a currency code and an internal identifier. The extractor emitted
+both as **line items with a quantity attached**. Their best candidates score in the 50s and 60s on a
+single shared word — coincidences, not near misses. Three consequences, and the third is the serious one:
+1. No matcher change can ever resolve these lines, because there is nothing to resolve them to. This is
+   why the unmatched count is the one number that does not move in any arm of any experiment — a figure
+   constant across every arm is usually a figure the experiment is not touching.
+2. The remaining seventeen are genuine product lines whose gap is alphabetic wording, with **no** numeric
+   and **no** size component in the symmetric difference. Within them, one sub-population of thirteen
+   differs by a trademark artefact in the master's stored text, and that is the only sub-population where
+   a normalisation-only change in the matcher could plausibly cross the suggestion floor. Ceiling
+   thirteen of eighty-five, untested, and stated as a ceiling rather than a forecast.
+3. **These phantom rows carry a quantity and would be exported.** A label row leaving the system as an
+   invoice line is a correctness defect in the deliverable itself, not a missed match, and it is more
+   serious than anything else in this block. It also contaminates every per-line denominator in this
+   record: per-line rates computed over the full line count are computed over a population that includes
+   non-product rows, so they understate per-product performance and must not be quoted as either.
+The owner is the extraction stage, which is frozen, so the routes are a parser-side filter under an
+exemption or a matcher-side refusal of lines carrying no product tokens. Both are open; neither is a
+decision this document can take.
+
+**A privacy defect in this document, found by someone else, and the check that would have caught it does
+not exist.** This file has been published with the repository since the first snapshot and carried four
+master-derived figures: a count of priced rows with their decimal-place distribution, a size multiple in
+the import-guard discussion, and a share-of-rows proportion. They are being replaced with the
+qualitative conclusion and an explicit statement that the figure is withheld. The lesson is structural
+rather than clerical. Every automated privacy pattern in this repository matches an **identifier shape**
+— a key, a token, a URL, a home path. A master-derived *quantity* has no shape to match: it is an
+ordinary numeral in an ordinary sentence, and it passes every pattern cleanly, which is exactly what
+happened on each of the sweeps this document records as clean. The only instrument that finds this class
+is a human numeral-by-numeral read against the stated test — does the number describe the software's
+behaviour on a sample, or the size, shape, content or cost structure of the master — and an extended grep
+found one of the three. **Those sweeps were clean and they were also uninformative about this class, and
+this record should not be read as having checked for it before this round.**
+
+## Volume: the thread-safety fix is proven, and the batch-size question has an answer
+
+**Scope.** One thousand uploads of the OCR document class through eight workers, on a shared host
+carrying four other containers at a load average between 23 and 28, against a build consisting of the
+release baseline plus a single serialising lock around the PDF rasteriser. The run was reconstructed
+from the container's own database after the driver process was lost; the container was never restarted.
+Peak memory and the queue-depth series for the final half hour were not captured and are not
+recoverable — that is a gap in the measurement and is recorded as one, not as an absence of a problem.
+
+**The fix is proven on the class it targets.** Zero of one thousand uploads hit the data-format-error
+class, against 133 of one thousand on the unpatched build with the same corpus and the same worker
+count. Predicted zero, observed zero. No retries anywhere, no worker exits, no respawns, no stall, and
+the queue drained to empty.
+
+**The batch-size question is answered, and the premise behind it was wrong.** The delivery was asked
+whether one thousand documents in a single run is viable, and if not, what smaller batch works without
+losing conversion accuracy. One thousand in a single run destabilised nothing: every row was processed
+on its first attempt, the worker pool was intact at the end, and nothing queued behind a stall. **The
+limiting factor is not batch size.** It is wall time and per-document limits, and a smaller batch
+improves neither. No batch-size ceiling is recommended, because none was found.
+
+**Failures, with both denominators, because they say different things.** By upload, 25 of 1,000 failed.
+Every one of them terminated with an explicit, specific reason and a terminal failed state: none was
+dropped, none produced a silent partial conversion. That is the behaviour the delivery was asked for —
+solve what can be solved and flag the rest for recheck — and it is the second strongest result in this
+run. By **source document**, which is the denominator that carries meaning, 48 of 50 document types
+reached a terminal extraction-and-matching state on every copy; one failed on every copy against a
+deterministic page-size limit, being a scan
+whose raster exceeds the configured per-page ceiling; and one failed on five of its twenty copies
+against a time limit. **The upload figure is a count of copies, not a failure rate.** A rate on a
+genuinely distinct population is not estimable from fifty source documents and none is offered here.
+Of the 25, twenty are deterministic and five are not: a time limit is a property of the document *and*
+the machine it ran on, and those five were measured on a loaded shared host. The page-size ceiling is a
+configuration constant, and raising it trades memory for coverage — a change that must report peak
+memory at the raised limit before it is argued for, since a large scan admitted and then exhausting
+container memory under eight workers is a worse outcome than a clean rejection.
+
+**Throughput, and the two targets in play disagree with each other.** One thousand OCR-class documents
+reached a terminal state in 58 minutes 55 seconds, of which the intake phase was under two minutes —
+so essentially all of it is processing and none of it is an intake problem. Sustained, that is roughly
+24,400 documents per day. The programme design document sets a throughput requirement of 10,000
+invoices per day with no queue backlog older than fifteen minutes, so **this run is about 2.4 times
+ahead of the written requirement**, on the hardest document class, on a loaded shared host. The
+separately stated verbal target of one thousand invoices in twenty to thirty minutes is about 5.8 times
+that written requirement and about 2.4 times what was measured. Both readings are true simultaneously
+and neither is quoted without the other. Which target governs the launch is a decision for the
+programme owner, not one this document takes. No projection is made to a dedicated machine: that
+requires a run on such a machine, and none has been performed.
+
+## The volume requirement was reduced by the requester, and the gate changes with it
+
+The delivery was originally asked for one thousand invoices converted in twenty to thirty minutes, and
+the programme design document separately sets ten thousand per day. **Neither is now the operating
+requirement.** The requester has since specified a batch of fifty to two hundred documents, with fifty
+acceptable, and no time figure. Both earlier numbers stay recorded as stated targets; neither is the
+launch gate. This section records the change so that a later reader does not measure the delivery
+against a requirement its owner withdrew, and does not read the withdrawal as the delivery lowering
+its own bar.
+
+**At the requested size the throughput question is effectively closed.** Prefix timings from the
+thousand-document run on the locked build give fifty documents in 4 minutes 22 seconds, one hundred in
+9 minutes 27 seconds, and two hundred in 16 minutes 18 seconds. Every one of those is an **upper
+bound** rather than a measurement, because those documents were processed while the remainder of the
+thousand was still arriving and competing for the same workers; a standalone batch can only be faster.
+They are OCR-class, on a shared host, and the text class is unmeasured at these sizes.
+
+**The launch gate is fifty distinct documents, and distinctness is the point.** The corpus holds fifty
+distinct source documents and the requester's minimum batch is fifty, so the two coincide exactly. A
+two-hundred-document batch assembled from the same fifty sources at four copies each measures
+throughput and adds nothing about conversion, so any such figure is labelled as copies rather than as
+invoices. The gate is:
+1. every document reaches a terminal state, and each is **either** exported into the consolidated
+   workbook **or** flagged with a reason code naming what is missing — nothing silently dropped,
+   silently partial, or exported wrong;
+2. the workbook satisfies the three-sheet contract, every detail and tax row links to a header
+   transaction, and line totals reconcile to the stated subtotal on every exported invoice — producing
+   a workbook is not the criterion, producing a reconciling one is;
+3. no failure carries a class outside those already characterised — a novel reason is a stop, not a
+   pass, notwithstanding that it is explicit;
+4. wall time is reported with its full scope and is **not** gated, because no time figure was given.
+
+**Two expected failures at this batch size, stated in advance.** One source fails deterministically on
+the page-size ceiling and one intermittently on the OCR time budget, so a fifty-document batch
+containing them shows about two failures. That is characterised behaviour, not a regression, and it is
+written here before the run so the first launch result is not misread by whoever sees it first.
+
+**The flagged share is reported and not gated, and that is the specification rather than a
+concession.** The delivery was asked to solve what it can and flag the rest for recheck. On present
+measurements the flagged share will be large: the touchless count is zero of twenty real uploads, and
+the corpus evaluation put thirteen of one hundred and seventy-nine documents through the strict
+financial gate. A large flagged share with correct reasons is the system behaving as asked; a single
+wrongly exported invoice is not. The gate above is written to separate those two outcomes, which a gate
+resting on terminal states alone cannot do.
+
+## Post-freeze findings, sixth round: the word "converted" was wrong, and the block on automatic matching was the master repeating itself
+> **WITHDRAWAL NARROWED.** The mechanism below — duplicate master rows blocking automatic matching — is
+> **supported** by a with/without measurement. What is withdrawn is the *evidence path*: the claim that
+> these lines matched a master row on an exact normalised description. See "The withdrawal was too broad"
+> at the end.
+
+
+Three findings and one withdrawal, all measured at `af4a6d8` unless stated. Two of them reduce what
+this programme may claim; one of them is the largest positive movement recorded so far; and the last is
+a negative result that closes off a fix several people expected to be decisive.
+
+**Withdrawal: no run in this programme has converted anything.** Every volume run to date, the
+thousand-upload OCR-lock run included, started from a fresh database with empty operator settings. The
+approval validator therefore blocked every invoice on the four required setting codes and export was
+never attempted. That is the product behaving as specified — brand and location setup is the documented
+first operator step — but it means the sentence corrected above originally read "48 of 50 document types
+converted on every copy", and that was not measured. What was measured is that extraction and matching
+reached a terminal state with an explicit reason. Conversion, which is the thing actually asked for — a
+target workbook out the other end — has never been exercised at volume. The error is the one this
+record has repeatedly charged against others: measure the stage that ran, then name it with the word
+for the stage that did not. The launch gate of record configures settings from the repository's own
+fictional placeholders before upload, so it will be the first run in this programme to exercise export
+at all, and its result certifies structure and reconciliation under placeholder coding, never the
+requester's own codes.
+
+**The dominant block on automatic matching was a duplicate master row, not conservatism.** Re-matching
+the stored extracted lines of the twenty-invoice corpus holds extraction fixed so that only matching
+varies. The harness was validated before it was believed: at the baseline commit it reproduces the
+stored decision on 315 of 357 lines, with the 21 stored automatic lines reproducing as confirmed. 21
+stored-suggested lines recompute as unmatched and are not yet accounted for, most plausibly a small
+difference in catalog scope, so every count in this section carries that 21-line uncertainty.
+
+At the baseline, 109 real product lines match a master row on an exact normalised description and still
+do not reach automatic. Every one of them has exactly two exact candidates, and the blocker is the
+condition requiring a single exact candidate. The split is the whole finding: **107 of the 109 are two
+master rows carrying the identical normalised description and the same item id** — the same item listed
+twice, a bookkeeping duplicate. Only 2 of 109 are two genuinely different item ids, and those two carry
+two different master unit costs, so holding them for review is correct behaviour rather than a defect.
+The system's silence was not caution and it was not ambiguity in the goods; it was the master repeating
+itself while the gate read a repeat as a tie. Collapsing those duplicates in a resolved scope moves
+line-level automatic decisions from none to **141 of 357** on the same stored lines.
+
+**The negative result: fixing the phantom adjustment rows unlocks no invoice.** Invoice-level on
+matching status alone, 2 of 20 invoices now have every line automatic. The count of invoices blocked
+*only* by phantom rows is **zero** — every invoice carrying them also carries at least one suggested or
+unmatched real product line. The phantom-row defect remains worth fixing on its own correctness merits,
+and the earlier figure for it stands as what it always was, a count on the unmatched axis. It is not a
+route to touchless and must not be planned as one.
+
+Neither 2 of 20 nor 141 of 357 is a touchless figure. Touchless additionally requires no cost-variance
+review flag and an actual export, and export has never run. **Metric 1a therefore stays 0 of 20 as
+recorded.** The defensible statement is narrower and more useful: matching has stopped being the
+binding constraint on two of the twenty, and what constrains those two instead is unmeasured, because
+the stage that would reveal it has never executed.
+
+**A deterministic reproduction of a column-shift defect in the plain-text path.** The application
+snapshot arrived with a failing test, carried through this programme as pre-existing; it fails
+identically at the pre-programme commit, so that label is accurate. Its content is not background
+noise. On a synthetic invoice whose description matches the catalog exactly, whose supplier, unit of
+measure and unit cost all agree, the extractor reads the size token out of the product name as the
+quantity and shifts every later column left: a line of two units at ten becomes a line of two hundred
+and fifty of a volume unit at twenty, and the matcher then correctly reports a unit-of-measure conflict
+on corrupted input. The failure is in extraction and is being read as a matching failure. Its blast
+radius is bounded: on the real corpus every line carries no unit of measure at all and the
+quantity-times-price identity holds on all 289 real lines, so the real documents do not take this path.
+A fixture exercising a branch real data never reaches is worth exactly what it measures, and the
+converse — that this defect would silently multiply a delivered quantity if a real document ever did
+take the path — is why it is recorded rather than closed.
+
+## Two stages have never executed, and a cross-check that validates the duplicate-row finding
+> **PARTLY WITHDRAWN.** The cross-check below does not validate the duplicate-row finding; it
+> corroborated a number produced by a three-part change. See "Two withdrawals" at the end.
+
+
+**An independent reconciliation.** The duplicate-row finding above rests on one instrument, which is a
+reason to distrust it. It reconciles exactly with a figure derived by a different worker on a different
+harness: 141 automatic lines measured here, plus the 21 lines the matcher had already decided,
+is 162, and 162 is the automatic-decision count recorded from the duplicate-collapse branch's own
+evidence. The phrase first written here was "the 21 lines the corpus already carried as confirmed",
+and it was wrong in a way worth preserving rather than quietly overwriting: the stored corpus holds
+**zero** confirmed lines, all 21 are stored as automatic, and the confirmed label appears only when the
+matcher is re-run. No human has touched any line in this corpus. "Already confirmed" imported a
+reviewer who does not exist, and a later reader would have turned it into "21 lines were
+human-reviewed" — which is precisely the kind of claim this document is supposed to stop. Two harnesses, one number, neither built from the other. That does not make the classification
+correct, but it removes the most likely way for it to be wrong.
+
+**Cost comparison is starved, not inert.** 336 of 357 lines carry an unavailable-comparison status with
+no master unit cost, and the same 336 carry the review-required flag. The cause is not a defect in the
+cost machinery: no match means no master cost means nothing to compare. So the cost path is downstream
+of the matching failure, and when the duplicate collapse lands its automatic lines, cost comparison
+executes on real documents for the first time. A reason code resting entirely on this condition is a
+constant rather than a rule, and has been split for that reason.
+
+**Consequence for the launch gate, correcting a rule set out earlier in this record.** Two stages have
+never executed on a real document in this programme: export, because operator settings were never
+configured, and cost comparison, because almost nothing matched. The gate criterion forbidding a novel
+failure reason would therefore halt on the first reason either stage emits, which is not a defect but a
+certainty. The criterion is amended: a first-encounter reason originating in export or in cost
+comparison is expected and is reported rather than treated as a stop, while a novel reason from
+extraction, matching or the terminal-state machinery still stops the gate, those being the stages with a
+measured history to be novel against. A gate that fires on its own first execution tests nothing.
+
+**The whole-tree privacy guard closes the file hole and not the path hole.** Running the pattern set over
+every tracked and untracked-not-ignored text file, failing closed before the archive is written and
+naming the file rather than the value, is correct and it would have caught the historic leak's content.
+It runs when the packager runs. Publication to the forge happens on push, which does not invoke the
+packager, and the historic leak travelled by push. The remedy is a check on the publication path itself,
+with its limits stated rather than implied: a local hook prevents but is bypassable, and a
+publish-triggered check detects after the fact rather than preventing. Neither makes exposure
+impossible, and the record should not say otherwise.
+
+## The launch gate was pointed at the wrong class, and a reason code that has never once meant what it says
+
+**A premise error in the gate defined earlier in this record, and it is mine.** That gate required fifty
+distinct documents on the stated ground that fifty distinct coincided with the corpus breadth and with
+the requester's stated minimum. The coincidence does not exist. Fifty is the OCR-class subset of the
+corpus — scans without a text layer, plus photographs — and the corpus holds 179 distinct documents
+across two extraction classes, the other 129 being text-class. The requester's own invoices are mostly
+text-class. So the gate was aimed at the minority class, and measurement has now shown that class cannot
+reach the gate's hardest criterion at all: supplier resolution succeeds on 0 of 50 OCR-class documents
+against 18 of 20 on the text-class replay corpus, and an unresolved supplier blocks approval, so export
+can never be attempted there. The gate would have passed its first three criteria honestly and left the
+fourth unevaluated — the self-satisfying shape this record rules against, reached through a premise
+rather than through a criterion.
+
+**Amended gate.** Two fifty-distinct batches, reported separately and never summed. The text-class batch,
+with settings and supplier rules configured from the repository's fictional placeholders, is the gate of
+record, because it is the requester's actual population and the only class where export runs. The
+OCR-class batch is a characterisation run establishing that class's baseline, and is not to be described
+as the launch gate. An evaluability floor applies to both: if export is 0 of 50 on both classes, or if
+workbook reconciliation goes unevaluated for any reason, the verdict is **not evaluable**, never passed.
+
+**A new criterion, because a document can be scored as converted while being empty.** In the
+stress-window observation, 48 OCR-class documents reached a review state and produced 100 product lines
+between them — 2.08 per document, against a text-class mean of 14.4 real product lines per document,
+median 10, with no text-class document yielding zero. Different documents explain part of a sevenfold
+gap; they do not explain a mean of two lines on commercial invoices, and none of the 100 lines is
+automatic. The reading to rule out is that OCR-class extraction is losing most line items while the
+documents still terminate as successes. So product lines per document are reported as a distribution
+rather than a total, the count of documents yielding **zero** product lines is stated explicitly, and a
+document yielding no product lines is flagged with a reason rather than counted as terminal success. It
+has not been read, whatever state its row carries.
+
+**A reason code that has never fired for its stated meaning.** An independent check established by set
+equality, not by comparing counts, that the 336 lines flagged as priced above tolerance are exactly the
+union of the low-confidence and unmapped sets, and that the flag fires on no automatic line. Zero lines
+are above tolerance. The code is a re-encoding of "not automatic" wearing the name of a pricing
+exception, and it would tell a reviewer that every invoice has a price problem when none does. Splitting
+it is necessary and not sufficient: the unavailable arm must also stop being presented as an exception
+owned by a named role, because a reason code has to name a condition its owner can act on, and no
+item-master owner can act on an unmatched line by examining a price. Relatedly, four of the fourteen
+invoices in that owner's queue have nothing unmapped except discount rows, so the phantom-row defect has
+reached a real person's workload; those counts are not a workload figure until non-product rows carry
+their own code.
+
+**A metric pinned to one value is not a measurement.** The touchless numerator considers only invoices
+already ready or exported, and export has never executed. Its zero therefore cannot distinguish "nothing
+is touchless" from "nothing has been approved yet". Until the gate of record runs, it is reported as not
+evaluable with that reason, or against a denominator restricted to invoices that reached approval, and
+the same test applies to the cycle-time metric at n=0.
+
+## The OCR class reads no line items from most documents it accepts
+
+The yield criterion was added on suspicion and answered on its first use. On the OCR class, on the
+locked lineage, at eight workers: of 50 distinct documents, 36 yield **zero product lines** — 34 of the
+48 that reach a review state, plus the 2 that fail. The 100 product lines come from 14 documents, and one
+document supplies 34 of them. The per-document distribution is min 0, median 0, mean 2.08, max 34.
+
+Every zero-yield document carries a lines-required reason, so none is silent and none is dropped, which
+is the flag-for-recheck behaviour the requester specified. But flagged is not converted. Under the
+criteria as first written, 34 documents from which nothing was read would have counted as converted,
+because they reached a terminal state with an explicit reason and the criteria asked for nothing more.
+This is the same defect class as everything else in this record — a mechanism that cannot do its job
+returning a normal-looking result — arriving this time in the acceptance criteria themselves rather than
+in the code.
+
+**What is not yet known, and it decides both the owner and the difficulty.** Two readings fit the
+evidence and they have opposite consequences, so both are registered before the measurement rather than
+argued after it. If the OCR text is substantial and header fields are present, then optical recognition
+works and the line-table parser cannot read OCR-class layout: a bounded extraction defect, and the
+highest-value fix available. If the OCR text is near-empty, then recognition itself produces nothing, and
+a document that could not be read is being reported as a document that was read and found empty — a
+second defect, in the reporting, on top of the first. Those are different statements to the person
+holding the invoice. Supplier names being recovered on 2 of 50 documents makes the second reading the
+one to expect.
+
+**A timing figure that must not travel alone.** Fifty documents reached terminal state 354 seconds after
+the first upload, at a mean load well above the rule. That is not fifty invoices converted in six
+minutes. Two thirds of those documents produced no line items, so the run largely performed the cheap
+part of the work and skipped the expensive part; the figure is a **lower** bound on a real conversion of
+fifty documents, not an estimate of one. Wall time is reported beside yield in this record, never alone.
+
+**Consequence for what may be claimed.** Conversion is class-dependent and no blended figure across the
+two classes is admissible, because averaging a working path with a non-working one describes neither. For
+text-layer PDFs the system extracts and matches line items. For scans and photographs it currently reads
+no line items from most documents and flags them for manual entry. Any per-document success rate in this
+programme carries its class or it carries nothing.
+
+### Which reading held: recognition works, the line parser does not
+
+The discriminator registered above was measured on the 34 zero-yield documents and the first reading
+holds on 32 of them, with the second holding on 2. Recognised text is present in volume — median 41,250
+characters, with 32 of 34 above two thousand — and header fields are recovered from 20 of the 34. On 2
+documents recognition produced nothing; those reached a review state carrying a lines-required reason
+instead of failing with a recognition reason, which is the mislabelling defect registered above,
+small in count and real in kind.
+
+**The evidence inverts the intuitive explanation, which is why it is worth recording in detail.** On
+every available proxy for document quality the zero-yield group is equal to or better than the group that
+did yield lines: characters 41,250 against 26,978, numeric-candidate lines 107 against 62, invoice total
+recovered on 20 of 34 against 4 of 14, and vocabulary, alphabetic and whitespace ratios indistinguishable
+between the groups. The documents the parser reads nothing from are the longer, denser, more numeric ones.
+Failure correlates positively with content density. Degraded recognition, short text and missing headers
+are all excluded, and what remains is a structural limit in the line-table parser's row model as column
+structure grows richer. Characterisation starts from the densest zero-yield document rather than the
+smallest, and three strata are kept separate: the 32 the parser cannot read, the 2 near-empty, and the 6
+within the 32 that carry long text yet not one header field.
+
+**A condition that outranks the fix.** Character accuracy against ground truth is unmeasured. That text
+is present, and of the same profile as text the parser does read, is a claim about volume and shape and
+not about correctness. Teaching the parser to read these layouts while recognition silently mis-reads
+digits would not produce a non-conversion; it would produce a wrong quantity and a wrong price carried
+into a downstream system with a terminal state and no flag — this record's recurring defect class in its
+most damaging available form, and strictly worse than reading nothing. A digit-level accuracy check on a
+hand-transcribed sample of quantities and prices is therefore required *before* any parser change is
+planned as a fix. If digit accuracy on those fields is not high, the class is not fixable by parsing and
+the honest product statement is that scanned and photographed invoices must be keyed by hand.
+
+**The mislabelling fix is not held by the extraction freeze.** The lines-required error is raised in the
+service validator with the invoice record in hand, and the recognised text is a stored column, so a
+near-empty recognition result can be given its own reason and a failed terminal state without touching
+the frozen extraction module. It is two documents in fifty and still worth doing promptly, because the
+defect — reporting a document that could not be read as one that was read and found empty — is one the
+requester will meet on their own scans and will have no way to diagnose.
+
+## A label that manufactures human review, and the cost stage's first real numbers
+> **PARTLY WITHDRAWN.** The above-tolerance count below is an artefact of an undeclared currency basis
+> and is not a price variance. See "Two withdrawals" at the end.
+
+
+**A machine decision is relabelled as a reviewed one.** The matcher revalidates any line that already
+carries a persisted catalog selection and, on revalidation, stamps it confirmed at a confidence of
+100.0 without asking where the selection came from. The proof is set equality rather than a count: the
+lines that come back confirmed are *exactly* the lines that were stored as automatic — not a set of the
+same size, the same set — and every one of them carries 100.0 afterwards. Three consequences, in
+increasing order of seriousness:
+
+1. The first-time-match metric documents a confirmed line as one a human touched. That documentation is
+   false for every line in this corpus, so the metric's own definition misdescribes its data.
+2. The metric's numerator counts automatic lines only, so re-running the matcher *lowers* the reported
+   first-time-match rate with no human action anywhere. The number moves because of a relabelling.
+3. The original score is overwritten with 100.0. The evidence for the decision is destroyed by the act
+   of re-checking it, which means an audit that re-runs the matcher to see what it decided has already
+   erased what it wanted to look at.
+
+The third is the one that outlives this corpus. The first two are wrong numbers; the third is a lost
+record, and a lost record cannot be recomputed later.
+
+The reach is one route, a re-match endpoint, reached today only by an API client because no user
+interface offers the action. That bounds the present blast radius and does not reduce the defect: the
+first re-match button added to the interface makes it routine. The same call also records the actor as
+a person, so a single re-match depresses both headline metrics at once, and a test encodes that
+mislabelling as expected behaviour — so the test is to be corrected, not deleted.
+
+**Confirmed lines in this record from here on mean a machine decision unless a human decision is named.**
+
+**A prediction in the previous section executed, and produced a number nobody had seen.** That section
+argued the cost stage was starved rather than inert, and that it would execute on real documents for the
+first time once automatic matching produced master costs to compare against. It has now been run on the
+real corpus. The comparison statuses move from one status on almost every line to three: the
+unavailable-no-master-cost group falls sharply, a within-tolerance group appears at 103 lines, and an
+above-tolerance group appears at **59** lines where before there were none. 59 plus 103 is 162, the
+machine-decided line count exactly, which is the arithmetic that says the cost stage now sees every
+line matching made available to it and no others.
+
+Three things follow, and the third is the one that matters for launch:
+
+- The starvation reading was correct. The cost machinery was never broken; it had nothing to compare.
+- The reason code that flagged lines as priced above tolerance was, as recorded earlier, firing on
+  lines that had no comparison at all. After re-matching it still conflates: the flag covers both the
+  genuine above-tolerance lines and the still-unavailable ones, and at invoice level it fires on every
+  invoice. Splitting it remains necessary and remains insufficient.
+- **Touchless processing has a second ceiling, and it is not a defect.** Fixing duplicate master rows
+  and phantom rows cannot deliver a touchless invoice if that invoice also carries a genuine cost
+  variance, because a cost-variance flag requires review by design. Before this run, every
+  above-tolerance count was zero and the variance question was invisible. It is now visible and
+  non-zero. Any forecast of the touchless rate that counts only matching fixes is therefore an
+  overestimate, including forecasts made earlier in this document.
+
+No variance magnitude, tolerance value, item, supplier or price appears above. The counts recorded are
+flag outcomes — what the software did to a sample — on the same footing as the review-required count
+already in this record. What the prices actually are stays out.
+
+## Launch blocker: the extraction module is frozen and the authority that froze it has gone
+
+The module that reads documents was placed under a rule that nothing touching it merges until the
+implementation owner ruled on three queued changes. That owner's session has ended without ruling on
+any of them. The rule as written therefore became a condition that can never be satisfied — the
+unsatisfiable twin of the self-satisfying gate this document has objected to repeatedly, and just as
+capable of producing a wrong outcome through nobody doing anything.
+
+**This is recorded as a launch blocker in its own right, independent of whether the queued changes are
+good.** A module nobody is authorised to change is not a maintainable module, and an operator who is
+handed this system needs to know that its document reader has no owner.
+
+Two decisions were taken rather than left to expire, and both are recorded here as the coordinator's,
+not the absent owner's, so that a later reader can see who decided and on what basis:
+
+- A change measured neutral on the real corpus may proceed. Neutral means demonstrated: no line's
+  status, candidate, score, quantity, price or total differs across the whole corpus, with the named
+  failing test passing and the test file provably untouched.
+- A change that alters any extracted **value** waits for the person whose invoices these are. That
+  boundary is not procedural caution. A neutral change cannot silently corrupt data; a value-changing
+  one is exactly the class where a wrong call ships a wrong quantity or a wrong price with a terminal
+  state and no flag, and the decision belongs to the data's owner.
+
+One measurement was added to the first queued change that had not been asked for: it serialises the
+document-reading hot path across parallel workers to fix a thread-safety fault. The correctness case is
+accepted. The throughput cost had been nobody's question, which is the same omission this document has
+charged elsewhere — a correctness fix whose cost is unmeasured becomes an unexplained slowdown later.
+It is being measured with and without the lock on the same tree at comparable load, and the cost will be
+stated in the release record whichever way it falls. The fix lands either way; thread safety outranks
+speed on a data-corruption fault.
+
+## Three instruments, one split, and a residual that resolved against this document
+
+The re-matching figures in this record were produced on three independent harnesses. Two agree on every
+count. The one that disagreed is the one used here, and it disagreed by exactly 21 lines in the boundary
+between suggested and unmatched. The other two reproduce the stored unmatched count exactly; this one
+does not. **The two agreeing harnesses are the record; the split reported here earlier was wrong and is
+corrected.** The automatic count, which is the figure every conclusion in this document rests on, is
+identical on all three.
+
+Publishing an uncertainty band obliges publishing its resolution even when it resolves against the
+publisher, and this one did. The structural finding built on the same harness survives for a reason
+that is worth stating rather than assuming: it rests on two master rows sharing one item identifier,
+and no narrowing of a catalog scope can invent a duplicate row. A scope error can hide candidates; it
+cannot manufacture the ones that are there. An independent re-run of that classification is still
+outstanding and is the arbiter.
+
+**A challenged measurement discipline, applied to this document's own discriminator.** The test used to
+separate "recognition failed" from "recognition worked and the line parser could not read it" counts
+characters of recognised text, and the objection raised against it was precise: that count discriminates
+only if it is measured on the same text the line parser was handed, not on whatever an earlier stage
+produced. The objection is correct in principle and does not apply here, and the reason is checkable in
+four lines of the module. The stored text column is assigned from the extraction result; the extraction
+result assigns it from the same value that is passed as the parser's first argument; no transformation
+sits between them. For scanned pages the stored text is a concatenation that *contains* the layout text,
+and the layout text is additionally handed to the parser as a second source. So the parser never
+receives less than the count measures. The discriminator holds — byte-identical input, not merely
+consistent input — and the objection has been converted into a stated property of the pipeline rather
+than an assumption.
+
+### The guard's fail-open mode, and which platforms it is verified on
+
+The push-path guard is delivered as a repository hook, and the launchers are being changed to point git
+at the committed hook directory, which is the correct answer because git cannot install a hook on its
+own and a launcher is something an operator genuinely runs. Two conditions sit under that, and only one
+of them is dangerous:
+
+- **Fail-open, and therefore the gate.** If the hook is committed without the executable mode bit, git
+  skips it silently. The push succeeds, nothing is printed, the hook path configuration still reads back
+  correctly, and any test asserting the launcher mentions that configuration still passes. The bit must
+  be read off the git index rather than off a working tree, because the index is what a clone receives
+  and a developer's own checkout can have the bit where the index does not.
+- **Fail-closed, and therefore acceptable.** If the hook's interpreter is absent it exits non-zero and
+  the push is refused. That is noisy and safe. The only requirement is that the message name what to
+  install instead of surfacing a bare exit code.
+
+A test asserting that a launcher *contains* the configuration line is a tripwire, not evidence. A line
+can sit inside a branch the operator's path never takes, after an early return, or below a failing exit.
+The evidence is a fresh clone, the real launcher run, the configuration read back, and a planted marker's
+push refused.
+
+**Platform reach is stated, not assumed.** This system is required on two operating systems and ships two
+launchers. A guard configured by only one of them leaves every operator on the other platform with no
+protection on the publication path, which is half a guard delivered as a whole one. Both launchers set
+it. Where the refused-push check cannot be executed on a platform from this environment, this record and
+the operator documentation name the platform the guard was **verified** on and say plainly that the other
+is configured but unexercised. Verified and assumed are different words, and the reader is entitled to
+the first one.
+
+### A regression test that guards a machine nobody runs
+
+The thread-safety fix arrived with a test that passes when the lock is replaced by a no-op at the shipped
+worker count, and only distinguishes the two at roughly twice that count. The correctness of the fix is
+not in question. The test is: it does not discriminate in the configuration that ships, so it would not
+notice a future refactor removing the lock. The high-thread-count result is kept as evidence that the
+race is real — which is worth having and was not previously demonstrated — but it is not the gate.
+
+The gate is a structural assertion that no two calls into the document-reading library overlap,
+deterministic and independent of thread count, required to fail with the lock removed and pass with it at
+shipped settings. A race test asks whether the fault happened to lose a coin toss on this run; a
+structural probe asks whether the fault is possible. Only the second answers the question, and only the
+second keeps answering it a year from now.
+
+### A correct fix can remove a flag from lines that still need review
+
+Splitting the cost reason code was necessary: it had been firing on lines that had no comparison at all.
+After the split it fires only where a comparison was actually made and exceeded tolerance. That is right,
+and it raises a question the split does not answer, because the lines that lose the flag do not stop
+needing review — they were never above tolerance, but they have no master cost either, and something
+must still hold them.
+
+In this corpus they are held, and the arithmetic says why rather than an assumption: the
+no-comparison-available group is exactly the set of lines the matcher did not decide automatically, and
+those lines already block approval through the matching reason. Remove the cost flag and the matching
+flag still stands. No review coverage is lost here.
+
+**That is a property of this corpus, not of the code, and the difference is the defect.** The
+no-comparison-available state has no code path and no owner. It is reachable by a line that the matcher
+decides automatically *and* for which no master cost exists — a master row carrying no unit cost, or a
+zero one. Such a line would carry no matching flag, because it matched, and no cost flag, because the
+split correctly removed the one that used to fire. It would be approved silently with no cost check ever
+performed. The coincidence that makes this corpus safe is that every automatically decided line here
+happens to have a master cost; nothing in the code requires it.
+
+Two requirements follow. First, count the master rows carrying no unit cost or a zero one: if that count
+is greater than zero the unowned state is reachable today and this is a live defect, not a latent one.
+Second, the unowned state gets an owner — a reason code of its own that blocks approval when a decided
+line has nothing to compare against — and a test that asserts an automatically matched line with no
+master cost does not reach an approvable state. Without that test, the correct fix above is one master
+row away from becoming a silent approval.
+
+This is the fourth occurrence in this programme of the same shape: a control that loses its capability
+and returns a normal-looking result. It is the first where the capability is removed by a change that is
+itself correct, which is why it is recorded beside that change rather than against it.
+
+## Two withdrawals, and the first real export
+
+Two findings recorded earlier in this document are withdrawn. Both were mine, both were published before
+a second instrument existed, and both are withdrawn now rather than held pending a third opinion, because
+a wrong diagnosis in an acceptance record is planned on top of by other people while it waits.
+
+### Withdrawn: the block on automatic matching is not the master repeating itself
+
+The claim was that of the lines matching a master row on an exact normalised description and not being
+decided automatically, all but two were the same item listed twice under one identifier, so a
+duplicate-collapse rule was the route to automatic matching. A second instrument, using **the matcher's
+own normalisation function** rather than a reimplementation of it, finds that those lines have **zero**
+exact normalised rows in scope and zero in the entire master, and that the matcher's own top-candidate
+reasons on them are fuzzy-similarity reasons, not exact ties. The two genuine cases stand, and the
+collapse rule correctly refuses to fold them because they are two different items at two different costs.
+
+**Why my defence of this finding failed, which matters more than the finding.** When the classification
+was challenged I argued it survived a catalog-scope error, because narrowing a scope can hide candidates
+but cannot invent a duplicate row. That argument is correct and it was answering the wrong threat. The
+refutation did not come through scope. It came through **normalisation**: I compared descriptions with my
+own equality rule instead of the one the matcher uses, and a looser equality manufactures an exact tie
+where the matcher sees none. I defended the instrument against the attack I had thought of.
+
+**What replaces it, honestly.** The ceiling on automatic matching is not duplicate rows. It is that for
+most of these lines **no master row's description matches the invoice's description under the matcher's
+own normalisation at all** — the master and the suppliers' documents use different words for the same
+goods. That is a vocabulary gap, and it is a harder problem than a bookkeeping duplicate: a collapse rule
+is a day's work with a clear test, and closing a vocabulary gap means alias learning, operator
+confirmation that accumulates, or both. **No forecast of the automatic-match rate in this document
+survives this withdrawal, and nothing here should be read as saying we know what closes the gap.**
+
+### Withdrawn: the above-tolerance lines are not a price variance
+
+The claim was that the cost stage's first execution revealed genuine price variance, giving touchless
+processing a second ceiling that no matching fix could lift. The mechanism was not checked, only the
+number, which is the failure this document has charged repeatedly at others.
+
+The master's cost column is declared in a currency that is **not** the invoices' currency, and the
+comparison on the current mainline treats the two as the same currency without saying so. Every
+above-tolerance and within-tolerance count produced so far therefore compares quantities on two
+different scales. With a currency basis required and no rate supplied, every compared line refuses with
+a basis-mismatch reason on almost every invoice — which is the correct fail-closed behaviour and did not
+exist before. With an arbitrary round rate supplied by the measuring operator and labelled as such, the
+two groups **swap**: the lines that were above tolerance fall within it and the lines that were within it
+go above, and the two groups are disjoint item families sitting in different identifier bands.
+
+Two groups that exchange places under a single scale factor, separated cleanly by item family, do not
+indicate price drift. They indicate **units** — and here that the master's cost basis is mixed across
+item families, so no single rate is correct for the whole master. This is the second time tonight a gap
+between two groups has named a mechanism rather than a trend.
+
+Consequences, and the third is a ruling:
+
+- The cost-comparison axis is **NOT EVALUABLE**, not "flagged on N lines". A count published with a
+  careful caveat still travels as a count, and the caveat does not travel with it. The axis reports its
+  reason, not its numerator, until the basis is declared.
+- Touchless processing has no demonstrated second ceiling. The earlier claim that every touchless
+  forecast was an overestimate was itself unfounded; what is true is that the cost axis cannot yet
+  contribute a number in either direction.
+- **Which basis is authoritative — the master's declared currency column or the values in it — is not a
+  question this programme may answer by choosing.** The software must refuse rather than default, which
+  is what the pending change does. The question goes to the item master's owner, and it must not be put
+  as "what currency are your costs in", because the measurement says the answer is not one currency. It
+  is put as: are all costs on one basis, or do some item families use another.
+
+### Not withdrawn: export has run end to end on real documents
+
+The first genuinely positive delivery fact in this record. On a copy of real data, with suggested lines
+confirmed to their top candidate as a human reviewer would, invoices approved and an export created: a
+workbook is produced with its header, tax-breakdown and detail sheets populated, for **5 of 20**
+invoices, identically on the mainline and on both arms of the currency change. No aliases were learned in
+the process, before or after.
+
+The 15 refusals are named and are not mysteries: a required subtotal or tax total absent, unmapped lines,
+required supplier fields absent, and a supplier/item mismatch. Those are the work queue.
+
+Two labels this figure must carry wherever it is quoted. It is **harness-assisted**: a harness stood in
+for the human who confirms suggested lines, so it measures what the system delivers *with* a reviewer,
+not touchless throughput. And for that reason it is **not comparable** with the machine-only first-time
+match metric — the two differ by definition and not by defect, which is a separate fact from the
+relabelling defect recorded earlier and must not be folded into it.
+
+### The worst part of the second withdrawal: this document already contained the refutation
+
+An earlier section of this same document, written by the same author, records that the currency of the
+master rows being compared against is never tested, that an invoice in the operating currency matched
+onto rows denominated otherwise is compared against **incommensurable figures**, and that a large real
+discrepancy can therefore fall inside an absolute per-unit tolerance and be approved silently.
+
+That is the refutation of the variance claim, in full, several hundred lines above the claim. It was
+written before the claim was made. When the above-tolerance count arrived from a measurement run, it was
+recorded as a finding about prices without anyone — least of all me — going back to the section that said
+those two quantities are not comparable. The number was new, so it was treated as evidence, and the
+existing conclusion that would have disqualified it was not re-read.
+
+This is a harder failure than missing something. A missed fact is a gap in knowledge; **this was a fact
+already established, written down, and owned, that was not consulted when the very measurement it
+governed came in.** It is the reason the earlier prediction "the cost stage will execute for the first
+time when matching lands" felt like a confirmation when it arrived: the prediction was about the stage
+running, and the stage running was mistaken for the stage producing a meaningful number.
+
+Two standing rules follow, and they apply to this document first:
+
+- When a stage produces a number for the first time, re-read what this record already says about that
+  stage's inputs **before** recording the number. First execution is the moment a latent input defect
+  becomes visible, not the moment it stops mattering.
+- A finding is not retired by being superseded in attention. The incommensurability note had not been
+  withdrawn, contradicted or resolved. It was simply older than the excitement.
+
+### The status of the two withdrawals, stated rather than assumed
+
+Rule 7 above applies to the withdrawals themselves, and a reviewer pressed the point before these lines
+were written: withdrawing on one instrument has the same single-instrument shape as publishing on one.
+The asymmetry that makes withdrawal the right call anyway is that removing a claim costs a delay when it
+is wrong, where leaving it standing costs a wrong plan built on top of it. So the withdrawals stand, and
+their evidentiary status is recorded exactly:
+
+- **The duplicate-row diagnosis: withdrawn on one instrument. A second, independent one is in flight.**
+  That instrument was designed to use the matcher's own normalisation and catalog preparation before the
+  withdrawal existed, so it is a test of the withdrawal rather than a confirmation of it.
+- **The vocabulary-gap explanation that replaces it is NOT YET CORROBORATED.** It rests on the same
+  single instrument as the withdrawal. It is the better reading of the evidence available, and it is not
+  established. No plan may be built on it yet.
+- **The currency-basis finding: one instrument, and the reviewer who audits this record holds no view on
+  it** and has said so rather than nodding it through. Its strength is not the count but the
+  discriminator: two groups exchanging places under a single scale factor, split cleanly by item family.
+
+### Which population, and a prediction filed against this record
+
+The withdrawal above concerns the lines a change left behind — the ones still awaiting review after it
+landed. It says nothing about the lines the change **moved** to automatic, and it must not be read as
+saying anything about them. Those are two different populations and only the first was measured.
+
+A reviewer has filed a prediction on the second, before their numbers were available, and it is recorded
+here before the answer is known. The reasoning: a duplicate-collapse rule folds only rows sharing one
+item identifier, so if the residual lines have no exact normalised row at all, the collapse is unlikely
+to be what moved the automatic count — and the movement would instead belong to the two other mechanisms
+that shipped in the same commit, a lift of a scoring cap and a change of ranking key. If that holds, then
+this record's "two harnesses, one number, neither built from the other" corroboration was measuring a
+different mechanism from the one it was cited for, and that sentence falls with it.
+
+**The inference is well-formed and it crosses the population boundary just named**, which is why the test
+rather than the argument decides it: a four-cell run, collapse on and off against the cap lift on and
+off. Properties of the residual are suggestive about the movers and not probative, and a single number
+cannot attribute a three-part change no matter how many instruments reproduce it. The converse is filed
+too: if switching the collapse off materially lowers the automatic count, the duplicate mechanism is
+doing real work and the withdrawal above is at least partly premature.
+
+### A dependency in the export figure, flagged before it is discovered
+
+The export run confirmed suggested lines to their top-ranked candidate, standing in for a reviewer. Top
+rank is produced by the ranking key — one of the three mechanisms under dispute above. So if any
+confirmation in that run went to a line the matcher would not have ranked first before the ranking
+change, the 5-of-20 export figure inherits the disputed mechanism, and the figure is contingent on the
+dispute resolving rather than independent of it.
+
+This has not been checked. It is recorded now, unchecked, because the point of writing it down before the
+answer is that nobody later gets to discover it and call it a surprise.
+
+**And the dependency is on the ranking key alone, not on "the dispute".** The sentence above originally
+said the export figure was contingent on the duplicate-collapse dispute resolving. That bundled three
+mechanisms into one dependency — the same bundling error this record charges against a PR label two
+sections earlier, committed here while describing it. The three can resolve in opposite directions: the
+collapse may turn out to do nothing while the ranking change does everything, in which case the export
+dependency is live *and* the duplicate diagnosis stays withdrawn. Every dependency in this record names
+which of the three mechanisms it rests on, or it is not a dependency, it is a mood.
+
+### The population the arbitrating instrument actually measures, and its stated limits
+
+The reviewer running the four-cell experiment has recorded, before their numbers exist, that the
+population they measure is neither the residual nor the movers. It is the set held **non-automatic at
+baseline**, computed with the mechanism patched off — which is the union of the two, because a moved line
+is by definition one that was held at baseline and is automatic afterwards. That is also exactly the
+population the withdrawn claim named. So the instrument was pointed at the claim's own population from
+the start, and the population criticism above applies to the argument that was offered for it, not to the
+instrument itself.
+
+This matters because that population can separate three readings the withdrawal cannot:
+
+- The baseline-held set contains a large duplicate-pair subset: the original diagnosis was right about the
+  moved lines and the withdrawal is over-broad.
+- It contains none: the diagnosis was wrong about its own stated population, not merely about the residual.
+- It contains some: that count is the honest size of the duplicate mechanism, and the remainder of the
+  movement belongs to the other two mechanisms in the same commit.
+
+Two limits were declared by the instrument's own operator rather than found by its reader, which is the
+standard this record asks for and rarely gets:
+
+1. Their exact-candidate test is normalised-description equality against the prepared eligible catalog,
+   **without** the matcher's additional compatibility requirement, which the matcher applies alongside
+   exactness. Their counts are therefore an **upper bound** on what the matcher would treat as exact. A
+   zero is decisive; a large number is a ceiling, not a measurement.
+2. They strip every persisted selection from each line before matching, so the relabelling defect cannot
+   enter the measurement. Their figures describe what the matcher decides **from the description**, which
+   is the right frame for this question and the wrong frame for anything about re-matching.
+
+### What the currency discriminator actually establishes, stated more narrowly than before
+
+The swap test was described earlier as showing the master's cost basis is mixed across item families. A
+reviewer has proposed the right attack on it: apply the factor to one family at a time rather than
+globally, because a global factor against a mixed basis might produce a clean-looking exchange as an
+artefact of where the tolerance band sits. The objection deserves an argument rather than a dismissal, and
+working it through narrows the claim.
+
+The tolerance is absolute and two-sided, so a line's distance from tolerance is **V-shaped** in the
+factor, not monotone: raising a master cost first moves a line toward the invoice price and then past it.
+So a single global factor *can* move different lines in opposite directions even on a uniform basis — the
+swap does not follow from bidirectionality alone. What it does require is that one group sat at a
+cost-to-price ratio near unity and the other near one-twelfth. That is a **bimodal ratio distribution**,
+and no single basis produces one.
+
+So the honest statement is narrower than the earlier one: **the swap establishes two ratio clusters
+separated by roughly one order of magnitude, clustered by item family.** That the master declares a
+currency differing from the invoices' is strong corroborating evidence for *why* the clusters exist, and
+it is not what the swap proves. Currency is the best available explanation, not the measurement. The
+per-family test remains the right next step and is now the one that would distinguish a currency basis
+from any other cause of two ratio clusters.
+
+Which leaves the ruling unchanged and better founded: the cost axis is not evaluable, no numerator is
+published, and the question of which basis is authoritative goes to the master's owner.
+
+## The withdrawal is itself withdrawn: the duplicate diagnosis is confirmed
+
+The four-cell experiment is complete and it reinstates the finding this record retracted. All figures come
+from the matcher itself on a fresh read-only copy, with every stored selection stripped so the relabelling
+defect cannot enter, at one tree, with the mechanisms patched independently.
+
+**The control validates the instrument before anything else is read.** With both mechanisms off, automatic
+decisions come to 21 — exactly the corpus's own stored count. The harness at the pre-change setting returns
+what the corpus already contains, so everything above that line is the change and not the measuring device.
+This is the check this record demanded of others and its absence is what made an earlier instrument of my
+own produce a confidently wrong split.
+
+**The decomposition, additive with a small interaction:** 21 at baseline, plus 21 from lifting an
+uninformative unit-of-measure scoring cap, plus **115 from collapsing duplicate master rows**, plus 5 that
+require both mechanisms present, giving 162.
+
+**The re-derivation, by a different route, lands on the same 115.** Of the lines held non-automatic at
+baseline, those having at least one exact-description eligible master row number 117 — and every single one
+of them has **exactly two**. Not one, not three. Of those 117, **115 are two rows sharing one item
+identifier**, and 2 are genuinely different items carrying two distinct costs, which the collapse rule
+correctly refuses to fold. After the collapse, all 115 are automatic and none remain in review. Two
+measurements, taken by unrelated routes, agreeing on the same number.
+
+The original claim was 107 of 109; this is 115 of 117 — same shape, same striking two-candidate
+uniformity, same two genuinely ambiguous cases, slightly larger for reasons declared before the run. That
+is a second instrument reproducing a finding, not a near miss.
+
+**Both refuting measurements were also correct, and the error was the inference between them.** The
+residual having no exact normalised row is exactly what this data *predicts*: every exact-row line becomes
+automatic, so none are left afterwards. Nothing was ever in contradiction.
+
+### How I got this wrong, which is worth more than the finding
+
+**I withdrew a claim about the lines held at baseline on evidence about the lines left behind.** That is the
+population boundary this record states as rule 5 — and two messages before making this error I had caught
+the same reviewer crossing the same boundary in the opposite direction, explained why it mattered, and
+written the rule down. Then I crossed it myself, in the other direction, on my own claim.
+
+Three failures compounded, and the order matters:
+
+1. I treated a refutation of my **evidence** as a refutation of my **conclusion**. A reimplemented equality
+   rule had indeed manufactured the exact-tie test, and that was a real defect in my instrument. It made
+   the conclusion *unsupported*. It did not make it *false*. An unsupported claim needs a better
+   measurement; a false one needs a different hypothesis, and I ordered the wrong work.
+2. I did not check the population of the refuting measurement, having just written the rule that requires it.
+3. **Withdrawing against myself felt like rigour, and it substituted for the check.** That is the part to
+   watch for: self-correction carries the same false confidence as self-congratulation, and I published a
+   sweeping retraction — "no forecast survives" — in the register of someone being careful. Volume of
+   self-criticism is not evidence. It reads as diligence and it can be exactly as unfounded as a boast.
+
+**Rule 8: withdraw what was refuted, and say whether the claim is now unsupported or false.**
+**Rule 9: a correction gets the same scrutiny as a claim, including the population check, especially when
+it is against yourself.**
+**Rule 10: two instruments that read the same untested input do not corroborate each other about that
+input — they inherit it.** Before citing a reproduced number, ask which claim it is evidence *for*. If both
+competing hypotheses predict the same number, the number is not weak evidence for either; it is none.
+
+One thing stays retired, and not because of this: the assertion that no forecast of the automatic-match
+rate survives was never resting on the duplicate finding. The 92 lines with no exact master row at all
+remain unexplained, and by line count they are the larger half of the problem. The duplicate finding
+describes what blocked 115 lines. It was never a forecast, and it is not one now.
+
+The ranking key, the third mechanism in that commit, could not be isolated by patching and was not faked.
+It remains unmeasured, so the export figure's dependency on it stays open.
+
+## The cost-comparison count survives reproduction and still proves nothing about prices
+
+The comparison stage's above-tolerance count has now been produced by a second instrument and agrees with
+the first. That agreement tests one thing: that the stage computes what its code says it computes. It is an
+arithmetic check. It cannot reach the semantics, because both instruments read the same master cost column
+and neither asks what that column is denominated in — the shared, untested input. Rule 10.
+
+The count's predicate is "a master cost existed and the absolute per-unit difference exceeded the
+tolerance". That is equally true under the currency-basis reading and under a genuine-price-variance
+reading. **A number both hypotheses predict cannot be cited in favour of either**, so the reproduction
+leaves the interpretation exactly where the withdrawal left it: unsupported, not false.
+
+**What the stage's own history shows is worse than an ambiguous count.** Before the rematch, the comparison
+status was *unavailable, no match* on 336 lines and *within tolerance* on 21, with **zero** above tolerance
+— and the 336 were exactly the union of the low-confidence and unmapped line sets. The pricing field was a
+re-encoding of "not matched" wearing a pricing name: a fourth instance of the silent-failure class, where a
+control reports a benign value because it is measuring something other than what its label says. After the
+rematch the three states sum to the machine-decided line count, which is the first point at which the field
+carries pricing information at all.
+
+**The single discriminating evidence stays labelled as such.** Only the ratio structure separates the two
+readings — two clusters about an order of magnitude apart, clustering by item family — and that remains
+**one instrument, nothing in flight**. It is recorded here at that strength and no stronger.
+
+**For a reviewer asked to sign off on the count:** ask which claim it is evidence for. "The stage computes
+the comparison correctly" is supported, and a sign-off should say only that. "There are that many price
+variances" is not supported, and the gap to name is that no code path tests the currency of the master cost
+column against the invoice's. That question is answerable from the code and requires no position on any
+withdrawal.
+
+## The mechanism that makes lines touchless also picks their barcode arbitrarily
+
+Found by the same reviewer during the confirmation, and it survives it. The collapse guard refuses to fold
+a group whose members diverge on unit cost or unit of measure. It does not look at the identifier the
+surviving row **exports**.
+
+Of the 115 lines the collapse promotes to automatic, **57 fold two rows carrying two distinct, non-empty
+barcodes** — not one value against a blank, two different real values. A further 58 fold a value against an
+empty one. None diverge on parent item or master purchase-order number.
+
+The survivor is the group's first member after ranking, and for two rows of one item with identical
+description, cost and unit of measure every ranking term ties down to the last one: the catalog row key,
+compared as a string. **So the exported barcode is decided by lexicographic row-identifier order, and
+re-importing the same master in a different order can change the barcode exported for the same invoice
+line.** Nothing warns, nothing records the discarded value, and no human sees it.
+
+**The severity is in which lines these are, not in how many.** They are not edge cases parked in a review
+queue. They are precisely the lines the collapse promotes to automatic — the lines this programme most
+wants to ship without a human looking at them. The mechanism that delivers the touchless outcome is the
+mechanism that picks the barcode arbitrarily, and the barcode is how the receiving system identifies the
+goods.
+
+### A second loss in the same guard — real in the code, zero instances in this master
+
+The ranking function has no term for the exported identifier at all. So in a group where one row carries an
+identifier and the other is empty, the survivor is still decided by row-key order, and **the empty value can
+win over one the master holds.** That is read off the guard and the ranking function directly and it is a
+real latent defect: the fix must prefer a non-empty value deterministically, which is a different change
+from refusing on disagreement.
+
+**It has no instances here, and the number is zero rather than unmeasured.** The pairs first reported as
+"one value against a blank" were re-derived and are pairs where **both rows carry the same identifier** — an
+instrument that collected values into a set, so two identical values became one and fell into the
+else-branch meant for the blank case. Re-counted by values instead of distinct values: of the implicated
+lines, the ones carrying two *differing* identifiers are unchanged, the rest carry two *identical* ones, and
+**not one pair anywhere in the resolved scopes puts an identifier against a blank.**
+
+Stating zero matters more than leaving it unmeasured, because "unmeasured" invites a later rediscovery of
+exactly this. The defect stays in the fix's scope on the strength of the code, not of an occurrence.
+
+**Rule 11: before collapsing values into a set, ask whether the question is about DISAGREEMENT or about
+COMPOSITION. Only the second is destroyed.** "Do these rows disagree?" is genuinely a distinct-value
+question and a set answers it correctly. "What pair of values is this?" is not, and a set silently answers
+a different question instead — here, removing the duplication the instrument was built to measure. The
+audit that followed found the same construct used correctly four more times in the same scripts, so the
+usable rule is this distinction and not a suspicion of sets. It surfaced as an unexplained zero where a
+count was expected, which is the signal this record treats as a defect indicator everywhere else.
+
+**A second shape, checked in the product rather than assumed.** A dictionary keyed on something that
+should be unique collapses an *identity*: if two records ever share the key, one silently wins and the
+other becomes unreachable, with no error and every downstream count short. Two instances were examined.
+The collapse guard's own cost and unit sets are **not** vulnerable, because a missing value enters the set
+as a member, so a group with a value on one row and none on the other has two members and is refused —
+which matters for scoping the identifier fix: the defect is that the identifier is **absent from the guard
+entirely**, not that a set was used, and a fix written as "audit the sets" would change two correct lines
+and miss it. The matcher's catalog lookup, keyed on the catalog row key, *is* vulnerable in principle; on
+the supplied master every row's key is present and distinct, so there is **no instance** — latent and
+unguarded rather than safe by construction, recorded so it is not rediscovered.
+
+
+**Rule 12: a timestamp tells you when, not which.** A version's commit time bounds what *could* have been
+running when an observation was made; it never establishes what *was*. Attributing stored data to a version
+means reproducing the data, and reproducing it **per record** — two versions can agree on every total while
+disagreeing about which records they counted, so a total that matches is not a reproduction. This rule is not
+a corollary of the labelling rule that exposed it: labelling asks for the observation time and gets it right;
+this asks what produced the observation, and a time does not answer that.
+
+**Rule 13: an exclusion is only as wide as its enumeration, so state the enumeration inside the claim.** "No
+version of this code does X" is a statement about a population, and the population is whatever the walk
+actually visited — a first-parent history walk is not the repository, and a branch that was never merged is
+still committed code. The same applies to any sweep: name what was enumerated and by what command, or the
+claim silently means something narrower than it says. Getting this wrong produces the most dangerous kind of
+finding, a **completeness** claim, which reads as the end of an investigation rather than the middle of one.
+
+### What this obliges the record to do
+
+The automatic count must be reported on both sides of this guard, and the higher figure must not be quoted
+again without stating that a substantial part of it rested on an arbitrarily chosen identifier. A figure
+whose basis has changed while keeping its label is the defect this record spends most of its length on.
+Nothing has been delivered — the export has only ever run inside this harness — so there is no recall
+question today. If anything ships before the guard lands, there is.
+
+This does not block the collapse, which does real and correct work on 115 lines. The guard should refuse,
+or at least warn, on a group whose exported identifiers differ, exactly as it already does for cost and
+unit of measure — a small change to a function that already has the right shape. Until it lands, the
+export of an automatically matched line is not reproducible from the master alone, and **that claim must
+not be made to the receiving system's owner.**
+
+## The fifty-invoice gate of record ran, and it is not evaluable
+
+The batch this programme's minimum volume was set against has now been executed on the text class at a
+locked image, on a fresh database, with the supplier rule configured from a prior discovery run, and with
+the load rule satisfied at firing. Fifty distinct documents, none of them a repeat.
+
+**Nothing exported. Zero of fifty.** Every document reached a terminal state and none failed outright, so
+the run is sound; but the accuracy question the gate exists to answer was never reached, because accuracy is
+measured on exported workbooks and there were none. **The verdict is NOT EVALUABLE — not a pass, and not a
+failure.** The distinction is not a courtesy: "nothing exported" and "nothing correct" are different
+statements, and only the first is measured. The touchless and cycle-time measures remain not evaluable for
+the same reason.
+
+**Where the fifty stop.** Of 710 extracted lines the matcher decided 31 automatically, offered 456 as
+suggestions and left 223 with no candidate at all. Forty-six of the fifty documents are blocked at matching.
+Four yielded no lines at all — a short text layer where the header was found and no line table existed.
+The remaining blocks are supplier fields: **supplier identity resolved on 23 of 50**, so 27 documents stay
+blocked on supplier requirements even with a rule configured, and the rule could only ever cover the 23 it
+was derived from.
+
+**This bounds the duplicate-row finding rather than contradicting it.** The collapse that lifts lines to
+automatic only engages inside a resolved supplier scope — the caller gates it on exactly that. The
+arbitration ran on a corpus where supplier identity resolved on nearly every document; the fifty resolve
+under half. **So the mechanism that lifts the most lines has a precondition that fails on most of this
+population, which makes supplier resolution the head of the chain and the duplicate fix second.** A repair
+whose precondition fails on half the population delivers on half the population, and no figure from the
+smaller corpus forecasts this one.
+
+**The unresolved documents are two different problems and should not be one task:** those where no supplier
+name was extracted at all are an extraction failure; those where a name was read and matched nothing are a
+supplier-master coverage or normalisation failure. The second group is smaller and far more diagnostic.
+
+**A gate built from a single run cannot fail informatively.** The run's new-reason-code check reported a
+failure because its set of known codes had been sampled from one earlier run, so every new population
+produces "unknown" codes. It fails closed and noisily, which is the safe direction, but it carries no
+information. It should be built against the reason-code registry, so that "first encounter" means "not
+declared anywhere in the code".
+
+## The pricing control has never fired, and has barely been reached
+
+On the fifty, the cost-comparison status is *unavailable, no match* on 679 lines, *within tolerance* on 31 —
+exactly the automatically decided lines — and *above tolerance* on none. **The control reached about four
+per cent of lines and has not fired once on this class.**
+
+This is the second population in which that field carries match state rather than price information. It is
+**not** a tautology, and the distinction matters: on the smaller corpus the same field returned
+above-tolerance on a substantial share of machine-decided lines, so an automatic line demonstrably *can*
+come out above tolerance. What the two populations jointly support is that **the control is unexercised**,
+which is a coverage statement about the evidence, not a claim that it is incapable of firing. Two
+instruments, two populations, on the coverage claim only. The discriminating question is still what the
+master cost column is denominated in.
+
+## A single page at a common scanner setting fails the whole invoice
+
+The parser's resource bounds are a frozen structure and the pixel fields are not reachable from settings,
+unlike the file-size and page-count bounds beside them. Its own docstring is explicit that a bound **fails
+the whole document and truncates nothing**.
+
+**An A4 page rendered at 600 dpi is about 34.8 megapixels against a per-page ceiling of 30 million.** So one
+page scanned at a resolution many scanners use by default refuses the entire invoice, and there is no
+setting an operator can change. At 300, 400 and 500 dpi a page fits.
+
+**The two bounds also contradict each other.** The page ceiling advertises fifty pages, while the total-pixel
+budget permits roughly seventeen pages at 300 dpi and about six at 500. A twenty-page scan at 300 dpi is
+refused by a system that says it accepts fifty pages, and the failure is wholesale.
+
+For the installation this record is about — a from-zero install on a machine whose operator scans invoices at
+the scanner's default — this is a launch blocker and not a tuning item. The minimum fix is to make the pixel
+bounds reachable from settings as the neighbouring bounds already are. The better fix is to **downsample an
+oversized page instead of failing the document**: rendering above roughly 400 dpi buys no recognition
+accuracy, and refusing a whole invoice over one page is the wrong trade. Either way the page and pixel
+bounds must be made consistent, or the advertised page count stated as resolution-dependent, and the Windows
+procedure must name a supported scan resolution until the bounds move.
+
+## Eight runs at volume: throughput is not the problem
+
+The volume question this programme was scoped around has been answered, and the answer is that volume was
+never the constraint. Fifty distinct sources, run at one, two and four copies each, on a locked image, fresh
+database each time, with the load rule satisfied at firing.
+
+**Text class: 50 documents reach terminal state in about four minutes, 100 in about eight and a half, 200 in
+about ten and a half.** The curve flattens rather than steepening. Two hundred documents of the OCR class
+took about sixteen and a half minutes, though that run's host load rose above the rule mid-way so it is a
+gated start and not a gated run. Peak memory across every run stayed under about 2.1 GiB.
+
+**And every one of those runs exported nothing.** Zero of fifty, zero of one hundred, zero of two hundred,
+on both classes. So the honest answer to "how many invoices can this handle" is that ingestion comfortably
+handles two hundred and conversion delivers none, and the second number is the one that matters. No
+accuracy figure exists at any volume, because accuracy is measured on exported workbooks.
+
+**The one strong positive of the night: the pipeline is deterministic.** With each source duplicated two and
+four times, every reason code, every yield bucket and every text-length group scaled by exactly the copy
+factor. Identical content produced identical parse and match results, every time, under concurrency. That is
+a real property and it is worth stating plainly, because it means the failures below are properties of the
+documents and the code rather than of timing — with one exception, noted further down.
+
+## The OCR class does not work at all, and the failure is after text production
+
+Of fifty scanned documents, the matcher decided **nothing** automatically — not one line, at any volume. The
+whole class yielded about a hundred and twenty lines against a text class that yielded seven hundred from
+the same number of documents, and supplier identity resolved on **zero of fifty**, at every scale.
+
+**Most of these documents produce plenty of text and no lines.** Of the thirty-four that yielded no lines at
+all, thirty-one carry substantial recognised text — tens of thousands of characters, with the invoice number
+and total often found — and the line-table parser returns nothing from it. Two carry no text at all and end
+in review with a missing-lines flag where a dedicated empty-recognition outcome would be the correct
+terminal.
+
+So the OCR failure is **downstream of text production**, in the parser that has to find a line table in
+recognised text. That is a narrower and more tractable target than "OCR does not work". It is not, however,
+a clean bill for recognition quality: text being present is not text being correct, and no digit-level
+accuracy measurement exists yet. Both questions are open and they are different questions.
+
+**This also bounds the duplicate-row finding to nothing on this class.** The collapse only engages inside a
+resolved supplier scope, and supplier identity resolves on none of these documents. The mechanism that lifts
+the most lines elsewhere is **inert on the scanned class**.
+
+## The duplicate-invoice guard cannot fire where supplier identity is unresolved
+
+Running each source twice showed the duplicate-invoice check working exactly as designed: every repeated
+document was flagged. But the count of flags equalled twice the number of documents **whose supplier
+resolved** — and the documents whose supplier did not resolve were not duplicate-checked at all, because the
+check is keyed on supplier plus invoice number.
+
+**So the control against paying the same invoice twice is inert on the documents whose supplier could not be
+identified** — over half the text class and the entire scanned class. It does not fail, warn or degrade; it
+simply has nothing to compare, and the document proceeds looking clean. This is the silent-failure class
+again, and of all its instances in this record it is the one with a direct financial consequence.
+
+A second question the same experiment raises: at four copies, all four were flagged, including the first.
+Whichever copy is the legitimate original is flagged alongside the repeats, so the flag identifies a
+collision rather than an offender, and an operator re-uploading a document blocks the one already on file.
+That needs a decision about which record the guard should protect.
+
+## One terminal outcome depends on host load, and an operator cannot tell it apart from a bad document
+
+At the largest scanned volume, four documents failed on a processing time budget that the same documents
+clear at low load. Their content did not change; the host was busier. Because a bound failure refuses the
+whole document, the same invoice is a hard failure on a loaded machine and a success on a quiet one.
+
+Everywhere else this record found determinism; here it did not. And the operator sees a failed document
+either way, with no way to distinguish "this file cannot be processed" from "the machine was busy, try
+again". **Time-budget failures must be a separately named, explicitly retryable class, distinct from content
+failures**, before any of this is put in front of a user — otherwise the correct response to a transient
+condition is indistinguishable from the correct response to a permanent one.
+
+## A refusal that works, and a flag that hides what it refused
+
+Credit notes are recognised on purpose. The document-type enumeration carries a credit-note category in both
+the extraction and service layers, three separate scoring rules detect one from its title, from a phrase in
+the body and from a credit-note number field, and synthetic credit-document layouts were added as fixtures.
+Approval then refuses anything not classified exactly as an invoice, with a named reason code and a message
+saying that only records explicitly classified as invoices can be approved.
+
+**That is the correct behaviour and it should be recorded as such**: the system identifies the document,
+declines to convert it, and says why. It is an unbuilt feature behind a working refusal, which is the
+opposite of every other finding in this record, and whether credit and debit notes should be converted at all
+is a scope question for the requester rather than a defect.
+
+**The flag, however, discriminates nothing.** The refusal's condition is "document type is not invoice", so a
+single reason code covers a credit note, a purchase order, a delivery note **and a document the classifier
+could not type at all**. The count of that flag on the fifty is therefore not a count of credit notes, and
+nothing in this record may present it as one. More importantly, an operator seeing it cannot tell which of
+the four they have — and a delivery note, a credit note and an unreadable scan need three different
+responses. The reason message must name the detected type. It is a small change with a large effect on the
+only screen a human actually uses.
+
+This one was found by re-checking a claim of my own immediately after publishing it, which is rule 9 working
+as intended rather than as an apology.
+
+
+## The matcher silently swaps its scoring function when a declared dependency is absent
+
+The similarity score that decides which catalogue row a line matches is computed by a third-party ranking
+library. That library is a **declared, pinned requirement** and the extraction documentation names it as the
+ranking dependency. The code imports it inside the scoring function and, on failure, catches the import error
+and computes the score with a standard-library string matcher instead.
+
+Nothing records that this happened. There is no log line, no startup warning, no field in any status
+response, and no mention in the run output. The comment on the fallback describes it as a deterministic
+lightweight path for constrained environments, which is an accurate description of the code and an incomplete
+description of the consequence: **a correctly installed system and a system missing one wheel both run, both
+report the same confidences in the same range, and rank candidates by different functions.**
+
+This is the same class this record has catalogued five times over — a control that loses capability and
+returns a normal-looking value — and it is the most consequential instance, because it sits on the function
+the product's accuracy claim rests on. Its practical shape is an installation one. The library ships as a
+compiled wheel; the platforms this system is required to install on from zero are the two where a compiled
+wheel is most likely to fail to build. An operator who hits that failure gets a working application, a
+populated review queue, plausible confidence percentages, and a different matcher, with nothing anywhere
+telling them so.
+
+It also bounds what any accuracy figure means. A confidence percentage produced by this system is a property
+of the code **and of whether one import succeeded**, and that second input has never been recorded in any run
+output, so no figure published before this was found can state which scorer produced it.
+
+**Required, and the shape follows the rule this record uses for every other guard.** A declared requirement
+that the product silently does without is not a fallback, it is an undocumented second product. Either the
+missing library **refuses at startup, naming the library and the install command** — the treatment this record
+has demanded of every other fail-closed control, because a refusal that names its remedy gets fixed and a
+silent degradation gets shipped — or, if a scorer-free mode is genuinely wanted, it must announce itself: a
+startup log line, a field in the status response, a line in every run header, and a visible mark on every
+confidence value it produced. And no accuracy figure may be published by anyone without naming the scorer
+that produced it.
+
+## The stored match results were produced by a build the tested versions do not reproduce
+
+Every figure this record has read off the corpus database's stored match column was written in a twenty-second
+window on the evening of the freeze, and **the column has never been re-matched.** Five main-line commits
+landed after it, including the supplier-resolution fix, the duplicate-row collapse, the unit-of-measure lift
+and the uncapped ranking. So the stored split is not a measurement of the current tree.
+
+That much was established and survives. What was published alongside it did not, and the correction is worth
+more than the original claim. The column was attributed to the newest commit that existed at the moment of
+processing — an inference from commit timestamps, presented as a mechanism. A faithful replay of that commit
+refuted it: the automatic count agrees, but the boundary between *suggested* and *unmatched* moves by
+twenty-nine lines, every one of them in the same direction, and the stored value lies **outside** both the
+replayed commit's figure and the current tree's. A comparison of counts alone would have accepted the
+attribution as close enough. The per-line test is what killed it.
+
+The rule that failure names is not the one that found it. **A timestamp tells you when, not which.** Commit
+times bound what *could* have been running; they do not establish what *was*. Attributing an observation to a
+version requires reproducing the observation, not dating it — and the reproduction has to be per line, because
+two different versions can agree on every total and disagree about which lines they are counting.
+
+The attribution attempt also crossed a population boundary that is worth naming, because it is the third
+appearance of the same shape in this record. The excluded versions were enumerated by walking the first-parent
+main line. **A first-parent walk is not the repository.** The tree that the surviving build artefact actually
+contains sits on a branch that is not an ancestor of the main line, so it was never in the candidate set at
+all. A conclusion of the form "no version does this" is only as wide as its enumeration, and the enumeration
+belongs in the claim.
+
+Two things follow for anyone reading this record.
+
+**The stored split must not be cited as current behaviour, and must not be re-labelled with a commit either.**
+Stamping it with the version that was inferred would put a false provenance on real data — worse than an
+unlabelled figure, because a label invites trust. Until a replay reproduces it line for line, the column is
+unattributed.
+
+**One figure in that column is robust, and it is the one everything has been reconciled against.** The
+automatic set is invariant: the same count, and by set equality the same lines, in the stored column, in the
+current tree's control cell and in the replay of the older commit. Across three builds the automatic criterion
+returns the same lines while the suggested/unmatched boundary moves. Whatever differs between those builds
+moves candidate retention and does not touch the automatic rule. The published constants are common to all of
+them — the candidate limit, the suggestion floor and the score ceiling all read identically off the stored
+candidate lists — so the difference is a small arithmetic difference in scoring near the floor, not a
+threshold, a scope, a limit or a wider catalogue.
+
+One route to the discrepancy was closed rather than left open. There *are* post-match edits by a real user on
+every document, and the update path does not re-run matching, so a stale-status-after-edit explanation was
+available and plausible. It is dead: the only fields edited were the supplier site and the tax code, no line
+was edited, no alias was learned, and the matching scope keys on the supplier identifier rather than the site.
+The edits cannot move a match. The catalogue is frozen — every row carries a single creation instant and no
+later write — and the alias table is empty, so the inputs did not move either.
+
+What remains open is narrow and stated as open: **which build produced the column.** A candidate has been
+identified from a surviving build artefact whose creation instant falls nine seconds before the catalogue was
+ingested, and whose two relevant source files match a commit pair on a branch off the main line. That is a
+lead, not an attribution, and it is being tested by the same per-line standard that refuted the last one.
+
+## An acceptance build that cannot say what it was built from
+
+The build artefacts on this host record the project and the tool version that produced them. **None of them
+records the commit it was built from, or whether the tree was clean.** The corpus build was recovered only by
+extracting its source files and matching them against stored objects by content hash — which worked, and which
+is not a procedure anyone should need.
+
+Two consequences, and they point in opposite directions, so both belong here.
+
+The severity is real: **an acceptance measurement whose code cannot be named is not a measurement anyone can
+re-run**, and at least one artefact on this host contains a source file whose content does not exist in version
+control at all — an uncommitted working tree baked into something runnable. That is not a hypothetical about
+process hygiene; it is a build that no commit describes.
+
+The remedy is smaller than the severity suggests, and the stronger version of this finding overstated it. The
+bytes are not lost. A build artefact outlives the container that ran it and the branch it came from, and both
+of the relevant ones were reconstructed from artefacts in under a minute. What is missing is **provenance, not
+code** — which changes the repair from "retire the corpus" to "replay it from the artefact, and make the build
+record its own commit". The acceptance criterion is that one line: a build stamps the commit it was built from
+and a flag for a dirty tree, and a result cites it.
+
+
+**There is a third category, and it is the one that makes the missing commit stamp serious.** Two of the cases
+are easy to describe: a clean build of a commit, and a build containing a source file whose content is nowhere
+in version control. The artefact that appears to have produced the corpus is neither. Its two decisive source
+files are each carried by a commit — but by **two different commits**, and the one holding the newer file was
+written to the repository fifty-nine seconds *after* the artefact was built. It was built from a working tree
+that was dirty at the time, and the dirt was committed a minute later.
+
+This is the deceptive case because **after the fact, every file resolves to a commit and the build looks
+reproducible.** Hashing each file and looking it up answers "all committed" and is worse than useless; it is
+reassuring. The check that actually discriminates is the conjunction — whether **one** commit holds **all** of
+them at once — and nothing in the build pipeline records enough to ask it. That is the concrete argument for a
+dirty-tree flag rather than a commit stamp alone: a commit stamp on this artefact would have been *available*
+for every file and *wrong* for the build.
+
+It also fixes what a citation of this data may say. If the replay of the artefact's own bytes reproduces the
+stored column line for line, the column becomes attributable **to an artefact and not to a version** — cited by
+the artefact's digest and the content hashes of its source files, because there is no commit to name and naming
+one would be the false stamp this record has already barred. If it does not reproduce line for line, the
+candidate is excluded outright. There is no third outcome: per-record equality is binary, and a small residual
+is a refutation with a residual, not a near-reproduction.
+
+One operational consequence, dull and urgent. The artefact is retained only because it still carries a tag, and
+**no running process holds it**, so a routine reclamation of unused build artefacts would destroy the only copy
+of the build every acceptance figure rests on. Its source files have been copied out and hashed. A programme
+that cannot name its build is at least able to keep it.
+
+## The promotion defect has no trade-off to weigh
+
+Two runs of the matcher over the same documents at the same commit, identical except for whether each line
+arrived carrying its persisted selection, settle what the promotion path actually does. Both cells return the
+same suggested count and the same unmatched count. **Exactly twenty-one lines differ, and every one of them is
+the same transition: a line that would have been reported as an automatic decision is reported instead as
+confirmed.** Nothing else moves — not which line matches, not how many match, not what they match to.
+
+So the relabelling is not one effect among several; **it is the only effect.** The promotion path contributes
+nothing to matching quality and costs the line's original score and its provenance. There is no benefit to
+balance against the loss, which is the best position a fix can be in: it can be made to preserve the score and
+the provenance without anyone having to argue about what is given up. The same twenty-one-line decomposition
+has now appeared in a third harness that was not aimed at it.
+
+## The publication gate is structurally blind to history
+
+The pre-push control enumerates candidate files from the index and the working tree. **It cannot see content
+that exists only in an earlier commit**, so a value removed by a later commit is invisible to it by
+definition — the gate does not fail, it reports nothing to find.
+
+The consequence is about a decision rather than a defect. Where earlier commits carry content that a later
+commit removed, leaving it in place is not "accepting a known static risk"; it is accepting a risk **the
+automated control cannot raise its hand about**. If the repository's visibility is ever widened, the gate will
+pass at exactly the moment the risk materialises. That is a reason for a human checkpoint attached to any
+widening decision, and it is the same argument, from the other side, for doing a history rewrite *before* a
+widening rather than after one.

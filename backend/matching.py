@@ -208,6 +208,12 @@ def match_lines(
     # unresolved-supplier fallback, where rows from different suppliers with
     # one rms_item_id are not the same thing.
     collapse_duplicates = _supplier_key(supplier_id) is not None and not fallback_active
+    # Latent, no instance observed: this lookup is keyed on the catalog row
+    # key, so if two prepared rows ever shared one key (a row id reused
+    # across imports, say) only the later row would be reachable by a
+    # persisted selection.  _prepare_catalog refuses duplicate keys within one
+    # catalog, which is what keeps it latent; it is recorded here so the
+    # assumption is visible next to the code that relies on it.
     catalog_by_key = {str(item["_catalog_key"]): item for item in prepared_catalog}
     catalog_by_rms: dict[str, list[dict[str, Any]]] = {}
     for item in prepared_catalog:
@@ -260,13 +266,7 @@ def match_lines(
                         "rms_po_number": selected.get("master_po_number"),
                         "unit_status": unit["status"],
                         "unit_reason": unit["reason"],
-                        "match_status": "confirmed",
-                        "confidence": 100.0,
-                        "candidates": [_public_candidate({
-                            **selected,
-                            "score": 100.0,
-                            "reason": "Supplied catalog row validated against the eligible supplier catalog.",
-                        })],
+                        **_revalidation_decision(line, selected),
                     }
                 )
                 output.append(line)
@@ -949,6 +949,42 @@ def _ranking_key(candidate: Mapping[str, Any]) -> tuple[float, float, str, str]:
     )
 
 
+# Identifiers the duplicate-row collapse must agree on before folding rows of
+# one RMS item.  The cost and UOM checks below refuse blank-vs-real correctly
+# (None is a set member); these identifiers were absent from the guard
+# entirely, so two rows disagreeing on the barcode folded into whichever row
+# ranked first, and the exported UPC of an automatic line depended on catalog
+# row order.  Value-vs-empty is not a disagreement: the survivor carries the
+# one declared value regardless of which row ranked first.
+COLLAPSE_IDENTIFIER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("upc", "UPC"),
+    ("parent_item", "parent item"),
+    ("master_po_number", "master PO"),
+)
+# Reason code named on a line whose duplicate rows disagree on an identifier,
+# and the role that owns it.  (Registered here until the governed reason-code
+# registry lands on main; it maps 1:1 onto a registry entry then.)
+COLLAPSE_DISAGREE_CODE = "duplicate_rows_disagree"
+COLLAPSE_DISAGREE_OWNER = "brand_reviewer"
+
+
+def _identifier_value(member: Mapping[str, Any], field: str) -> str | None:
+    """A declared identifier, or None when the row leaves it empty.
+
+    ``_prepare_catalog`` fills an empty parent item with the row's own
+    rms_item_id, so a parent equal to the item is "undeclared" here.
+    """
+    value = member.get(field)
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if field == "parent_item" and text == str(member.get("rms_item_id")):
+        return None
+    return text
+
+
 def _collapse_duplicate_rows(ranked: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fold several eligible rows of ONE RMS item into their best row.
 
@@ -963,6 +999,14 @@ def _collapse_duplicate_rows(ranked: list[dict[str, Any]]) -> list[dict[str, Any
     because the selected row's unit is what unit_check reads.  A refused
     group keeps every row, so the tie stands and the line surfaces as
     ``suggested`` with a reason naming the divergence.
+
+    The same refusal covers the row identifiers in COLLAPSE_IDENTIFIER_FIELDS:
+    two or more DISTINCT declared values for the UPC, the parent item or the
+    master PO are a disagreement the software cannot settle, so the group is
+    kept and the line carries COLLAPSE_DISAGREE_CODE naming the field(s) and
+    the values that would have been discarded.  One declared value against
+    empties folds, and the surviving row carries that value whichever row
+    ranked first.
     """
 
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -985,6 +1029,17 @@ def _collapse_duplicate_rows(ranked: list[dict[str, Any]]) -> list[dict[str, Any
             divergence.append(f"{len(costs)} distinct unit costs")
         if len(units) > 1:
             divergence.append(f"{len(units)} distinct UOMs")
+        # Identifier disagreement: DISTINCT declared values only; empties do
+        # not count, so value-vs-empty is not a divergence.
+        disagreements: dict[str, list[str]] = {}
+        carried: dict[str, str] = {}
+        for field, label in COLLAPSE_IDENTIFIER_FIELDS:
+            declared = sorted({v for v in (_identifier_value(m, field) for m in group) if v is not None})
+            if len(declared) > 1:
+                disagreements[field] = declared
+                divergence.append(f"{len(declared)} distinct {label}s ({', '.join(declared)})")
+            elif len(declared) == 1:
+                carried[field] = declared[0]
         if divergence:
             if rms_item_id not in noted:
                 noted.add(rms_item_id)
@@ -993,15 +1048,32 @@ def _collapse_duplicate_rows(ranked: list[dict[str, Any]]) -> list[dict[str, Any
                     + " and ".join(divergence)
                     + "; not collapsed, the row must be chosen by an operator"
                 )
+                if disagreements:
+                    note += f" [{COLLAPSE_DISAGREE_CODE}: " + ", ".join(disagreements) + "]"
                 for member in group:
                     member["reason"] = member["reason"] + "; " + note
                     member["_collapse_refused"] = note
+                    if disagreements:
+                        member["_collapse_disagreement"] = {
+                            "code": COLLAPSE_DISAGREE_CODE,
+                            "owner": COLLAPSE_DISAGREE_OWNER,
+                            "fields": dict(disagreements),
+                        }
             kept.append(candidate)
             continue
         if candidate is group[0]:
+            filled = []
+            for field, label in COLLAPSE_IDENTIFIER_FIELDS:
+                value = carried.get(field)
+                if value is not None and _identifier_value(candidate, field) != value:
+                    candidate[field] = value
+                    filled.append(label)
             candidate["reason"] = (
                 candidate["reason"]
-                + f"; {len(group)} eligible catalog rows for this RMS item collapsed (same unit cost and UOM)"
+                + f"; {len(group)} eligible catalog rows for this RMS item collapsed "
+                "(same unit cost, UOM, UPC, parent item and master PO where declared"
+                + (f"; {', '.join(filled)} carried from a sibling row" if filled else "")
+                + ")"
             )
             candidate["_collapsed_rows"] = len(group)
             kept.append(candidate)
@@ -1232,6 +1304,51 @@ def _cost_currency_of(row: Mapping[str, Any] | None) -> str | None:
         value = row.get("rms_cost_currency")
     return value if value not in (None, "") else None
 
+
+def _revalidation_decision(line: Mapping[str, Any], selected: Mapping[str, Any]) -> dict[str, Any]:
+    """Decide the status of a line whose supplied catalog row was found again.
+
+    Revalidating a row is not a decision about who chose it.  A line that
+    arrives as ``auto`` is a machine selection (for example a stored auto line
+    sent back through ``rematch``): it stays ``auto`` and keeps its original
+    ``confidence`` byte for byte, with its stored candidates when it has any.
+    Only a line that arrives as a human decision (``confirmed``, written by an
+    edit the audit trail records) or as a bare supplied identifier with no
+    status (an integration asserting the row) is confirmed at 100.0.
+    """
+
+    if str(line.get("match_status") or "") == "auto":
+        preserved = line.get("confidence")
+        stored = line.get("candidates")
+        if isinstance(stored, list) and stored:
+            candidates = [dict(candidate) for candidate in stored]
+        else:
+            candidates = [
+                _public_candidate(
+                    {
+                        **selected,
+                        "score": preserved,
+                        "reason": "Machine selection revalidated against the eligible "
+                        "supplier catalog; original score preserved.",
+                    }
+                )
+            ]
+        return {"match_status": "auto", "confidence": preserved, "candidates": candidates}
+    return {
+        "match_status": "confirmed",
+        "confidence": 100.0,
+        "candidates": [
+            _public_candidate(
+                {
+                    **selected,
+                    "score": 100.0,
+                    "reason": "Supplied catalog row validated against the eligible supplier catalog.",
+                }
+            )
+        ],
+    }
+
+
 def _public_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
     result = {
         "rms_item_id": candidate["rms_item_id"],
@@ -1239,6 +1356,11 @@ def _public_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
         "score": candidate["score"],
         "reason": candidate["reason"],
     }
+    disagreement = candidate.get("_collapse_disagreement")
+    if disagreement:
+        result["reason_code"] = disagreement["code"]
+        result["reason_owner"] = disagreement["owner"]
+        result["disagreeing_fields"] = dict(disagreement["fields"])
     if candidate.get("catalog_item_id") is not None:
         result["catalog_item_id"] = candidate["catalog_item_id"]
         for field in ("uom", "master_po_number"):

@@ -33,6 +33,7 @@ from .db import (
 )
 from .exporter import SCHEMA_NAME, build_target_workbook
 from . import matching
+from . import reason_codes as reason_registry
 
 logger = logging.getLogger("invoice_studio.service")
 
@@ -48,8 +49,12 @@ def _bounded_workers(raw: str) -> int:
     when the request was cut, so a mis-set value is visible in the logs.
     """
 
-    requested = max(0, int(raw))
     cores = os.cpu_count() or 1
+    text = (raw or "").strip().casefold()
+    # "auto" (the shipped default) is one worker per core: OCR is CPU-bound
+    # and Tesseract runs single-threaded per worker, so the core count is
+    # the point past which 1,000-invoice batches stop getting faster.
+    requested = cores if text in {"", "auto"} else max(0, int(text))
     limit = max(1, cores * MAX_WORKERS_PER_CORE)
     if requested > limit:
         logger.warning(
@@ -76,7 +81,26 @@ DOCUMENT_EXTENSIONS = {
 }
 CATALOG_EXTENSIONS = {".csv", ".xlsx"}
 MATCH_STATUSES = {"unmatched", "suggested", "auto", "confirmed"}
+REMATCH_ACTORS = frozenset({"user", "system"})
+HUMAN_DECISION_ACTORS_EXCLUDED = frozenset({"system", "demo_seed"})
 DOCUMENT_TYPES = {"invoice", "credit_note", "purchase_order", "delivery_note", "unknown"}
+# The first five columns are the established exception CSV contract; the two
+# governed columns are appended so existing readers keep their positions.
+EXCEPTION_REPORT_COLUMNS = (
+    "Invoice ID",
+    "Filename",
+    "Document Type",
+    "Status",
+    "Reasons",
+    "Reason Codes",
+    "Owner Roles",
+)
+EXCEPTION_QUEUE_PAGE = 100
+# K1 touchless: the upload, the approve click and the export click move an
+# invoice along without changing it; every other user-actor event is a
+# correction (edit, rematch, retry) and disqualifies the invoice.
+HANDOFF_EVENTS = {"uploaded", "invoice_approved", "invoice_exported"}
+NON_HUMAN_ACTORS = {"system", "demo_seed"}
 COST_POLICY_MODES = {"invoice_only"}
 ISO_CURRENCY_PATTERN = re.compile(r"[A-Z]{3}")
 # Comparison reason codes recorded on a line next to target_cost_comparison_status.
@@ -155,6 +179,47 @@ class UploadRejected(ServiceError):
     pass
 
 
+# Extraction methods whose lines are parsed from recognised text (a text layer,
+# OCR, a plain-text or DOCX body).  For these, zero non-whitespace characters
+# of recognised text means the document could not be read at all, which is a
+# processing failure, not an invoice that was read and found to have no lines.
+# Structured sources (Factur-X XML, CSV/XLSX cells) are excluded: their lines
+# come from data fields, and their raw_text is only a rendering of those cells.
+TEXT_RECOGNITION_METHODS = frozenset(
+    {"image_ocr", "pdf_ocr", "pdf_text", "pdf_text+ocr", "text", "docx_text"}
+)
+RECOGNITION_EMPTY_REASON = "ocr_empty"
+
+
+class RecognitionEmpty(ServiceError):
+    """Recognition produced no text: the document could not be read.
+
+    Distinct from ``lines:required`` (text was read but no line rows were
+    detected).  Raised with the invoice record in hand, after extraction, so
+    the extraction module does not change.
+    """
+
+    reason = RECOGNITION_EMPTY_REASON
+
+    def __init__(self, extraction_method: str | None):
+        method = extraction_method or "unknown"
+        super().__init__(
+            f"{RECOGNITION_EMPTY_REASON}: recognition produced no text "
+            f"(extraction method {method}); the document could not be read, "
+            "so there is nothing to review. Check the scan or file and retry."
+        )
+        self.extraction_method = method
+
+
+def recognised_text_is_empty(extracted: Mapping[str, Any]) -> bool:
+    """Structural test: no non-whitespace character in the recognised text."""
+
+    method = str(extracted.get("extraction_method") or "")
+    if method not in TEXT_RECOGNITION_METHODS:
+        return False
+    return not str(extracted.get("raw_text") or "").strip()
+
+
 # Every row POST /api/demo writes is recognisable by one of these prefixes.
 # Seeded lines carry match_status 'auto' and confidence 100 as literals, so a
 # database holding them must never be read as a measurement of the matcher.
@@ -186,6 +251,10 @@ class Settings:
     max_catalog_file_bytes: int = 128 * 1024 * 1024
     max_upload_files: int = 1000
     max_pages: int = 50
+    # Rasterisation bounds handed to ExtractionLimits.  Defaults equal the
+    # extractor's own constants; a page or document above them fails whole.
+    max_pixels_per_page: int = 30_000_000
+    max_total_pixels: int = 150_000_000
     max_attempts: int = 3
     poll_seconds: float = 0.25
     db_busy_timeout_seconds: float = 30.0
@@ -207,13 +276,15 @@ class Settings:
             database_path=Path(os.getenv("INVOICE_DB_PATH", data_dir / "invoices.sqlite3")),
             source_dir=Path(os.getenv("INVOICE_SOURCE_DIR", data_dir / "sources")),
             export_dir=Path(os.getenv("INVOICE_EXPORT_DIR", data_dir / "exports")),
-            workers=_bounded_workers(os.getenv("INVOICE_WORKERS", "4")),
+            workers=_bounded_workers(os.getenv("INVOICE_WORKERS", "auto")),
             max_file_bytes=int(os.getenv("INVOICE_MAX_FILE_BYTES", str(25 * 1024 * 1024))),
             max_catalog_file_bytes=int(
                 os.getenv("INVOICE_MAX_CATALOG_FILE_BYTES", str(128 * 1024 * 1024))
             ),
             max_upload_files=int(os.getenv("INVOICE_MAX_UPLOAD_FILES", "1000")),
             max_pages=int(os.getenv("INVOICE_MAX_PAGES", "50")),
+            max_pixels_per_page=int(os.getenv("INVOICE_MAX_PIXELS_PER_PAGE", "30000000")),
+            max_total_pixels=int(os.getenv("INVOICE_MAX_TOTAL_PIXELS", "150000000")),
             max_attempts=max(1, int(os.getenv("INVOICE_MAX_ATTEMPTS", "3"))),
             poll_seconds=max(0.05, float(os.getenv("INVOICE_POLL_SECONDS", "0.25"))),
             db_busy_timeout_seconds=max(
@@ -226,6 +297,23 @@ class Settings:
             in {"1", "true", "yes", "on"},
             enable_demo_seed=_env_flag(os.getenv("INVOICE_ENABLE_DEMO_SEED")),
         )
+
+
+def extraction_limits(settings: "Settings") -> "extraction.ExtractionLimits":
+    """Build the extractor's limits from settings.
+
+    Every bound an operator can set lives here so that settings and the
+    extractor cannot drift apart silently; ``ExtractionLimits`` keeps its own
+    defaults for the bounds that are not exposed.
+    """
+    from . import extraction
+
+    return extraction.ExtractionLimits(
+        max_file_bytes=settings.max_file_bytes,
+        max_pages=settings.max_pages,
+        max_pixels_per_page=settings.max_pixels_per_page,
+        max_total_pixels=settings.max_total_pixels,
+    )
 
 
 def _env_flag(value: str | None) -> bool:
@@ -349,6 +437,33 @@ def _catalog_item_key(
         [supplier_id or "", rms_item_id, upc or "", (uom or "").casefold(), occurrence]
     )
     return "catalog:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+
+
+class _DuplicateProbe(dict):
+    """Row-shaped view of an invoice payload for ``_duplicate_matches``.
+
+    Validation runs on proposed edits as well as stored rows, so the probe
+    tolerates keys the payload omits (they read as missing, not as errors).
+    """
+
+    def __getitem__(self, key: str) -> Any:
+        return dict.get(self, key)
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _age_seconds(now: datetime | None, created_at: Any) -> float | None:
+    """Seconds between ``created_at`` and ``now``; None when unparseable."""
+    created = _parse_utc(created_at)
+    if created is None or now is None:
+        return None
+    return max(0.0, round((now - created).total_seconds(), 3))
 
 
 def _clean_filename(filename: str | None) -> str:
@@ -1223,10 +1338,102 @@ class InvoiceService:
                 and not _money_equal(target_variance, Decimal("0"), currency)
             )
         )
+        lines = [self._line_from_row(line) for line in line_rows]
+        duplicates = self._duplicate_matches(conn, row)
+        invoice["duplicate_suspicion"] = {
+            "level": duplicates[0]["level"] if duplicates else None,
+            "matches": duplicates,
+        }
+        validation_errors: list[dict[str, str]] = []
+        if row["status"] not in {"queued", "processing", "failed"}:
+            validation_errors = self._validation_errors(conn, {**invoice, "lines": lines})
+        invoice["reason_codes"] = reason_registry.assign_reason_codes(
+            status=row["status"],
+            error_text=row["error"],
+            validation_errors=validation_errors,
+            lines=lines,
+            duplicate_level=invoice["duplicate_suspicion"]["level"],
+            target_variance_flagged=bool(
+                target_variance is not None
+                and not _money_equal(target_variance, Decimal("0"), currency)
+            ),
+        )
+        invoice["reason_owners"] = reason_registry.owners_for(invoice["reason_codes"])
+        # Lines without an RMS cost comparison are a state the workbench shows,
+        # not an exception anyone owns: nobody can act on the comparison until
+        # the line is matched, and the line carries that code already.
+        invoice["price_comparison"] = reason_registry.comparison_summary(lines)
         if full:
-            invoice["lines"] = [self._line_from_row(line) for line in line_rows]
+            for index, line in enumerate(lines):
+                line["reason_codes"] = reason_registry.line_reason_codes(
+                    index, line, validation_errors
+                )
+            invoice["lines"] = lines
             invoice["raw_text"] = row["raw_text"]
         return invoice
+
+    def _duplicate_matches(self, conn: Any, row: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Other records that collide with this one on invoice identity (INV-07).
+
+        strong: same supplier (ID, or normalised name when either side has no
+        ID), same invoice number, same total and same invoice date.
+        weak: same supplier and invoice number only.  Failed records are not
+        identities.  Nothing is ever deleted or merged here; the caller only
+        surfaces the other id.
+        """
+        number = str(row["invoice_number"] or "").strip().casefold()
+        if not number:
+            return []
+        supplier_id = str(row["supplier_id"] or "").strip().casefold()
+        supplier_key = _supplier_name_key(row["supplier_name"])
+        if not supplier_id and not supplier_key:
+            return []
+        candidates = conn.execute(
+            """
+            SELECT id, supplier_id, supplier_name, total, invoice_date, status, created_at
+            FROM invoices
+            WHERE id <> ? AND status <> 'failed' AND invoice_number IS NOT NULL
+              AND lower(trim(invoice_number)) = ?
+            ORDER BY created_at, id
+            """,
+            (row["id"], number),
+        ).fetchall()
+        try:
+            own_total = _decimal(row["total"])
+        except (InvalidOperation, ValueError, TypeError):
+            own_total = None
+        own_date = str(row["invoice_date"] or "").strip()
+        matches: list[dict[str, Any]] = []
+        for other in candidates:
+            other_id = str(other["supplier_id"] or "").strip().casefold()
+            if supplier_id and other_id:
+                same_supplier = supplier_id == other_id
+            else:
+                other_key = _supplier_name_key(other["supplier_name"])
+                same_supplier = bool(supplier_key) and supplier_key == other_key
+            if not same_supplier:
+                continue
+            try:
+                other_total = _decimal(other["total"])
+            except (InvalidOperation, ValueError, TypeError):
+                other_total = None
+            same_total = (
+                own_total is not None
+                and other_total is not None
+                and _money_equal(own_total, other_total, row["currency"])
+            )
+            same_date = bool(own_date) and own_date == str(other["invoice_date"] or "").strip()
+            matches.append(
+                {
+                    "invoice_id": other["id"],
+                    "level": "strong" if same_total and same_date else "weak",
+                    "same_total": same_total,
+                    "same_date": same_date,
+                    "status": other["status"],
+                }
+            )
+        matches.sort(key=lambda match: (match["level"] != "strong", match["invoice_id"]))
+        return matches
 
     def _get_row(self, conn: Any, invoice_id: str) -> Any:
         row = conn.execute("SELECT * FROM invoices WHERE id = ?", (invoice_id,)).fetchone()
@@ -2109,10 +2316,7 @@ class InvoiceService:
                 original_supplier_name = row["supplier_name"]
             from . import extraction, matching
 
-            limits = extraction.ExtractionLimits(
-                max_file_bytes=self.settings.max_file_bytes,
-                max_pages=self.settings.max_pages,
-            )
+            limits = extraction_limits(self.settings)
             extracted = extraction.extract_document(source_path, filename, limits=limits)
             supplier_name = original_supplier_name or extracted.get("supplier_name")
             with self.db.connection() as conn:
@@ -2165,6 +2369,16 @@ class InvoiceService:
 
     def _complete_processing(self, invoice_id: str, extracted: Mapping[str, Any]) -> None:
         now = utc_now()
+        if recognised_text_is_empty(extracted):
+            # "Could not be read" is a failure with its own reason; it must not
+            # be stored as needs_review and later reported as lines:required.
+            self._fail_processing(
+                invoice_id,
+                RecognitionEmpty(extracted.get("extraction_method")),
+                permanent=True,
+                reason=RECOGNITION_EMPTY_REASON,
+            )
+            return
         try:
             with self.db.connection() as conn:
                 rates = self._conversion_rates(conn)
@@ -2232,6 +2446,11 @@ class InvoiceService:
                 ),
             )
             self._replace_lines(conn, invoice_id, lines)
+            auto_matched = sum(
+                1
+                for line in lines
+                if line.get("rms_item_id") and line.get("match_status") == "auto"
+            )
             self._audit(
                 conn,
                 invoice_id,
@@ -2240,11 +2459,76 @@ class InvoiceService:
                 version=new_version,
                 from_status="processing",
                 to_status="needs_review",
-                details={"method": extracted.get("extraction_method"), "line_count": len(lines)},
+                details={
+                    "method": extracted.get("extraction_method"),
+                    "line_count": len(lines),
+                    "auto_matched_lines": auto_matched,
+                },
                 created_at=now,
             )
+            self._flag_duplicates_on_completion(conn, invoice_id, new_version, warnings, now)
 
-    def _fail_processing(self, invoice_id: str, error: BaseException, *, permanent: bool) -> None:
+    def _flag_duplicates_on_completion(
+        self,
+        conn: Any,
+        invoice_id: str,
+        version: int,
+        warnings: list[Any],
+        now: str,
+    ) -> None:
+        """Record duplicate suspicion durably at extraction completion (INV-07).
+
+        The suspicion is also recomputed on every read so a later edit or
+        upload keeps it current; this durable copy is the audit evidence and
+        the capture note the operator sees.  Nothing is deleted or merged.
+        """
+        row = self._get_row(conn, invoice_id)
+        matches = self._duplicate_matches(conn, row)
+        if not matches:
+            return
+        strongest = matches[0]
+        other_ids = ", ".join(match["invoice_id"] for match in matches[:5])
+        if strongest["level"] == "strong":
+            note = (
+                "Duplicate suspected: same supplier, invoice number, total and date as "
+                f"invoice {other_ids}. Confirm before approval; nothing was deleted."
+            )
+        else:
+            note = (
+                "Possible duplicate: same supplier and invoice number as invoice "
+                f"{other_ids}; total or date differ. Confirm before approval."
+            )
+        stored = [str(item)[:1000] for item in warnings[:100]]
+        if note not in stored:
+            stored = (stored + [note])[:100]
+            conn.execute(
+                "UPDATE invoices SET warnings_json=? WHERE id=?",
+                (json_dumps(stored), invoice_id),
+            )
+        self._audit(
+            conn,
+            invoice_id,
+            "duplicate_suspected",
+            actor="system",
+            version=version,
+            details={
+                "level": strongest["level"],
+                "matches": [
+                    {"invoice_id": match["invoice_id"], "level": match["level"]}
+                    for match in matches[:20]
+                ],
+            },
+            created_at=now,
+        )
+
+    def _fail_processing(
+        self,
+        invoice_id: str,
+        error: BaseException,
+        *,
+        permanent: bool,
+        reason: str | None = None,
+    ) -> None:
         now = utc_now()
         message = f"{error.__class__.__name__}: {error}"[:2000]
         with self.db.transaction(immediate=True) as conn:
@@ -2276,7 +2560,12 @@ class InvoiceService:
                 version=new_version,
                 from_status="processing",
                 to_status=status,
-                details={"error": message, "attempt": attempts, "retry_at": next_attempt},
+                details={
+                    "error": message,
+                    "attempt": attempts,
+                    "retry_at": next_attempt,
+                    **({"reason": reason} if reason else {}),
+                },
                 created_at=now,
             )
         if retry:
@@ -2314,9 +2603,31 @@ class InvoiceService:
         self._wake.set()
         return result
 
-    def rematch(self, invoice_id: str, expected_version: int) -> dict[str, Any]:
+    def rematch(
+        self, invoice_id: str, expected_version: int, actor: str = "user"
+    ) -> dict[str, Any]:
+        """Re-run catalog matching over the stored lines.
+
+        ``actor`` is who asked: ``user`` for a person in the review screen,
+        ``system`` for an automated caller.  It is written to the audit event
+        as given, so a system rematch is never recorded as a human touch.
+        Stored machine selections (``auto``) come back ``auto`` with their
+        original score; a stored ``confirmed`` line stays confirmed only when
+        the audit trail holds a human line edit for the invoice, otherwise it
+        is treated as the machine selection it must have been.
+        """
         from . import matching
 
+        if actor not in REMATCH_ACTORS:
+            raise ValidationFailure(
+                [
+                    {
+                        "field": "actor",
+                        "code": "invalid_choice",
+                        "message": "actor must be one of: " + ", ".join(sorted(REMATCH_ACTORS)),
+                    }
+                ]
+            )
         now = utc_now()
         with self.db.transaction(immediate=True) as conn:
             row = self._get_row(conn, invoice_id)
@@ -2330,10 +2641,20 @@ class InvoiceService:
                     current_version=row["version"],
                 )
             invoice = self._invoice_from_row(conn, row, full=True)
+            stored_lines = [dict(line) for line in invoice.get("lines") or []]
+            human_decision = self._has_human_line_decision(conn, invoice_id)
+            auto_preserved = 0
+            unrecorded_confirmations = 0
+            for line in stored_lines:
+                if line.get("match_status") == "auto":
+                    auto_preserved += 1
+                elif line.get("match_status") == "confirmed" and not human_decision:
+                    unrecorded_confirmations += 1
+                    line["match_status"] = "auto"
             scope_supplier_id = self._matching_scope_supplier(conn, invoice.get("supplier_id"))
             catalog, aliases = self._catalog_for_matching(conn, scope_supplier_id)
             enriched_lines = matching.match_lines(
-                invoice.get("lines") or [],
+                stored_lines,
                 catalog,
                 aliases,
                 scope_supplier_id,
@@ -2361,11 +2682,15 @@ class InvoiceService:
                 conn,
                 invoice_id,
                 "invoice_rematched",
-                actor="user",
+                actor=actor,
                 version=new_version,
                 from_status=row["status"],
                 to_status="needs_review",
-                details={"line_count": len(prepared)},
+                details={
+                    "line_count": len(prepared),
+                    "auto_lines_preserved": auto_preserved,
+                    "unrecorded_confirmations_demoted": unrecorded_confirmations,
+                },
                 created_at=now,
             )
             return self._invoice_from_row(
@@ -2752,6 +3077,23 @@ class InvoiceService:
             )
             return self._invoice_from_row(conn, self._get_row(conn, invoice_id), full=True)
 
+    def _has_human_line_decision(self, conn: Any, invoice_id: str) -> bool:
+        """True when a person edited this invoice's lines (an ``invoice_edited``
+        event by a non-system actor whose ``changed_fields`` include ``lines``).
+        The audit trail is per invoice, so this is the finest grain available."""
+        rows = conn.execute(
+            "SELECT actor, details_json FROM audit_events "
+            "WHERE invoice_id=? AND event_type='invoice_edited'",
+            (invoice_id,),
+        ).fetchall()
+        for row in rows:
+            if row["actor"] in HUMAN_DECISION_ACTORS_EXCLUDED:
+                continue
+            details = _load_json(row["details_json"], {})
+            if "lines" in (details.get("changed_fields") or []):
+                return True
+        return False
+
     def _validation_errors(
         self,
         conn: Any,
@@ -2949,21 +3291,13 @@ class InvoiceService:
                     f"subtotal plus tax ({expected_total}) does not match total ({numbers['total']})",
                 )
 
-        if invoice.get("supplier_id") and invoice.get("invoice_number"):
-            duplicate = conn.execute(
-                """
-                SELECT id FROM invoices
-                WHERE id <> ? AND lower(trim(supplier_id)) = lower(trim(?))
-                  AND lower(trim(invoice_number)) = lower(trim(?)) AND status <> 'failed'
-                LIMIT 1
-                """,
-                (invoice["id"], invoice["supplier_id"], invoice["invoice_number"]),
-            ).fetchone()
-            if duplicate:
+        if invoice.get("invoice_number"):
+            duplicates = self._duplicate_matches(conn, _DuplicateProbe(invoice))
+            if duplicates:
                 error(
                     "invoice_number",
                     "duplicate_supplier_invoice",
-                    f"supplier invoice number already exists on {duplicate['id']}",
+                    f"supplier invoice number already exists on {duplicates[0]['invoice_id']}",
                 )
         return errors
 
@@ -3302,93 +3636,95 @@ class InvoiceService:
         # IMMEDIATE across a multi-minute parse blocks every worker's job claim
         # past the busy timeout; the insert itself takes seconds.
         pending: list[tuple[Any, ...]] = []
-        if True:
-            for row_number, source in enumerate(self._catalog_rows(filename, content), start=2):
-                row: dict[str, Any] = {}
-                for key, value in source.items():
-                    target = self._canonical_catalog_field(key)
-                    if target and target not in row:
-                        row[target] = value
-                item_id = _identifier_text(row.get("rms_item_id"))
-                description = _identifier_text(row.get("description"), limit=2000)
-                if not item_id and not description and not any(source.values()):
-                    skipped += 1
-                    continue
-                if not item_id or not description:
-                    skipped += 1
-                    if len(warnings) < 100:
-                        warnings.append(
-                            f"row {row_number}: parent/RMS item and description are required"
-                        )
-                    continue
-                supplier_id = _identifier_text(row.get("supplier_id"))
-                supplier_name = _identifier_text(row.get("supplier_name"), limit=500)
-                upc = _normalize_upc(row.get("upc"))
-                uom = _identifier_text(row.get("uom"), limit=100)
-                try:
-                    unit_cost = _decimal_text(row.get("unit_cost"))
-                    if unit_cost is not None and Decimal(unit_cost) < 0:
-                        raise InvalidOperation
-                except (InvalidOperation, ValueError, TypeError):
-                    skipped += 1
-                    if len(warnings) < 100:
-                        warnings.append(f"row {row_number}: invalid unit_cost")
-                    continue
-                raw_order = _identifier_text(row.get("master_po_number"))
-                master_po_number = _valid_order_number(raw_order)
-                if raw_order and not master_po_number and len(warnings) < 100:
+        # Deliberately NOT inside `with self.db.transaction(immediate=True)`:
+        # re-wrapping this loop in the write lock reinstates the worker-pool
+        # death fixed in PR #3 (test_uploads_during_large_catalog_import_drain_without_restart).
+        for row_number, source in enumerate(self._catalog_rows(filename, content), start=2):
+            row: dict[str, Any] = {}
+            for key, value in source.items():
+                target = self._canonical_catalog_field(key)
+                if target and target not in row:
+                    row[target] = value
+            item_id = _identifier_text(row.get("rms_item_id"))
+            description = _identifier_text(row.get("description"), limit=2000)
+            if not item_id and not description and not any(source.values()):
+                skipped += 1
+                continue
+            if not item_id or not description:
+                skipped += 1
+                if len(warnings) < 100:
                     warnings.append(
-                        f"row {row_number}: ignored non-order value in explicit order field"
+                        f"row {row_number}: parent/RMS item and description are required"
                     )
-                row_currency = str(row.get("cost_currency") or "").strip().upper() or None
-                if row_currency and not ISO_CURRENCY_PATTERN.fullmatch(row_currency):
-                    skipped += 1
-                    if len(warnings) < 100:
-                        warnings.append(f"row {row_number}: invalid cost_currency")
-                    continue
-                if row_currency:
-                    column_currency_rows += 1
-                else:
-                    row_currency = declared_currency
-                    if row_currency is None:
-                        undeclared_currency_rows += 1
-                identity = (
-                    (supplier_id or "").casefold(),
+                continue
+            supplier_id = _identifier_text(row.get("supplier_id"))
+            supplier_name = _identifier_text(row.get("supplier_name"), limit=500)
+            upc = _normalize_upc(row.get("upc"))
+            uom = _identifier_text(row.get("uom"), limit=100)
+            try:
+                unit_cost = _decimal_text(row.get("unit_cost"))
+                if unit_cost is not None and Decimal(unit_cost) < 0:
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError, TypeError):
+                skipped += 1
+                if len(warnings) < 100:
+                    warnings.append(f"row {row_number}: invalid unit_cost")
+                continue
+            raw_order = _identifier_text(row.get("master_po_number"))
+            master_po_number = _valid_order_number(raw_order)
+            if raw_order and not master_po_number and len(warnings) < 100:
+                warnings.append(
+                    f"row {row_number}: ignored non-order value in explicit order field"
+                )
+            row_currency = str(row.get("cost_currency") or "").strip().upper() or None
+            if row_currency and not ISO_CURRENCY_PATTERN.fullmatch(row_currency):
+                skipped += 1
+                if len(warnings) < 100:
+                    warnings.append(f"row {row_number}: invalid cost_currency")
+                continue
+            if row_currency:
+                column_currency_rows += 1
+            else:
+                row_currency = declared_currency
+                if row_currency is None:
+                    undeclared_currency_rows += 1
+            identity = (
+                (supplier_id or "").casefold(),
+                item_id,
+                upc or "",
+                (uom or "").casefold(),
+            )
+            occurrence = occurrences.get(identity, 0) + 1
+            occurrences[identity] = occurrence
+            catalog_item_id = _catalog_item_key(
+                supplier_id=supplier_id,
+                rms_item_id=item_id,
+                upc=upc,
+                uom=uom,
+                occurrence=occurrence,
+            )
+            pending.append(
+                (
+                    catalog_item_id,
                     item_id,
-                    upc or "",
-                    (uom or "").casefold(),
+                    item_id,
+                    upc,
+                    description,
+                    normalize_description(description),
+                    supplier_id,
+                    supplier_name,
+                    uom,
+                    unit_cost,
+                    master_po_number,
+                    row_number,
+                    filename,
+                    now,
+                    now,
+                    row_currency,
+                    import_id,
                 )
-                occurrence = occurrences.get(identity, 0) + 1
-                occurrences[identity] = occurrence
-                catalog_item_id = _catalog_item_key(
-                    supplier_id=supplier_id,
-                    rms_item_id=item_id,
-                    upc=upc,
-                    uom=uom,
-                    occurrence=occurrence,
-                )
-                pending.append(
-                    (
-                        catalog_item_id,
-                        item_id,
-                        item_id,
-                        upc,
-                        description,
-                        normalize_description(description),
-                        supplier_id,
-                        supplier_name,
-                        uom,
-                        unit_cost,
-                        master_po_number,
-                        row_number,
-                        filename,
-                        now,
-                        now,
-                        row_currency,
-                        import_id,
-                    )
-                )
-                imported += 1
+            )
+            imported += 1
         currency_source = (
             "column" if column_currency_rows else "operator" if declared_currency else None
         )
@@ -3821,18 +4157,246 @@ class InvoiceService:
                         _spreadsheet_safe_csv_text(invoice.get("document_type") or "unknown"),
                         _spreadsheet_safe_csv_text(invoice["status"]),
                         _spreadsheet_safe_csv_text(" | ".join(reasons)),
+                        _spreadsheet_safe_csv_text(" | ".join(invoice["reason_codes"])),
+                        _spreadsheet_safe_csv_text(" | ".join(invoice["reason_owners"])),
                     ]
                 )
 
         output = io.StringIO(newline="")
         writer = csv.writer(output, lineterminator="\r\n")
-        writer.writerow(["Invoice ID", "Filename", "Document Type", "Status", "Reasons"])
+        writer.writerow(list(EXCEPTION_REPORT_COLUMNS))
         writer.writerows(rows)
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         return {
             "filename": f"invoice-exceptions-{timestamp}.csv",
             "content": output.getvalue().encode("utf-8-sig"),
             "count": len(rows),
+        }
+
+    def exception_queue(self) -> dict[str, Any]:
+        """EXC-01 / MAT-03: every open exception grouped by governed reason code.
+
+        An invoice appears under each code it carries.  Age is measured from
+        upload (created_at) so the oldest untouched document surfaces first.
+        Counts only; the workbench renders the denominators.
+        """
+        now_dt = datetime.now(UTC)
+        groups: dict[str, dict[str, Any]] = {}
+        invoices_with_codes = 0
+        total_invoices = 0
+        with self.db.connection() as conn:
+            rows = conn.execute("SELECT * FROM invoices ORDER BY created_at, id").fetchall()
+            for row in rows:
+                total_invoices += 1
+                invoice = self._invoice_from_row(conn, row, full=False)
+                codes = invoice["reason_codes"]
+                if not codes:
+                    continue
+                invoices_with_codes += 1
+                age_seconds = _age_seconds(now_dt, row["created_at"])
+                summary = {
+                    "id": invoice["id"],
+                    "invoice_number": invoice["invoice_number"],
+                    "filename": invoice["filename"],
+                    "supplier_name": invoice["supplier_name"],
+                    "supplier_id": invoice["supplier_id"],
+                    "status": invoice["status"],
+                    "document_type": invoice["document_type"],
+                    "created_at": invoice["created_at"],
+                    "age_seconds": age_seconds,
+                    "reason_codes": codes,
+                    "duplicate_of": [
+                        match["invoice_id"] for match in invoice["duplicate_suspicion"]["matches"]
+                    ],
+                }
+                for code in codes:
+                    entry = reason_registry.REGISTRY[code]
+                    group = groups.setdefault(
+                        code,
+                        {
+                            "code": code,
+                            "owner": entry.owner,
+                            "message": entry.message,
+                            "level": entry.level,
+                            "count": 0,
+                            "oldest_age_seconds": None,
+                            "oldest_invoice_id": None,
+                            "invoices": [],
+                        },
+                    )
+                    group["count"] += 1
+                    if group["oldest_age_seconds"] is None or (
+                        age_seconds is not None and age_seconds > group["oldest_age_seconds"]
+                    ):
+                        group["oldest_age_seconds"] = age_seconds
+                        group["oldest_invoice_id"] = invoice["id"]
+                    if len(group["invoices"]) < EXCEPTION_QUEUE_PAGE:
+                        group["invoices"].append(summary)
+        ordered = sorted(groups.values(), key=lambda group: (-group["count"], group["code"]))
+        for group in ordered:
+            group["invoices"].sort(key=lambda item: -(item["age_seconds"] or 0))
+            group["truncated"] = group["count"] > len(group["invoices"])
+        return {
+            "as_of": utc_now(),
+            "invoices_total": total_invoices,
+            "invoices_with_exceptions": invoices_with_codes,
+            "groups": ordered,
+            "registry": reason_registry.registry_rows(),
+        }
+
+    def kpis(self) -> dict[str, Any]:
+        """CTL-02 control KPIs as counts with their denominators.
+
+        K1 touchless: reached ready/exported with no human correction.  There
+        is no auto-approval yet, so the approve click (like the upload and the
+        export) is a handoff, not a touch: an invoice counts when its audit
+        trail holds no user-actor event outside HANDOFF_EVENTS.
+        K2 first-time match: every line matched automatically at the FIRST
+        extraction, read from the extraction_completed audit detail; records
+        older than that detail fall back to their current lines being all
+        'auto'.  CAVEAT: that fallback reads 'confirmed' as a human touch,
+        but rematch currently promotes machine autos to confirmed/100.0
+        (matching.match_lines, supplied-id path), so until that promotion is
+        fixed (a separate matcher defect) K2 may UNDERCOUNT after any rematch
+        for records without the detail.  Records with the detail are
+        unaffected: the count is fixed at extraction time.
+        K3 cycle time: upload (created_at) to the first transition into ready,
+        median over invoices that ever reached ready.  Seconds, not a rate.
+        """
+        with self.db.connection() as conn:
+            invoices = conn.execute("SELECT id, status, created_at FROM invoices").fetchall()
+            events = conn.execute(
+                """
+                SELECT invoice_id, event_type, actor, created_at, to_status, details_json
+                FROM audit_events ORDER BY invoice_id, id
+                """
+            ).fetchall()
+            line_state = {
+                row["invoice_id"]: (row["total_lines"], row["auto_lines"])
+                for row in conn.execute(
+                    """
+                    SELECT invoice_id, COUNT(*) AS total_lines,
+                           COALESCE(SUM(CASE WHEN rms_item_id IS NOT NULL
+                                             AND match_status = 'auto' THEN 1 ELSE 0 END),0)
+                               AS auto_lines
+                    FROM invoice_lines GROUP BY invoice_id
+                    """
+                ).fetchall()
+            }
+            contains_demo = bool(
+                conn.execute(
+                    "SELECT 1 FROM invoices WHERE id LIKE ? LIMIT 1",
+                    (f"{DEMO_INVOICE_PREFIX}%",),
+                ).fetchone()
+            )
+        by_invoice: dict[str, list[Any]] = {}
+        for event in events:
+            by_invoice.setdefault(event["invoice_id"], []).append(event)
+
+        touchless = 0
+        approval_stage = 0
+        first_time_match = 0
+        # K2's denominator is invoices with an extraction_completed event.  On
+        # a workspace where every upload completed extraction (the replay
+        # corpus, for one) it equals the invoice count; that is a coincidence
+        # of that corpus, not the definition: failed, queued and processing
+        # records are outside it.
+        extracted = 0
+        cycle_seconds: list[float] = []
+        for row in invoices:
+            trail = by_invoice.get(row["id"], [])
+            if row["status"] in {"ready", "exported"}:
+                approval_stage += 1
+                human_corrections = [
+                    event
+                    for event in trail
+                    if event["actor"] not in NON_HUMAN_ACTORS
+                    and event["event_type"] not in HANDOFF_EVENTS
+                ]
+                if not human_corrections:
+                    touchless += 1
+                first_ready = next(
+                    (event for event in trail if event["to_status"] == "ready"), None
+                )
+                if first_ready is not None:
+                    seconds = _age_seconds(_parse_utc(first_ready["created_at"]), row["created_at"])
+                    if seconds is not None:
+                        cycle_seconds.append(seconds)
+            completion = next(
+                (event for event in trail if event["event_type"] == "extraction_completed"),
+                None,
+            )
+            if completion is None:
+                continue
+            extracted += 1
+            details = _load_json(completion["details_json"], {})
+            if "auto_matched_lines" in details:
+                line_count = int(details.get("line_count") or 0)
+                if line_count and int(details["auto_matched_lines"]) == line_count:
+                    first_time_match += 1
+            else:
+                total_lines, auto_lines = line_state.get(row["id"], (0, 0))
+                if total_lines and auto_lines == total_lines:
+                    first_time_match += 1
+        cycle_seconds.sort()
+        median = None
+        if cycle_seconds:
+            middle = len(cycle_seconds) // 2
+            median = (
+                cycle_seconds[middle]
+                if len(cycle_seconds) % 2
+                else (cycle_seconds[middle - 1] + cycle_seconds[middle]) / 2
+            )
+        # A numerator that can only count approved invoices says nothing until
+        # one exists: "0 of N" would not distinguish "nothing touchless" from
+        # "nothing approved yet", so K1 and K3 declare themselves not evaluable
+        # instead of publishing a zero.
+        k1_reason = (
+            None
+            if approval_stage
+            else "no invoice has reached ready or exported in this workspace, so no "
+            "touchless outcome can be observed yet"
+        )
+        k3_reason = (
+            None
+            if cycle_seconds
+            else "no invoice has reached ready in this workspace, so there is no cycle to measure"
+        )
+        return {
+            "as_of": utc_now(),
+            "contains_demo_data": contains_demo,
+            "k1_touchless": {
+                "numerator": touchless,
+                "denominator": len(invoices),
+                "approval_stage": approval_stage,
+                "evaluable": approval_stage > 0,
+                "not_evaluable_reason": k1_reason,
+                "definition": (
+                    "invoices in ready or exported whose audit trail has no human "
+                    "action other than the approval itself, over all invoices"
+                ),
+            },
+            "k2_first_time_match": {
+                "numerator": first_time_match,
+                "denominator": extracted,
+                "definition": (
+                    "invoices whose lines all matched automatically at the first "
+                    "extraction (from the extraction_completed audit detail; records "
+                    "without that detail fall back to their current lines all being "
+                    "auto, which may undercount after a rematch), over invoices that "
+                    "completed extraction"
+                ),
+            },
+            "k3_cycle_time": {
+                "median_seconds": median,
+                "n": len(cycle_seconds),
+                "evaluable": bool(cycle_seconds),
+                "not_evaluable_reason": k3_reason,
+                "definition": (
+                    "median seconds from upload to the first transition into ready, "
+                    "over invoices that ever reached ready"
+                ),
+            },
         }
 
     def list_exports(self) -> dict[str, Any]:

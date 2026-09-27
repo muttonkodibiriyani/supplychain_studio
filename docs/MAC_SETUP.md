@@ -9,7 +9,7 @@ The application is a local pilot. It listens only on `localhost`, has no applica
 ## 1. Check the Mac
 
 - **Apple Silicon (M1, M2, M3, M4 or later) or Intel.** Both are supported. Docker Desktop's system requirements at the time of writing (25 September 2026) call for a supported macOS release: the current version and the two previous major versions. Check **Apple menu > About This Mac**. If the Mac is older than that, update macOS first or ask IT.
-- At least 8 GB RAM and 10 GB free disk space. 16 GB RAM is recommended when processing large scanned batches with more extraction workers (see [Throughput](VOLUME_RESULTS.md)).
+- At least 8 GB RAM and 10 GB free disk space. 16 GB RAM is recommended when processing large scanned batches with more extraction workers (see [Throughput](VOLUME_RESULTS.md)). On a Mac the figure that matters is the memory **allocated to the Docker Desktop virtual machine**, not the Mac's total RAM: the container only sees the VM. Check it in Docker Desktop **Settings > Resources > Memory**, or run `docker info --format '{{.MemTotal}}'` in Terminal (bytes). A 16 GB Mac with the VM capped at 2 GB has 2 GB for Invoice Studio.
 - Administrator rights on the Mac for the one-time Docker Desktop install. Day-to-day use does not need them.
 - Rosetta is **not** required. Every image the application uses has a native Apple Silicon (arm64) build; see section 12.
 
@@ -286,7 +286,7 @@ The first build needs internet and may require the organization's proxy configur
 
 ### Slow processing of scanned invoices
 
-OCR is CPU-bound. Docker Desktop for Mac limits CPUs and memory in **Settings > Resources**; give it at least 4 CPUs and 6 GB for the default `INVOICE_WORKERS=4`, more for higher worker counts. See [VOLUME_RESULTS.md](VOLUME_RESULTS.md) for the recommended worker count per core.
+OCR is CPU-bound. Docker Desktop for Mac limits CPUs and memory in **Settings > Resources**; the default `INVOICE_WORKERS=auto` starts one extraction worker per CPU that Docker Desktop exposes, so the CPU setting directly sets the worker count. Give it at least 4 CPUs and 6 GB; more CPUs mean more scanned invoices OCR'd in parallel. Because `auto` follows the CPU count, raising CPUs without raising the VM memory can starve the workers; if the container exits mid-batch with `docker inspect --format '{{.State.OOMKilled}}' <container>` reporting `true`, either raise **Settings > Resources > Memory** or set a smaller `INVOICE_WORKERS` in `.env`. See [VOLUME_RESULTS.md](VOLUME_RESULTS.md) for the recommended worker count per core.
 
 ### Data appears missing after moving to a newer ZIP
 
@@ -294,7 +294,7 @@ The usual cause is a different Compose project name. Stop before importing or up
 
 ### A file is rejected or remains in review, or two brands were mixed
 
-Same rules as Windows: see the [Windows guide](WINDOWS_SETUP.md#12-troubleshooting) and the exception procedure in [OPERATOR_TRAINING.md](OPERATOR_TRAINING.md). If two brands were mixed, stop work immediately, do not approve or export, and notify the pilot owner.
+Same rules as Windows, including the supported scan resolution: see the [Windows guide](WINDOWS_SETUP.md#12-troubleshooting) and the exception procedure in [OPERATOR_TRAINING.md](OPERATOR_TRAINING.md). If two brands were mixed, stop work immediately, do not approve or export, and notify the pilot owner.
 
 ## 12. What was verified for Apple Silicon and Intel Macs
 

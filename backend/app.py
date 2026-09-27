@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from starlette.concurrency import run_in_threadpool
@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .reason_codes import registry_rows
 from .service import (
     Conflict,
     DemoSeedRefused,
@@ -64,6 +65,13 @@ class InvoiceUpdate(BaseModel):
 
 class VersionRequest(BaseModel):
     expected_version: int = Field(ge=1)
+
+
+class RematchRequest(VersionRequest):
+    """``actor`` is recorded on the audit event as given: ``user`` (default,
+    a person in the review screen) or ``system`` (an automated caller)."""
+
+    actor: Literal["user", "system"] = "user"
 
 
 class ApprovalRequest(VersionRequest):
@@ -288,8 +296,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/api/invoices/{invoice_id}/rematch")
-    def rematch_invoice(invoice_id: str, request: VersionRequest) -> dict[str, Any]:
-        return service.rematch(invoice_id, request.expected_version)
+    def rematch_invoice(invoice_id: str, request: RematchRequest) -> dict[str, Any]:
+        return service.rematch(invoice_id, request.expected_version, actor=request.actor)
 
     @app.post("/api/invoices/{invoice_id}/retry")
     def retry_invoice(invoice_id: str) -> dict[str, Any]:
@@ -368,6 +376,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/exports")
     def exports() -> dict[str, Any]:
         return service.list_exports()
+
+    @app.get("/api/kpis")
+    def kpis() -> dict[str, Any]:
+        return service.kpis()
+
+    @app.get("/api/exceptions")
+    def exceptions() -> dict[str, Any]:
+        return service.exception_queue()
+
+    @app.get("/api/reason-codes")
+    def reason_codes() -> dict[str, Any]:
+        return {"reason_codes": registry_rows()}
 
     @app.get("/api/reports/exceptions.csv")
     def exception_report() -> Response:
