@@ -142,33 +142,34 @@ stored `queued` backlog itself has a fixed maximum.
 
 ### PO number to location master — added 2026-09-25
 
-The user-supplied
-[25.09.2026 PO GRN REPORT.xlsx](https://docs.google.com/spreadsheets/d/1zcjbbJ8xQ3LHgZXxQ2gR6NuFYTDnFdEv/edit?usp=sharing&ouid=114256585918379460718&rtpof=true&sd=true)
-was downloaded read-only and checked without converting or modifying the Drive
-file. It is an Office XLSX rather than a native Google Sheet: 36,152,923 bytes,
-SHA-256 `d8f68cd24253ae6ce7d11b45221398c8df65775ae073b6c1a721f04f8b34c49c`.
+The user-supplied PO/GRN report workbook was downloaded read-only from the
+user's shared drive and checked without converting or modifying the source
+file. Its name, location, size, checksum and contents are private and are
+deliberately not reproduced here.
 
 The exact standalone verifier command was:
 
 ```bash
 python3 -B scripts/verify_volume.py \
-  --po-location-master /tmp/po-grn-master.z6Qjcj/po-grn-report.xlsx \
+  --po-location-master <local copy of the workbook> \
   --po-location-master-only \
   --result-json /tmp/invoice-studio-po-location-master-result.json
 ```
 
-The receipt passed in 58.536 seconds and is
-`/tmp/invoice-studio-po-location-master-result.json` (3,386 bytes, SHA-256
-`ea6d9bed46a1e36fec5ded5559e96528100fec47901d5c2cfaaf7c5595629580`).
-It selected the line-level `PO Extract 09.25` sheet and measured:
+The receipt passed in under a minute and was kept privately with its checksum.
+It selected the line-level PO extract sheet and checked:
 
 | Master check | Observed result |
 | --- | --- |
-| Rows and locations | 297,199 data rows across 11 location codes; no row with an RMS PO had a missing location. |
-| Canonical RMS mapping | 12,126 distinct `RMS_ORDER_NO` values; zero values mapped to multiple locations. `RMS_ORDER_NO → LOCATION` is therefore the safe primary mapping in this snapshot. |
-| Missing RMS PO | Seven data rows had no `RMS_ORDER_NO` and were excluded from the mapping. |
-| External order mapping | 11,894 distinct `EXT_ORDER_NO` values; 11,826 resolved to one location, while 68 spanned multiple locations. Another 120 rows had no external order number. |
-| Namespace collision | Fifteen tokens occurred in both RMS and external-order columns; one token resolved to different locations across those namespaces. |
+| Rows and locations | Every row carrying an RMS PO had a location code. |
+| Canonical RMS mapping | No `RMS_ORDER_NO` value mapped to more than one location. `RMS_ORDER_NO → LOCATION` is therefore the safe primary mapping in this snapshot. |
+| Missing RMS PO | A small number of rows had no `RMS_ORDER_NO` and were excluded from the mapping. |
+| External order mapping | Most `EXT_ORDER_NO` values resolved to one location; a small minority spanned several locations, and some rows had no external order number. |
+| Namespace collision | A handful of tokens occurred in both the RMS and external-order columns; at least one resolved to different locations across those namespaces. |
+
+The row, location, order-number and collision counts behind these rows are
+figures about the workbook itself, not about the software, and are held in the
+private acceptance channel.
 
 Resolution rule: use `RMS_ORDER_NO` as the canonical PO key. Use
 `EXT_ORDER_NO` only when it resolves to exactly one location and is not
@@ -180,7 +181,7 @@ The tested application currently supplies `invoice.location` from the Brand
 Settings default; it has no PO/location-master import or lookup API. The item
 catalog route is not a substitute: it requires an RMS item plus description,
 limits input to 250,000 rows, and does not treat `RMS_ORDER_NO` as its PO alias.
-Therefore the supplied 297,199-row workbook cannot activate PO-based location
+Therefore the supplied workbook cannot activate PO-based location
 validation in the current build. Backend/UI integration and a subsequent HTTP
 acceptance test are required before the product may claim this check.
 

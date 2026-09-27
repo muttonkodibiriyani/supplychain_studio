@@ -11,8 +11,10 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .reason_codes import registry_rows
 from .service import (
     Conflict,
+    DemoSeedRefused,
     InvoiceService,
     NotFound,
     Settings,
@@ -87,7 +89,25 @@ class BrandSettingsUpdate(BaseModel):
     location_type: str = ""
     supplier_rules: list[SupplierRule] = Field(default_factory=list)
     include_upc_in_export: bool = False
-    target_cost_policy: TargetCostPolicy = Field(default_factory=TargetCostPolicy)
+    # Legacy shape: edits only the absolute tolerance of the versioned policy.
+    target_cost_policy: TargetCostPolicy | None = None
+    # Versioned policy (MAT-02 / POL-01). When present it takes precedence.
+    tolerance_policy: dict[str, Any] | None = None
+    changed_by: str = ""
+
+
+class ConversionRateCreate(BaseModel):
+    from_currency: str
+    to_currency: str
+    rate: float | int | str
+    source: str
+    entered_by: str
+    effective_date: str | None = None
+
+
+class CatalogImportCurrency(BaseModel):
+    cost_currency: str
+    declared_by: str
 
 
 class ExportRequest(BaseModel):
@@ -139,6 +159,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def upload_handler(_: Request, error: UploadRejected) -> JSONResponse:
         return JSONResponse(status_code=400, content={"detail": str(error)})
 
+    @app.exception_handler(DemoSeedRefused)
+    async def demo_seed_refused_handler(_: Request, error: DemoSeedRefused) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": {
+                    "message": str(error),
+                    "non_demo_catalog_rows": error.non_demo_catalog_rows,
+                    "non_demo_invoices": error.non_demo_invoices,
+                }
+            },
+        )
+
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         workers = service.worker_status()
@@ -151,7 +184,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/stats")
-    def stats() -> dict[str, int]:
+    def stats() -> dict[str, Any]:
         return service.stats()
 
     @app.get("/api/settings")
@@ -163,6 +196,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload = update.model_dump()
         expected_version = payload.pop("expected_version")
         return service.update_settings(expected_version, payload)
+
+    @app.get("/api/settings/audit")
+    def settings_audit(limit: int = Query(default=100, ge=1, le=1000)) -> dict[str, Any]:
+        return service.list_policy_audit(limit=limit)
+
+    @app.get("/api/rates")
+    def rates() -> dict[str, Any]:
+        return service.list_conversion_rates()
+
+    @app.post("/api/rates")
+    def add_rate(rate: ConversionRateCreate) -> dict[str, Any]:
+        return service.add_conversion_rate(rate.model_dump())
 
     @app.get("/api/invoices")
     def invoices(
@@ -264,13 +309,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return service.list_catalog(search=search, supplier_id=supplier_id, limit=limit)
 
     @app.post("/api/catalog/import")
-    async def import_catalog(file: UploadFile = File(...)) -> dict[str, Any]:
+    async def import_catalog(
+        file: UploadFile = File(...),
+        cost_currency: str | None = Form(default=None),
+        declared_by: str | None = Form(default=None),
+    ) -> dict[str, Any]:
         content = await file.read(service.settings.max_catalog_file_bytes + 1)
         await file.close()
         # A large master takes minutes to parse. Running it on the event loop
         # freezes every other request (health, stats, uploads) for that long.
-        return await run_in_threadpool(
-            service.import_catalog, file.filename or "catalog", content
+        declaration: dict[str, str] = {}
+        if cost_currency:
+            declaration["cost_currency"] = cost_currency
+        if declared_by:
+            declaration["declared_by"] = declared_by
+        counts = await run_in_threadpool(
+            lambda: service.import_catalog(file.filename or "catalog", content, **declaration)
+        )
+        return {**counts, "import": service.latest_catalog_import()}
+
+    @app.get("/api/catalog/imports")
+    def catalog_imports() -> dict[str, Any]:
+        return service.list_catalog_imports()
+
+    @app.put("/api/catalog/imports/{import_id}")
+    def declare_catalog_import_currency(
+        import_id: str, body: CatalogImportCurrency
+    ) -> dict[str, Any]:
+        return service.declare_catalog_import_currency(
+            import_id, body.cost_currency, body.declared_by
         )
 
     @app.get("/api/aliases")
@@ -303,6 +370,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def exports() -> dict[str, Any]:
         return service.list_exports()
 
+    @app.get("/api/kpis")
+    def kpis() -> dict[str, Any]:
+        return service.kpis()
+
+    @app.get("/api/exceptions")
+    def exceptions() -> dict[str, Any]:
+        return service.exception_queue()
+
+    @app.get("/api/reason-codes")
+    def reason_codes() -> dict[str, Any]:
+        return {"reason_codes": registry_rows()}
+
     @app.get("/api/reports/exceptions.csv")
     def exception_report() -> Response:
         report = service.create_exception_report()
@@ -317,7 +396,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/api/demo")
-    def demo() -> dict[str, Any]:
+    def demo() -> Any:
+        if not service.settings.enable_demo_seed:
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "demo seeding is disabled; set INVOICE_ENABLE_DEMO_SEED=true "
+                    "on a demo-only workspace to enable POST /api/demo"
+                },
+            )
         return service.seed_demo()
 
     project_root = Path(__file__).resolve().parents[1]
