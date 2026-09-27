@@ -49,8 +49,12 @@ def _bounded_workers(raw: str) -> int:
     when the request was cut, so a mis-set value is visible in the logs.
     """
 
-    requested = max(0, int(raw))
     cores = os.cpu_count() or 1
+    text = (raw or "").strip().casefold()
+    # "auto" (the shipped default) is one worker per core: OCR is CPU-bound
+    # and Tesseract runs single-threaded per worker, so the core count is
+    # the point past which 1,000-invoice batches stop getting faster.
+    requested = cores if text in {"", "auto"} else max(0, int(text))
     limit = max(1, cores * MAX_WORKERS_PER_CORE)
     if requested > limit:
         logger.warning(
@@ -272,7 +276,7 @@ class Settings:
             database_path=Path(os.getenv("INVOICE_DB_PATH", data_dir / "invoices.sqlite3")),
             source_dir=Path(os.getenv("INVOICE_SOURCE_DIR", data_dir / "sources")),
             export_dir=Path(os.getenv("INVOICE_EXPORT_DIR", data_dir / "exports")),
-            workers=_bounded_workers(os.getenv("INVOICE_WORKERS", "4")),
+            workers=_bounded_workers(os.getenv("INVOICE_WORKERS", "auto")),
             max_file_bytes=int(os.getenv("INVOICE_MAX_FILE_BYTES", str(25 * 1024 * 1024))),
             max_catalog_file_bytes=int(
                 os.getenv("INVOICE_MAX_CATALOG_FILE_BYTES", str(128 * 1024 * 1024))
@@ -3627,93 +3631,95 @@ class InvoiceService:
         # IMMEDIATE across a multi-minute parse blocks every worker's job claim
         # past the busy timeout; the insert itself takes seconds.
         pending: list[tuple[Any, ...]] = []
-        if True:
-            for row_number, source in enumerate(self._catalog_rows(filename, content), start=2):
-                row: dict[str, Any] = {}
-                for key, value in source.items():
-                    target = self._canonical_catalog_field(key)
-                    if target and target not in row:
-                        row[target] = value
-                item_id = _identifier_text(row.get("rms_item_id"))
-                description = _identifier_text(row.get("description"), limit=2000)
-                if not item_id and not description and not any(source.values()):
-                    skipped += 1
-                    continue
-                if not item_id or not description:
-                    skipped += 1
-                    if len(warnings) < 100:
-                        warnings.append(
-                            f"row {row_number}: parent/RMS item and description are required"
-                        )
-                    continue
-                supplier_id = _identifier_text(row.get("supplier_id"))
-                supplier_name = _identifier_text(row.get("supplier_name"), limit=500)
-                upc = _normalize_upc(row.get("upc"))
-                uom = _identifier_text(row.get("uom"), limit=100)
-                try:
-                    unit_cost = _decimal_text(row.get("unit_cost"))
-                    if unit_cost is not None and Decimal(unit_cost) < 0:
-                        raise InvalidOperation
-                except (InvalidOperation, ValueError, TypeError):
-                    skipped += 1
-                    if len(warnings) < 100:
-                        warnings.append(f"row {row_number}: invalid unit_cost")
-                    continue
-                raw_order = _identifier_text(row.get("master_po_number"))
-                master_po_number = _valid_order_number(raw_order)
-                if raw_order and not master_po_number and len(warnings) < 100:
+        # Deliberately NOT inside `with self.db.transaction(immediate=True)`:
+        # re-wrapping this loop in the write lock reinstates the worker-pool
+        # death fixed in PR #3 (test_uploads_during_large_catalog_import_drain_without_restart).
+        for row_number, source in enumerate(self._catalog_rows(filename, content), start=2):
+            row: dict[str, Any] = {}
+            for key, value in source.items():
+                target = self._canonical_catalog_field(key)
+                if target and target not in row:
+                    row[target] = value
+            item_id = _identifier_text(row.get("rms_item_id"))
+            description = _identifier_text(row.get("description"), limit=2000)
+            if not item_id and not description and not any(source.values()):
+                skipped += 1
+                continue
+            if not item_id or not description:
+                skipped += 1
+                if len(warnings) < 100:
                     warnings.append(
-                        f"row {row_number}: ignored non-order value in explicit order field"
+                        f"row {row_number}: parent/RMS item and description are required"
                     )
-                row_currency = str(row.get("cost_currency") or "").strip().upper() or None
-                if row_currency and not ISO_CURRENCY_PATTERN.fullmatch(row_currency):
-                    skipped += 1
-                    if len(warnings) < 100:
-                        warnings.append(f"row {row_number}: invalid cost_currency")
-                    continue
-                if row_currency:
-                    column_currency_rows += 1
-                else:
-                    row_currency = declared_currency
-                    if row_currency is None:
-                        undeclared_currency_rows += 1
-                identity = (
-                    (supplier_id or "").casefold(),
+                continue
+            supplier_id = _identifier_text(row.get("supplier_id"))
+            supplier_name = _identifier_text(row.get("supplier_name"), limit=500)
+            upc = _normalize_upc(row.get("upc"))
+            uom = _identifier_text(row.get("uom"), limit=100)
+            try:
+                unit_cost = _decimal_text(row.get("unit_cost"))
+                if unit_cost is not None and Decimal(unit_cost) < 0:
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError, TypeError):
+                skipped += 1
+                if len(warnings) < 100:
+                    warnings.append(f"row {row_number}: invalid unit_cost")
+                continue
+            raw_order = _identifier_text(row.get("master_po_number"))
+            master_po_number = _valid_order_number(raw_order)
+            if raw_order and not master_po_number and len(warnings) < 100:
+                warnings.append(
+                    f"row {row_number}: ignored non-order value in explicit order field"
+                )
+            row_currency = str(row.get("cost_currency") or "").strip().upper() or None
+            if row_currency and not ISO_CURRENCY_PATTERN.fullmatch(row_currency):
+                skipped += 1
+                if len(warnings) < 100:
+                    warnings.append(f"row {row_number}: invalid cost_currency")
+                continue
+            if row_currency:
+                column_currency_rows += 1
+            else:
+                row_currency = declared_currency
+                if row_currency is None:
+                    undeclared_currency_rows += 1
+            identity = (
+                (supplier_id or "").casefold(),
+                item_id,
+                upc or "",
+                (uom or "").casefold(),
+            )
+            occurrence = occurrences.get(identity, 0) + 1
+            occurrences[identity] = occurrence
+            catalog_item_id = _catalog_item_key(
+                supplier_id=supplier_id,
+                rms_item_id=item_id,
+                upc=upc,
+                uom=uom,
+                occurrence=occurrence,
+            )
+            pending.append(
+                (
+                    catalog_item_id,
                     item_id,
-                    upc or "",
-                    (uom or "").casefold(),
+                    item_id,
+                    upc,
+                    description,
+                    normalize_description(description),
+                    supplier_id,
+                    supplier_name,
+                    uom,
+                    unit_cost,
+                    master_po_number,
+                    row_number,
+                    filename,
+                    now,
+                    now,
+                    row_currency,
+                    import_id,
                 )
-                occurrence = occurrences.get(identity, 0) + 1
-                occurrences[identity] = occurrence
-                catalog_item_id = _catalog_item_key(
-                    supplier_id=supplier_id,
-                    rms_item_id=item_id,
-                    upc=upc,
-                    uom=uom,
-                    occurrence=occurrence,
-                )
-                pending.append(
-                    (
-                        catalog_item_id,
-                        item_id,
-                        item_id,
-                        upc,
-                        description,
-                        normalize_description(description),
-                        supplier_id,
-                        supplier_name,
-                        uom,
-                        unit_cost,
-                        master_po_number,
-                        row_number,
-                        filename,
-                        now,
-                        now,
-                        row_currency,
-                        import_id,
-                    )
-                )
-                imported += 1
+            )
+            imported += 1
         currency_source = (
             "column" if column_currency_rows else "operator" if declared_currency else None
         )
