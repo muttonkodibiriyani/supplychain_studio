@@ -88,3 +88,21 @@ test('live upload imports master, processes CSV, approves and downloads XLSX',as
  await page.getByRole('checkbox',{name:'Select '+number,exact:true}).check();await page.getByRole('button',{name:'Export selected'}).click();
  const download=page.waitForEvent('download');await page.getByRole('button',{name:'Download workbook'}).click();const file=await download;expect(file.suggestedFilename()).toMatch(/\.xlsx$/);await file.saveAs('test-results/live-export.xlsx');
 });
+test('exception workbench groups held invoices by reason code and shows KPI denominators',async({page})=>{
+ const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(url+'/?preview=1');await expect(page.getByRole('heading',{name:'Your invoice worklist.'})).toBeVisible();
+ await page.getByRole('button',{name:'Exceptions',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'Exception workbench.'})).toBeVisible();
+ const kpis=page.getByLabel('Control KPIs');
+ await expect(kpis.getByText(/^\d+ of \d+$/).first()).toBeVisible();
+ await expect(kpis.getByText(/^\d+ of \d+$/)).toHaveCount(2);
+ const group=page.locator('[data-reason-code="line_low_confidence"]');
+ await expect(group).toBeVisible();
+ await expect(group.getByText('Brand reviewer',{exact:true})).toBeVisible();
+ await expect(group.locator('tbody tr')).toHaveCount(1);
+ await expect(group.getByText(/Oldest /)).toBeVisible();
+ await page.screenshot({path:'test-results/workbench-desktop.png',fullPage:true});
+ await group.getByRole('button',{name:'Review INV-2026-0081'}).click();
+ await expect(page.getByRole('heading',{name:'INV-2026-0081'})).toBeVisible();
+ expect(errors).toEqual([]);
+});

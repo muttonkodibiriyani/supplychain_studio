@@ -84,7 +84,19 @@ class _OcrCapture:
         self.sizes: list[tuple[int, int]] = []
         self.dpis: list[int | None] = []
 
-    def __call__(self, image, timeout, max_pixels, psm=6, autocontrast=False, dpi=None):
+    # Mirrors ``extraction._run_tesseract`` exactly, keyword-only tail included,
+    # so a signature change there fails these tests instead of passing silently.
+    def __call__(
+        self,
+        image,
+        timeout,
+        max_pixels,
+        *,
+        psm=6,
+        autocontrast=False,
+        dpi=None,
+        timeout_message=None,
+    ):
         self.sizes.append(image.size)
         self.dpis.append(dpi)
         return "Invoice 1\nTotal 5.00\n", 90.0
