@@ -2356,10 +2356,15 @@ class InvoiceService:
             enriched["tolerance_policy"] = defaults["tolerance_policy"]
             self._complete_processing(invoice_id, enriched)
         except BaseException as error:
-            permanent = error.__class__.__name__ in {
+            # A refusal on the document's own content is final.  A resource
+            # bound the host missed (the OCR time budget) declares itself
+            # retryable and goes back to the queue like any transient error.
+            bound_failure = error.__class__.__name__ in {
                 "UnsupportedDocumentError",
                 "ExtractionLimitError",
+                "ExtractionTimeBudgetError",
             }
+            permanent = bound_failure and not getattr(error, "retryable", False)
             self._fail_processing(invoice_id, error, permanent=permanent)
 
     def _complete_processing(self, invoice_id: str, extracted: Mapping[str, Any]) -> None:

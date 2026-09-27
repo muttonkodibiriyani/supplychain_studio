@@ -219,7 +219,11 @@ class OcrBudgetMessageTests(unittest.TestCase):
     """The per-page OCR timeout is ``min(per-page limit, remaining document
     budget)``.  When the document budget clips it, a Tesseract timeout used to
     read "OCR page exceeded its 0 second limit" (or "1 second limit"); the
-    number that ran out is the document budget and the message must say so."""
+    number that ran out is the document budget and the message must say so.
+
+    A missed time budget is retryable, so the message also carries the retry
+    hint.  What these tests pin is which budget gets named; the hint is
+    asserted with it so neither change can silently drop the other."""
 
     def _timeout_message(self, timeout: float, limits: ExtractionLimits) -> str:
         from PIL import Image
@@ -247,12 +251,18 @@ class OcrBudgetMessageTests(unittest.TestCase):
         limits = ExtractionLimits(ocr_timeout_seconds_per_page=45.0, ocr_timeout_seconds_total=180.0)
         for remaining in (0.2, 1.0, 44.9):
             message = self._timeout_message(min(45.0, remaining), limits)
-            self.assertEqual(message, "OCR exceeded the 180 second document limit.", remaining)
+            self.assertEqual(
+                message,
+                "OCR exceeded the 180 second document limit; "
+                "try again when the host is quieter.",
+                remaining,
+            )
 
     def test_full_page_budget_is_still_reported_per_page(self) -> None:
         limits = ExtractionLimits(ocr_timeout_seconds_per_page=45.0, ocr_timeout_seconds_total=180.0)
         self.assertEqual(
-            self._timeout_message(45.0, limits), "OCR page exceeded its 45 second limit."
+            self._timeout_message(45.0, limits),
+            "OCR page exceeded its 45 second limit; try again when the host is quieter.",
         )
 
     def test_default_message_without_a_budget_label_is_unchanged(self) -> None:
@@ -270,4 +280,7 @@ class OcrBudgetMessageTests(unittest.TestCase):
                     extraction._run_tesseract(image, 5, 2_000_000)
         finally:
             image.close()
-        self.assertEqual(str(raised.exception), "OCR page exceeded its 5 second limit.")
+        self.assertEqual(
+            str(raised.exception),
+            "OCR page exceeded its 5 second limit; try again when the host is quieter.",
+        )
