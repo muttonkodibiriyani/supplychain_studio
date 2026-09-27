@@ -103,7 +103,7 @@ exit=0
 
 The second command does not collect `backend/tests`, which is why it is green; the first command is the release check. The skipped test requires a private master and is skipped by design. The warning is the upstream Starlette test-client deprecation.
 
-**Known open defect (not fixed in this release):** `backend/tests/test_backend.py::test_real_text_extraction_and_catalog_matching_flow_to_review` is red on every tree including `main`. Ticket wording: line parser reads a size token as quantity. The test stays in the suite unchanged.
+**Known open defect (not fixed in this release):** `backend/tests/test_backend.py::test_real_text_extraction_and_catalog_matching_flow_to_review` is red on every tree including `main`; the failing assertion is `assert invoice["lines"][0]["rms_item_id"] == "RMS-TXT-1"`. Ticket wording: line parser reads a size token as quantity. The test stays in the suite unchanged.
 
 ## 4. arm64 image build under emulation
 
@@ -133,6 +133,32 @@ exit=0
 ```
 
 Installation and the helper's behaviour on a clean Windows computer remain unverified here; `docs/WINDOWS_SETUP.md` keeps the direct Compose commands as the canonical procedure.
+
+## Silent capability loss: standing check
+
+Three times in this programme a benign-looking artefact shipped with a capability missing, and nothing red said so:
+
+- the source packager omitted `start.sh` and `Start-InvoiceStudio.command`, so the unmodified zip died at exit 127 on the documented first command (section 1);
+- the privacy guard checked only the paths written into the archive, so a document excluded from the zip by the allowlist was never scanned by anything, while git published it (closed by the whole-tree guard in `scripts/package_source.py`, `validate_repository`);
+- a margin check that could pass vacuously, with nothing under it that could fail.
+- a pre-push hook committed into the repository, which git never installs on clone, so it looked like a guard and fired for nobody; and, once installed, a hook that scanned the working tree while a push carries a commit range, so a marker committed and then deleted in a later commit passed it (closed by the launchers setting `core.hooksPath` and by `scripts/package_source.py --pre-push`, which scans every file version the pushed commits introduce).
+
+Standing check for every release validation from now on: execute the shipped artefact from an unmodified copy of what is published (not from the working tree); run the privacy guard over the whole repository tree, not only the packaged paths; and assert each gate on a value that can actually fail, showing the command and its output.
+
+### Push guard gate arms (fresh clone, real launcher)
+
+Measured at branch `fix/whole-tree-privacy-guard` commit `aa8818b` (the tree under test; this section is the only later change). Push target: a bare mirror of that branch cloned from GitHub, so no marker leaves the machine; each arm is a fresh clone of that mirror. Marker: a synthetic home-directory path matching the eighth listed pattern, assembled at run time. Log kept outside the repository.
+
+| Arm | Steps | Result |
+| --- | --- | --- |
+| C | `git ls-files -s .githooks/pre-push` in a fresh clone | `100755` in the index |
+| A | fresh clone; `core.hooksPath` unset; `./start.sh --project-name hook-arm --port 8071 --no-browser` (real launcher, image built, project up); `core.hooksPath` reads `.githooks`; commit the marker; push | refused: message names `notes.txt` and the commit, never the value; mirror head unchanged |
+| A2 | fresh clone; launcher once; commit the marker; commit its deletion on top; working tree clean and `--check-only` passes; push both | refused on the buried commit; mirror head unchanged |
+| B | fresh clone; nothing run; `core.hooksPath` unset; commit the marker; push | not refused; README states this limit |
+
+Re-run at `101e11f` (rebased on `main` `b3b2b7d`; refusal wording and the `--check-only` range scan changed since `aa8818b`), same setup, 2026-09-26T06:59Z to 07:00Z: arms C, A, A2 and B gave the same outcomes. Two additions: on the A2 tree `python3 scripts/package_source.py --check-only` now refuses with the identical message the push prints (tree guard line, then "commit <sha> introduces notes.txt … rewrite from <sha>: git rebase -i <sha>~1 and drop or edit the commit, then push again; deleting the file in a later commit does not remove it from the push; do not bypass the hook"), so a clean pre-flight is a true pre-flight; and a fresh clone pushing its whole history to an empty remote is refused with "the history of this repository carries previously removed content at <commit> (<file>): the repository owner must rewrite history before this push; do not bypass the hook", the remote left with no refs.
+
+Mutation pair at the same commit, differing only in the hook's last line: with `--check-only` (tree-only) in place of `--pre-push`, the test for arm A still passes and the test for arm A2 fails; restored, both pass. At `6205377`, where `--check-only` reads the same range as the push, the same swap is caught by the two refusal-wording unit tests instead of the push arms (test_refusal_names_commit_file_and_remedy_for_a_new_commit and test_refusal_names_history_already_published_and_the_owner_remedy: 2 of 43 in `tests/test_source_package.py` fail with the swap on the host, 0 restored, hook byte-identical to HEAD afterwards). Verified on the Unix launcher; the Windows launcher sets the same configuration but has not been exercised here. Corroboration: one instrument (this run) plus the same arms as unit tests against a local bare origin in `tests/test_source_package.py`; An independent gate run at `02a35fd` (2026-09-26T06:53:38Z to 06:54:23Z, their own fresh clones against a local sink, their marker a share-link shape rather than a home-directory path) reached the same outcome on arms A, A2, B and C and on arm D, the whole history pushed to an empty remote, refused at `a2e3e43` (`docs/VOLUME_RESULTS.md`); two instruments, different markers, same reading.
 
 ## Scope limits
 
