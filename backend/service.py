@@ -77,6 +77,8 @@ DOCUMENT_EXTENSIONS = {
 }
 CATALOG_EXTENSIONS = {".csv", ".xlsx"}
 MATCH_STATUSES = {"unmatched", "suggested", "auto", "confirmed"}
+REMATCH_ACTORS = frozenset({"user", "system"})
+HUMAN_DECISION_ACTORS_EXCLUDED = frozenset({"system", "demo_seed"})
 DOCUMENT_TYPES = {"invoice", "credit_note", "purchase_order", "delivery_note", "unknown"}
 # The first five columns are the established exception CSV contract; the two
 # governed columns are appended so existing readers keep their positions.
@@ -2592,9 +2594,31 @@ class InvoiceService:
         self._wake.set()
         return result
 
-    def rematch(self, invoice_id: str, expected_version: int) -> dict[str, Any]:
+    def rematch(
+        self, invoice_id: str, expected_version: int, actor: str = "user"
+    ) -> dict[str, Any]:
+        """Re-run catalog matching over the stored lines.
+
+        ``actor`` is who asked: ``user`` for a person in the review screen,
+        ``system`` for an automated caller.  It is written to the audit event
+        as given, so a system rematch is never recorded as a human touch.
+        Stored machine selections (``auto``) come back ``auto`` with their
+        original score; a stored ``confirmed`` line stays confirmed only when
+        the audit trail holds a human line edit for the invoice, otherwise it
+        is treated as the machine selection it must have been.
+        """
         from . import matching
 
+        if actor not in REMATCH_ACTORS:
+            raise ValidationFailure(
+                [
+                    {
+                        "field": "actor",
+                        "code": "invalid_choice",
+                        "message": "actor must be one of: " + ", ".join(sorted(REMATCH_ACTORS)),
+                    }
+                ]
+            )
         now = utc_now()
         with self.db.transaction(immediate=True) as conn:
             row = self._get_row(conn, invoice_id)
@@ -2608,10 +2632,20 @@ class InvoiceService:
                     current_version=row["version"],
                 )
             invoice = self._invoice_from_row(conn, row, full=True)
+            stored_lines = [dict(line) for line in invoice.get("lines") or []]
+            human_decision = self._has_human_line_decision(conn, invoice_id)
+            auto_preserved = 0
+            unrecorded_confirmations = 0
+            for line in stored_lines:
+                if line.get("match_status") == "auto":
+                    auto_preserved += 1
+                elif line.get("match_status") == "confirmed" and not human_decision:
+                    unrecorded_confirmations += 1
+                    line["match_status"] = "auto"
             scope_supplier_id = self._matching_scope_supplier(conn, invoice.get("supplier_id"))
             catalog, aliases = self._catalog_for_matching(conn, scope_supplier_id)
             enriched_lines = matching.match_lines(
-                invoice.get("lines") or [],
+                stored_lines,
                 catalog,
                 aliases,
                 scope_supplier_id,
@@ -2639,11 +2673,15 @@ class InvoiceService:
                 conn,
                 invoice_id,
                 "invoice_rematched",
-                actor="user",
+                actor=actor,
                 version=new_version,
                 from_status=row["status"],
                 to_status="needs_review",
-                details={"line_count": len(prepared)},
+                details={
+                    "line_count": len(prepared),
+                    "auto_lines_preserved": auto_preserved,
+                    "unrecorded_confirmations_demoted": unrecorded_confirmations,
+                },
                 created_at=now,
             )
             return self._invoice_from_row(
@@ -3029,6 +3067,23 @@ class InvoiceService:
                 created_at=now,
             )
             return self._invoice_from_row(conn, self._get_row(conn, invoice_id), full=True)
+
+    def _has_human_line_decision(self, conn: Any, invoice_id: str) -> bool:
+        """True when a person edited this invoice's lines (an ``invoice_edited``
+        event by a non-system actor whose ``changed_fields`` include ``lines``).
+        The audit trail is per invoice, so this is the finest grain available."""
+        rows = conn.execute(
+            "SELECT actor, details_json FROM audit_events "
+            "WHERE invoice_id=? AND event_type='invoice_edited'",
+            (invoice_id,),
+        ).fetchall()
+        for row in rows:
+            if row["actor"] in HUMAN_DECISION_ACTORS_EXCLUDED:
+                continue
+            details = _load_json(row["details_json"], {})
+            if "lines" in (details.get("changed_fields") or []):
+                return True
+        return False
 
     def _validation_errors(
         self,
