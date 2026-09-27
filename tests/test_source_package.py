@@ -105,6 +105,13 @@ IDENTIFIER_SAMPLES = [
     'wrote results to /ho' + 'me/alice/project/out.json',
     'wrote results to /Us' + 'ers/alice/project/out.json',
     'saved to C:' + '\\Users' + '\\alice' + '\\Documents' + '\\out.json',
+    # coordination id, full form
+    'see task 01a0' + 'ffff-1111-2222-3333-444444444444 for the ruling',
+    # coordination id, truncated to two groups (the form a docstring carries)
+    'so until task 01a0' + 'ffff-1111 lands',
+    # truncated to three groups, and a full form cut inside its last group
+    'tracked as 01a0' + 'ffff-1111-2222 (matcher defect)',
+    'ticket 01a0' + 'ffff-1111-2222-3333-4444 in the record',
 ]
 
 
@@ -124,6 +131,8 @@ PLACEHOLDER_SAMPLES = [
     'for example /Us' + 'ers/your-name/InvoiceStudio or /ho' + 'me/<user>/InvoiceStudio',
     'the container path /app/data/invoices.db',
     'https://github.com/example/invoice-studio',
+    # a lone 8-hex group starting 01a0 is a commit sha prefix shape, not an id
+    'reverted in 01a0' + 'ffff and re-applied in 01a0' + 'ffff1234',
 ]
 
 

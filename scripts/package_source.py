@@ -50,7 +50,12 @@ PRIVATE_CONTENT_PATTERNS = [
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{50,}\b"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\b01a0[0-9a-f]{4}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b"),
+    # Coordination ids: the 01a0-prefixed time-ordered id in its full 8-4-4-4-12 form
+    # AND any truncated prefix of two or more dash-separated groups (the form people
+    # actually paste into a docstring). The rule: first group 01a0 plus four hex, then
+    # one or more dash-led groups of 1 to 12 hex, word-bounded. A lone 8-hex group is
+    # deliberately not matched: a commit sha prefix can take that shape.
+    re.compile(r"\b01a0[0-9a-f]{4}(?:-[0-9a-f]{1,12})+\b"),
     re.compile(r"(?:docs|drive|sheets)\.google\.com/", re.IGNORECASE),
     re.compile(r"[?&](?:usp=sharing|ouid=|userId=|resourcekey=)", re.IGNORECASE),
     re.compile(r"(?<![\w.])/home/(?!your-name\b|<)[A-Za-z0-9._-]+/"),
