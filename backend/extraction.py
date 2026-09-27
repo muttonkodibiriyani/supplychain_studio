@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import unicodedata
 import zipfile
@@ -667,6 +668,13 @@ def _explicit_po_token(reference: Any) -> str | None:
     return None
 
 
+# PDFium is not thread-safe.  Extraction workers are threads in one process,
+# so every pypdfium2 call (load, page access, render, close) is serialised
+# here and no PDFium-owned memory is accessed outside the lock; Tesseract
+# runs outside the lock on a copied image so OCR still parallelises.
+_PDFIUM_LOCK = threading.Lock()
+
+
 def _ocr_pdf_pages(
     path: Path, page_indices: Sequence[int], limits: ExtractionLimits
 ) -> dict[int, tuple[str, str, float | None]]:
@@ -691,7 +699,8 @@ def _ocr_pdf_pages(
     # reviewable page coverage within the same resource limits.
     use_enhancement_passes = len(page_indices) <= 12
     try:
-        document = pdfium.PdfDocument(str(path))
+        with _PDFIUM_LOCK:
+            document = pdfium.PdfDocument(str(path))
         for index in page_indices:
             page_started = time.monotonic()
             remaining = limits.ocr_timeout_seconds_total - (time.monotonic() - started)
@@ -699,8 +708,9 @@ def _ocr_pdf_pages(
                 raise ExtractionLimitError(
                     f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit."
                 )
-            page = document[index]
-            width, height = page.get_size()
+            with _PDFIUM_LOCK:
+                page = document[index]
+                width, height = page.get_size()
             render_scale = 2.0
             pixels = int(width * render_scale) * int(height * render_scale)
             _check_page_pixels(pixels, index + 1, limits)
@@ -709,9 +719,13 @@ def _ocr_pdf_pages(
                 raise ExtractionLimitError(
                     f"PDF rasterization would exceed the {limits.max_total_pixels} total pixel limit."
                 )
-            bitmap = page.render(scale=render_scale)
-            image = bitmap.to_pil()
+            with _PDFIUM_LOCK:
+                bitmap = page.render(scale=render_scale)
+                # to_pil() shares memory with the PDFium-owned bitmap buffer;
+                # copy so nothing outside the lock touches PDFium memory.
+                image = bitmap.to_pil().copy()
             page_budget = min(limits.ocr_timeout_seconds_per_page, remaining)
+            budget_message = _ocr_budget_message(page_budget, limits)
             # Preserve the former OCR path and its full timeout first.  The
             # enhancement passes may use only time that remains; a slow
             # enhancement can never turn a formerly readable page into a
@@ -723,6 +737,7 @@ def _ocr_pdf_pages(
                 psm=6,
                 autocontrast=False,
                 dpi=round(72 * render_scale),
+                timeout_message=budget_message,
             )
             enhanced_text, enhanced_confidence = baseline_text, baseline_confidence
             page_remaining = page_budget - (time.monotonic() - page_started)
@@ -736,6 +751,7 @@ def _ocr_pdf_pages(
                         psm=4,
                         autocontrast=True,
                         dpi=round(72 * render_scale),
+                        timeout_message=budget_message,
                     )
                     enhancement_completed = True
                 except ExtractionLimitError:
@@ -757,6 +773,7 @@ def _ocr_pdf_pages(
                         psm=11,
                         autocontrast=True,
                         dpi=round(72 * render_scale),
+                        timeout_message=budget_message,
                     )
                 except ExtractionLimitError:
                     sparse_text = ""
@@ -770,8 +787,9 @@ def _ocr_pdf_pages(
             results[index] = (raw_text, layout_text, confidence)
             try:
                 image.close()
-                bitmap.close()
-                page.close()
+                with _PDFIUM_LOCK:
+                    bitmap.close()
+                    page.close()
             except Exception:
                 pass
     except (DocumentExtractionError, ExtractionLimitError):
@@ -780,7 +798,8 @@ def _ocr_pdf_pages(
         raise DocumentExtractionError(f"Could not rasterize scanned PDF pages: {exc}") from exc
     finally:
         try:
-            document.close()  # type: ignore[possibly-undefined]
+            with _PDFIUM_LOCK:
+                document.close()  # type: ignore[possibly-undefined]
         except Exception:
             pass
     return results
@@ -853,12 +872,14 @@ def _extract_image(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
                     raise ExtractionLimitError(
                         f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit."
                     )
+                page_budget = min(limits.ocr_timeout_seconds_per_page, remaining)
                 text, confidence = _run_tesseract(
                     frame,
-                    min(limits.ocr_timeout_seconds_per_page, remaining),
+                    page_budget,
                     limits.max_pixels_per_page,
                     psm=4,
                     autocontrast=True,
+                    timeout_message=_ocr_budget_message(page_budget, limits),
                 )
                 page_evidence.append(
                     {
@@ -897,6 +918,21 @@ def _extract_image(path: Path, limits: ExtractionLimits) -> dict[str, Any]:
     }
 
 
+def _ocr_budget_message(page_budget: float, limits: ExtractionLimits) -> str:
+    """Name the budget an OCR pass ran under.
+
+    A page runs under ``min(per-page limit, remaining document budget)``.  When
+    the document budget clips the page, the number that ran out is the
+    document limit; reporting the clipped remainder ("exceeded its 0 second
+    limit") is the 180 second document budget wearing another face.
+    """
+    if page_budget < limits.ocr_timeout_seconds_per_page:
+        return (
+            f"OCR exceeded the {limits.ocr_timeout_seconds_total:.0f} second document limit."
+        )
+    return f"OCR page exceeded its {limits.ocr_timeout_seconds_per_page:.0f} second limit."
+
+
 def _run_tesseract(
     image: Any,
     timeout: float,
@@ -905,6 +941,7 @@ def _run_tesseract(
     psm: int = 6,
     autocontrast: bool = False,
     dpi: int | None = None,
+    timeout_message: str | None = None,
 ) -> tuple[str, float | None]:
     from PIL import ImageOps
 
@@ -956,7 +993,9 @@ def _run_tesseract(
                 timeout=max(1.0, timeout),
             )
         except subprocess.TimeoutExpired as exc:
-            raise ExtractionLimitError(f"OCR page exceeded its {timeout:.0f} second limit.") from exc
+            raise ExtractionLimitError(
+                timeout_message or f"OCR page exceeded its {timeout:.0f} second limit."
+            ) from exc
         if completed.returncode != 0:
             detail = (completed.stderr or "unknown Tesseract error").strip().replace("\n", " ")[:500]
             raise DocumentExtractionError(f"Tesseract OCR failed: {detail}")
